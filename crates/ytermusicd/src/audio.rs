@@ -12,7 +12,10 @@ use std::{
 use ytermusicd_core::{AudioSink, Track};
 
 enum AudioCommand {
-    Play(std::path::PathBuf),
+    Play {
+        path: std::path::PathBuf,
+        reply: mpsc::SyncSender<Result<(), String>>,
+    },
     Pause,
     Resume,
     Stop,
@@ -37,38 +40,83 @@ impl RodioSink {
             .name("ytermusicd-audio".to_string())
             .spawn(move || {
                 let (error_tx, _error_rx) = flume::unbounded();
-                let mut player = match Player::new(error_tx, PlayerOptions::new(50)) {
-                    Ok(player) => player,
+                let mut volume = 50u8;
+                let mut player = match Player::new(error_tx.clone(), PlayerOptions::new(volume)) {
+                    Ok(player) => Some(player),
                     Err(error) => {
-                        log::error!("audio output unavailable: {error:?}");
-                        return;
+                        log::error!("audio output unavailable: {error:?}; retrying on play");
+                        None
                     }
                 };
                 let mut playing = false;
 
                 loop {
                     match rx.recv_timeout(Duration::from_millis(250)) {
-                        Ok(AudioCommand::Play(path)) => {
-                            if let Err(error) = player.play(&path) {
-                                log::error!("failed to play {}: {error:?}", path.display());
-                                thread_finished.store(true, Ordering::SeqCst);
-                                playing = false;
-                            } else {
-                                thread_finished.store(false, Ordering::SeqCst);
-                                playing = true;
+                        Ok(AudioCommand::Play { path, reply }) => {
+                            if player.is_none() {
+                                match Player::new(error_tx.clone(), PlayerOptions::new(volume)) {
+                                    Ok(new_player) => {
+                                        log::info!("audio output available");
+                                        player = Some(new_player);
+                                    }
+                                    Err(error) => {
+                                        log::error!("audio output unavailable: {error:?}");
+                                        thread_finished.store(true, Ordering::SeqCst);
+                                        playing = false;
+                                        let _ = reply.send(Err(format!("{error:?}")));
+                                        continue;
+                                    }
+                                }
+                            }
+
+                            let Some(player) = player.as_mut() else {
+                                let _ = reply.send(Err("audio output unavailable".to_string()));
+                                continue;
+                            };
+                            match player.play(&path) {
+                                Ok(()) => {
+                                    thread_finished.store(false, Ordering::SeqCst);
+                                    playing = true;
+                                    let _ = reply.send(Ok(()));
+                                }
+                                Err(error) => {
+                                    log::error!("failed to play {}: {error:?}", path.display());
+                                    thread_finished.store(true, Ordering::SeqCst);
+                                    playing = false;
+                                    let _ = reply.send(Err(format!("{error:?}")));
+                                }
                             }
                         }
-                        Ok(AudioCommand::Pause) => player.pause(),
-                        Ok(AudioCommand::Resume) => player.resume(),
+                        Ok(AudioCommand::Pause) => {
+                            if let Some(player) = player.as_mut() {
+                                player.pause();
+                            }
+                        }
+                        Ok(AudioCommand::Resume) => {
+                            if let Some(player) = player.as_mut() {
+                                player.resume();
+                            }
+                        }
                         Ok(AudioCommand::Stop) => {
-                            player.stop();
+                            if let Some(player) = player.as_mut() {
+                                player.stop();
+                            }
                             thread_finished.store(true, Ordering::SeqCst);
                             playing = false;
                         }
-                        Ok(AudioCommand::Seek(position)) => player.seek_to(position),
-                        Ok(AudioCommand::Volume(volume)) => player.set_volume(volume as i32),
+                        Ok(AudioCommand::Seek(position)) => {
+                            if let Some(player) = player.as_mut() {
+                                player.seek_to(position);
+                            }
+                        }
+                        Ok(AudioCommand::Volume(new_volume)) => {
+                            volume = new_volume;
+                            if let Some(player) = player.as_mut() {
+                                player.set_volume(volume as i32);
+                            }
+                        }
                         Err(mpsc::RecvTimeoutError::Timeout) => {
-                            if playing && player.is_finished() {
+                            if playing && player.as_ref().is_some_and(Player::is_finished) {
                                 thread_finished.store(true, Ordering::SeqCst);
                                 playing = false;
                             }
@@ -93,7 +141,22 @@ impl AudioSink for RodioSink {
     type Error = std::io::Error;
 
     fn play(&mut self, _track: &Track, path: &Path) -> Result<(), Self::Error> {
-        self.send(AudioCommand::Play(path.to_path_buf()))
+        let (reply, response) = mpsc::sync_channel(1);
+        self.send(AudioCommand::Play {
+            path: path.to_path_buf(),
+            reply,
+        })?;
+        match response.recv_timeout(Duration::from_secs(5)) {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(message)) => Err(std::io::Error::other(message)),
+            Err(mpsc::RecvTimeoutError::Timeout) => Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "audio start timed out",
+            )),
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                Err(std::io::Error::other("audio thread stopped"))
+            }
+        }
     }
 
     fn pause(&mut self) -> Result<(), Self::Error> {
