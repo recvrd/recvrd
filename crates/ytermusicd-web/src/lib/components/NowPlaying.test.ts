@@ -48,6 +48,7 @@ describe('NowPlaying', () => {
 
     const seek = screen.getByLabelText('Seek');
     await fireEvent.input(seek, { target: { value: '60' } });
+    expect(seek).toHaveValue('60');
     await fireEvent.change(seek, { target: { value: '60' } });
     expect(api.seek).toHaveBeenCalledWith(60);
 

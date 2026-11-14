@@ -167,26 +167,32 @@ impl Player {
     }
 
     pub fn seek_to(&mut self, time: Duration) {
+        if let Err(error) = self.try_seek_to(time) {
+            log::error!("Seek error: {error:?}");
+            let _ = self.error_sender.send(error);
+        }
+    }
+
+    /// Seek and return the result to the caller.
+    pub fn try_seek_to(&mut self, time: Duration) -> Result<(), PlayError> {
         log::info!("Seek to: {:?}", time);
         if self.is_finished() {
-            return;
+            return Ok(());
         }
-        let file = self.data.current_file().expect("Current file not set");
+        let file = self
+            .data
+            .current_file()
+            .ok_or_else(|| PlayError::Io(std::io::Error::other("no current file")))?;
 
-        if let Err(e) = self.sink.try_seek(time) {
-            log::error!("Seek error: {}", e);
-            let _ = self.error_sender.send(PlayError::SeekError(e));
-        } else {
-            // If the sink is finished, we need to reset the music
-            // This happens when the user seeks to the start of the song before the buffer.
-            if self.is_finished() {
-                log::info!("Sink is finished while seeking, resetting the music");
-                if let Err(e) = self.play_at(&file, time) {
-                    log::error!("Error playing file: {:?}", e);
-                    let _ = self.error_sender.send(e);
-                }
-            }
+        self.sink.try_seek(time).map_err(PlayError::SeekError)?;
+
+        // If the sink is finished, we need to reset the music
+        // This happens when the user seeks to the start of the song before the buffer.
+        if self.is_finished() {
+            log::info!("Sink is finished while seeking, resetting the music");
+            self.play_at(&file, time)?;
         }
+        Ok(())
     }
 
     pub fn percentage(&self) -> f64 {

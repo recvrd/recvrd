@@ -83,6 +83,10 @@
         value={position}
         disabled={!track || duration === 0}
         aria-label="Seek"
+        aria-valuetext={`${formatDuration(position)} of ${formatDuration(duration)}`}
+        onpointerdown={(event) => {
+          scrub = Number(event.currentTarget.value);
+        }}
         oninput={(event) => {
           scrub = Number(event.currentTarget.value);
         }}

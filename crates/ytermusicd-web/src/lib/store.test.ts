@@ -180,6 +180,31 @@ describe('AppStore', () => {
     store.dispose();
   });
 
+  it('rolls back a failed seek', async () => {
+    const { api, store } = setup();
+    await store.init();
+    const track = makeTrack('v1');
+    store.status = makeStatus({
+      playback: {
+        state: 'playing',
+        current: track,
+        position_secs: 10,
+        volume: 50,
+        repeat: 'off',
+        shuffle: false,
+      },
+    });
+    api.seek = vi.fn(async () => {
+      throw new ApiError('seek failed', 'internal_error', 500);
+    });
+
+    await store.seek(60);
+
+    expect(store.status?.playback.position_secs).toBe(10);
+    expect(store.toasts.at(-1)?.message).toContain('seek failed');
+    store.dispose();
+  });
+
   it('rolls back an optimistic queue reorder on error', async () => {
     const { api, store } = setup();
     await store.init();
