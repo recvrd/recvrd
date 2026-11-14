@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.1 — 2026-11-14
+
+### Fixed
+
+- Use the browser `EventSource` when no test factory is set. The web UI no
+  longer stays on the connection banner when the daemon is up.
+
 ## 0.1.0 — 2026-11-13
 
 First public release.
