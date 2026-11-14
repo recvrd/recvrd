@@ -1,22 +1,22 @@
 :root {
-  --bg: #0a0614;
-  --bg-raised: #151024;
-  --bg-sunken: #06040d;
-  --fg: #e6e1f5;
-  --fg-muted: #9b93b8;
+  --bg: #091833;
+  --bg-raised: #0d2447;
+  --bg-sunken: #06122a;
+  --fg: #e3e8fc;
+  --fg-muted: #8fa3c8;
   --fg-bright: #ffffff;
-  --accent: #ff2a6d;
-  --accent-2: #05d9e8;
-  --accent-3: #b967ff;
-  --danger: #ff3b5c;
-  --warning: #ffcc00;
-  --success: #39ff88;
-  --selection: #2a1d4a;
-  --border: #33284f;
+  --accent: #ea00d9;
+  --accent-2: #0abdc6;
+  --accent-3: #6f8cff;
+  --danger: #ff4d6d;
+  --warning: #e5c07b;
+  --success: #4cd964;
+  --selection: #133e7c;
+  --border: #0abdc6;
 
   font-family:
-    'JetBrainsMono Nerd Font', ui-monospace, SFMono-Regular, Menlo, Consolas,
-    monospace;
+    'JetBrainsMono Nerd Font', 'JetBrains Mono', Hack, 'Fira Code',
+    ui-monospace, monospace;
   color: var(--fg);
   background: var(--bg);
   color-scheme: dark;
@@ -38,10 +38,7 @@ body,
 }
 
 body {
-  background:
-    radial-gradient(circle at 15% -10%, rgb(185 103 255 / 18%), transparent 40%),
-    radial-gradient(circle at 90% 0%, rgb(5 217 232 / 12%), transparent 35%),
-    var(--bg);
+  background: var(--bg);
 }
 
 button,
@@ -53,19 +50,22 @@ select {
 
 button {
   cursor: pointer;
-  border: 1px solid var(--border);
-  background: var(--bg-raised);
-  border-radius: 6px;
+  border: 1px dashed var(--border);
+  background: color-mix(in srgb, var(--bg-raised) 33%, transparent);
+  border-radius: 4px;
   padding: 0.35rem 0.7rem;
   transition:
     border-color 120ms ease,
     background 120ms ease,
-    color 120ms ease;
+    color 120ms ease,
+    text-shadow 120ms ease;
 }
 
 button:hover:not(:disabled) {
-  border-color: var(--accent-2);
-  color: var(--fg-bright);
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--bg-raised) 80%, transparent);
+  color: var(--accent);
+  text-shadow: 0 0 8px var(--accent);
 }
 
 button:focus-visible,
@@ -88,15 +88,15 @@ input[type='range'] {
 
 input[type='text'],
 input[type='search'] {
-  background: var(--bg-sunken);
-  border: 1px solid var(--border);
-  border-radius: 6px;
+  background: color-mix(in srgb, var(--bg-raised) 33%, transparent);
+  border: 1px dashed var(--border);
+  border-radius: 4px;
   padding: 0.45rem 0.7rem;
   color: var(--fg);
 }
 
 ::selection {
-  background: var(--accent-3);
+  background: var(--accent);
   color: var(--bg);
 }
 
@@ -115,7 +115,7 @@ input[type='search'] {
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--accent-3);
+  background: var(--accent);
 }
 
 .sr-only {
@@ -135,15 +135,15 @@ input[type='search'] {
 }
 
 .accent {
-  color: var(--accent-2);
+  color: var(--accent);
 }
 
 .badge {
   display: inline-flex;
   align-items: center;
   gap: 0.3rem;
-  border: 1px solid var(--border);
-  border-radius: 999px;
+  border: 1px dashed var(--border);
+  border-radius: 4px;
   padding: 0.05rem 0.5rem;
   font-size: 0.72rem;
   color: var(--fg-muted);

@@ -55,11 +55,12 @@
     align-items: center;
     gap: 0.6rem;
     padding: 0.55rem 0.7rem;
-    border: 1px solid var(--border);
+    border: 1px dashed var(--border);
     border-left-width: 4px;
-    border-radius: 8px;
-    background: var(--bg-raised);
-    box-shadow: 0 8px 28px rgb(0 0 0 / 45%);
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--bg-raised) 80%, transparent);
+    backdrop-filter: blur(6px);
+    box-shadow: 0 8px 28px rgb(3 8 18 / 50%);
     pointer-events: auto;
     font-size: 0.85rem;
   }

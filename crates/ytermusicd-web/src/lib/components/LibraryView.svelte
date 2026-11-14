@@ -140,14 +140,14 @@
     align-items: center;
     gap: 1rem;
     padding: 1.1rem 1.25rem;
-    border-bottom: 1px solid var(--border);
+    border-bottom: 1px dotted var(--accent);
     flex: none;
   }
 
   .hero {
     justify-content: space-between;
-    background:
-      radial-gradient(circle at 0% 0%, color-mix(in srgb, var(--accent-3) 16%, transparent), transparent 60%);
+    background: color-mix(in srgb, var(--bg-raised) 33%, transparent);
+    backdrop-filter: blur(4px);
   }
 
   .eyebrow {
@@ -155,13 +155,14 @@
     font-size: 0.68rem;
     letter-spacing: 0.14em;
     text-transform: uppercase;
-    color: var(--accent-2);
+    color: var(--accent);
   }
 
   h1 {
     margin: 0;
     font-size: 1.5rem;
-    color: var(--fg-bright);
+    color: var(--accent);
+    text-shadow: 0 0 10px color-mix(in srgb, var(--accent) 45%, transparent);
   }
 
   .hero .muted,
@@ -191,13 +192,15 @@
     gap: 0.35rem 0.7rem;
     align-items: center;
     padding: 0.75rem;
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    background: color-mix(in srgb, var(--bg-raised) 80%, transparent);
+    border: 1px dashed var(--border);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--bg-raised) 33%, transparent);
+    backdrop-filter: blur(4px);
   }
 
   .card:hover {
-    border-color: color-mix(in srgb, var(--accent-2) 45%, var(--border));
+    border-color: var(--accent);
+    box-shadow: 0 0 18px color-mix(in srgb, var(--accent) 18%, transparent);
   }
 
   .art {
@@ -205,9 +208,8 @@
     place-items: center;
     width: 3.2rem;
     height: 3.2rem;
-    border-radius: 8px;
-    background:
-      linear-gradient(135deg, color-mix(in srgb, var(--accent) 70%, #000), var(--accent-3));
+    border-radius: 6px;
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
     color: var(--bg);
     font-size: 1.4rem;
     font-weight: 800;
@@ -228,7 +230,7 @@
   .info h2 {
     margin: 0;
     font-size: 0.88rem;
-    color: var(--fg-bright);
+    color: var(--accent);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;

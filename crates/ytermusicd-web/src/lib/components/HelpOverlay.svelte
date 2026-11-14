@@ -68,7 +68,7 @@
     display: grid;
     place-items: center;
     padding: 1rem;
-    background: rgb(4 2 10 / 78%);
+    background: rgb(9 24 51 / 80%);
     backdrop-filter: blur(3px);
   }
 
@@ -76,10 +76,13 @@
     width: min(52rem, 100%);
     max-height: min(38rem, 90vh);
     overflow: auto;
-    border: 1px solid var(--accent-3);
-    border-radius: 12px;
-    background: var(--bg-raised);
-    box-shadow: 0 24px 80px rgb(0 0 0 / 65%);
+    border: 1px dashed var(--border);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--bg-raised) 80%, transparent);
+    backdrop-filter: blur(6px);
+    box-shadow:
+      0 24px 80px rgb(3 8 18 / 72%),
+      0 0 24px color-mix(in srgb, var(--accent) 16%, transparent);
     padding: 1rem 1.25rem 1.4rem;
   }
 
@@ -87,14 +90,15 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    border-bottom: 1px solid var(--border);
+    border-bottom: 1px dotted var(--accent);
     margin-bottom: 1rem;
   }
 
   h2 {
     margin: 0 0 0.6rem;
     font-size: 1.1rem;
-    color: var(--fg-bright);
+    color: var(--accent);
+    text-shadow: 0 0 8px color-mix(in srgb, var(--accent) 40%, transparent);
   }
 
   h3 {
@@ -137,11 +141,11 @@
 
   kbd {
     display: inline-block;
-    border: 1px solid var(--border);
+    border: 1px dashed var(--border);
     border-bottom-width: 2px;
     border-radius: 4px;
     padding: 0 0.3rem;
-    background: var(--bg-sunken);
+    background: color-mix(in srgb, var(--bg-raised) 33%, transparent);
     font-size: 0.78rem;
   }
 </style>

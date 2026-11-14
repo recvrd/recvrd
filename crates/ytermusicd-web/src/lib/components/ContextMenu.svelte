@@ -61,10 +61,13 @@
     display: flex;
     flex-direction: column;
     padding: 0.3rem;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    background: var(--bg-raised);
-    box-shadow: 0 16px 48px rgb(0 0 0 / 55%);
+    border: 1px dashed var(--border);
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--bg-raised) 80%, transparent);
+    backdrop-filter: blur(6px);
+    box-shadow:
+      0 16px 48px rgb(3 8 18 / 60%),
+      0 0 18px color-mix(in srgb, var(--accent) 14%, transparent);
   }
 
   button {
