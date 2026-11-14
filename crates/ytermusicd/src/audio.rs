@@ -19,7 +19,10 @@ enum AudioCommand {
     Pause,
     Resume,
     Stop,
-    Seek(Duration),
+    Seek {
+        position: Duration,
+        reply: mpsc::SyncSender<Result<(), String>>,
+    },
     Volume(u8),
 }
 
@@ -104,9 +107,19 @@ impl RodioSink {
                             thread_finished.store(true, Ordering::SeqCst);
                             playing = false;
                         }
-                        Ok(AudioCommand::Seek(position)) => {
-                            if let Some(player) = player.as_mut() {
-                                player.seek_to(position);
+                        Ok(AudioCommand::Seek { position, reply }) => {
+                            let Some(player) = player.as_mut() else {
+                                let _ = reply.send(Err("audio output unavailable".to_string()));
+                                continue;
+                            };
+                            match player.try_seek_to(position) {
+                                Ok(()) => {
+                                    let _ = reply.send(Ok(()));
+                                }
+                                Err(error) => {
+                                    log::warn!("seek failed: {error:?}");
+                                    let _ = reply.send(Err(format!("{error:?}")));
+                                }
                             }
                         }
                         Ok(AudioCommand::Volume(new_volume)) => {
@@ -172,7 +185,19 @@ impl AudioSink for RodioSink {
     }
 
     fn seek(&mut self, position: Duration) -> Result<(), Self::Error> {
-        self.send(AudioCommand::Seek(position))
+        let (reply, response) = mpsc::sync_channel(1);
+        self.send(AudioCommand::Seek { position, reply })?;
+        match response.recv_timeout(Duration::from_secs(5)) {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(message)) => Err(std::io::Error::other(message)),
+            Err(mpsc::RecvTimeoutError::Timeout) => Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "audio seek timed out",
+            )),
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                Err(std::io::Error::other("audio thread stopped"))
+            }
+        }
     }
 
     fn set_volume(&mut self, volume: u8) -> Result<(), Self::Error> {
