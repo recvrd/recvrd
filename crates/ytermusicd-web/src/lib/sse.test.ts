@@ -138,4 +138,26 @@ describe('EventStream', () => {
     expect(errors).toHaveLength(1);
     stream.close();
   });
+
+  it('uses the browser EventSource when no factory is passed', () => {
+    const sources: FakeEventSource[] = [];
+    class BrowserSource extends FakeEventSource {
+      constructor(url: string) {
+        super(url);
+        sources.push(this);
+      }
+    }
+    vi.stubGlobal('EventSource', BrowserSource);
+
+    const stream = new EventStream({
+      onEvent: () => {},
+      onState: () => {},
+    });
+    expect(() => stream.connect()).not.toThrow();
+    expect(sources).toHaveLength(1);
+    expect(sources[0].url).toBe('/api/events');
+
+    stream.close();
+    vi.unstubAllGlobals();
+  });
 });

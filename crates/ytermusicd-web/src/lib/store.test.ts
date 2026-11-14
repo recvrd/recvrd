@@ -244,6 +244,27 @@ describe('AppStore', () => {
     store.dispose();
   });
 
+  it('initializes with the browser EventSource by default', async () => {
+    const sources: FakeEventSource[] = [];
+    class BrowserSource extends FakeEventSource {
+      constructor(url: string) {
+        super(url);
+        sources.push(this);
+      }
+    }
+    vi.stubGlobal('EventSource', BrowserSource);
+    const api = makeApi();
+    const store = new AppStore(api);
+
+    await store.init();
+
+    expect(sources).toHaveLength(1);
+    expect(store.status).not.toBeNull();
+    expect(store.playlists).toHaveLength(2);
+    store.dispose();
+    vi.unstubAllGlobals();
+  });
+
   it('filters playlists and exposes the selected track', async () => {
     const { store } = setup();
     await store.init();
