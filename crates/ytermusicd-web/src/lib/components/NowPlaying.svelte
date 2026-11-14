@@ -19,7 +19,29 @@
   }
 </script>
 
-<footer class="now-playing" aria-label="Now playing">
+<footer class="now-playing {store.playerLayout}" aria-label="Now playing">
+  <div class="seek-container">
+    <span class="time">{formatDuration(position)}</span>
+    <input
+      type="range"
+      min="0"
+      max={Math.max(duration, 1)}
+      step="1"
+      value={position}
+      disabled={!track || duration === 0}
+      aria-label="Seek"
+      aria-valuetext={`${formatDuration(position)} of ${formatDuration(duration)}`}
+      onpointerdown={(event) => {
+        scrub = Number(event.currentTarget.value);
+      }}
+      oninput={(event) => {
+        scrub = Number(event.currentTarget.value);
+      }}
+      onchange={(event) => commitSeek(Number(event.currentTarget.value))}
+    />
+    <span class="time">{formatDuration(duration)}</span>
+  </div>
+
   <div class="track">
     {#if track}
       <div class="title" title={track.title}>{track.title}</div>
@@ -27,6 +49,11 @@
         {track.artist}
         {#if track.album}<span class="muted"> · {track.album}</span>{/if}
       </div>
+      {#if store.playerLayout === 'terminal' && store.queue?.current != null}
+        <div class="queue-position">
+          Track {store.queue.current + 1} of {store.queue.items.length}
+        </div>
+      {/if}
       {#if download && download.state === 'failed'}
         <button class="retry" onclick={() => store.retryDownload(track.video_id)}>
           Download failed — retry
@@ -40,60 +67,40 @@
     {/if}
   </div>
 
-  <div class="center">
-    <div class="controls">
-      <button
-        class="icon"
-        class:active={playback?.shuffle}
-        aria-label="Shuffle"
-        aria-pressed={playback?.shuffle ?? false}
-        onclick={() => store.toggleShuffle()}
-      >
-        ⤨
-      </button>
-      <button class="icon" aria-label="Previous track" onclick={() => store.previous()}>
-        ⏮
-      </button>
-      <button
-        class="icon primary"
-        aria-label={isPlaying ? 'Pause' : 'Play'}
-        onclick={() => store.togglePlayback()}
-      >
-        {isPlaying ? '⏸' : '▶'}
-      </button>
-      <button class="icon" aria-label="Next track" onclick={() => store.next()}>
-        ⏭
-      </button>
-      <button
-        class="icon repeat"
-        class:active={playback && playback.repeat !== 'off'}
-        aria-label={`Repeat mode: ${playback?.repeat ?? 'off'}`}
-        onclick={() => store.cycleRepeat()}
-      >
-        ↻{#if playback?.repeat === 'one'}<sup>1</sup>{/if}
-      </button>
-    </div>
-    <div class="progress">
-      <span class="time">{formatDuration(position)}</span>
-      <input
-        type="range"
-        min="0"
-        max={Math.max(duration, 1)}
-        step="1"
-        value={position}
-        disabled={!track || duration === 0}
-        aria-label="Seek"
-        aria-valuetext={`${formatDuration(position)} of ${formatDuration(duration)}`}
-        onpointerdown={(event) => {
-          scrub = Number(event.currentTarget.value);
-        }}
-        oninput={(event) => {
-          scrub = Number(event.currentTarget.value);
-        }}
-        onchange={(event) => commitSeek(Number(event.currentTarget.value))}
-      />
-      <span class="time">{formatDuration(duration)}</span>
-    </div>
+  <div class="transport">
+    <button
+      class="icon"
+      class:active={playback?.shuffle}
+      aria-label="Shuffle"
+      aria-pressed={playback?.shuffle ?? false}
+      onclick={() => store.toggleShuffle()}
+    >
+      ⤨
+    </button>
+    <button class="icon nav" aria-label="Previous track" onclick={() => store.previous()}>
+      {store.playerLayout === 'terminal' ? '<' : '⏮'}
+    </button>
+    <button
+      class="icon primary"
+      aria-label={isPlaying ? 'Pause' : 'Play'}
+      onclick={() => store.togglePlayback()}
+    >
+      {#if store.playerLayout === 'terminal'}
+        <span class="play-text">{isPlaying ? 'pause' : 'play'}</span>
+      {/if}
+      <span class="play-icon" aria-hidden="true">{isPlaying ? '⏸' : '▶'}</span>
+    </button>
+    <button class="icon nav" aria-label="Next track" onclick={() => store.next()}>
+      {store.playerLayout === 'terminal' ? '>' : '⏭'}
+    </button>
+    <button
+      class="icon repeat"
+      class:active={playback && playback.repeat !== 'off'}
+      aria-label={`Repeat mode: ${playback?.repeat ?? 'off'}`}
+      onclick={() => store.cycleRepeat()}
+    >
+      ↻{#if playback?.repeat === 'one'}<sup>1</sup>{/if}
+    </button>
   </div>
 
   <div class="volume">
@@ -111,6 +118,14 @@
       onchange={(event) => store.setVolume(Number(event.currentTarget.value))}
     />
     <span class="percent">{store.volume}%</span>
+    <button
+      class="layout-toggle"
+      aria-label="Switch player layout"
+      title="Switch player layout"
+      onclick={() => store.togglePlayerLayout()}
+    >
+      {store.playerLayout === 'compact' ? 'terminal' : 'bar'}
+    </button>
   </div>
 </footer>
 
@@ -118,8 +133,12 @@
   .now-playing {
     display: grid;
     grid-template-columns: minmax(12rem, 1fr) minmax(18rem, 1.6fr) minmax(9rem, 0.8fr);
+    grid-template-rows: auto auto;
+    grid-template-areas:
+      'track transport volume'
+      'track seek volume';
     align-items: center;
-    gap: 1rem;
+    gap: 0.2rem 1rem;
     padding: 0.6rem 1rem;
     border-top: 2px dashed var(--border);
     background:
@@ -130,7 +149,16 @@
     min-height: 5.2rem;
   }
 
+  .now-playing.terminal {
+    grid-template-columns: minmax(12rem, 1fr) auto minmax(10rem, 0.8fr);
+    grid-template-areas:
+      'seek seek seek'
+      'track transport volume';
+    gap: 0.35rem 1rem;
+  }
+
   .track {
+    grid-area: track;
     min-width: 0;
     display: flex;
     flex-direction: column;
@@ -158,13 +186,26 @@
     color: var(--fg-muted);
   }
 
-  .center {
-    display: flex;
-    flex-direction: column;
-    gap: 0.25rem;
+  .queue-position {
+    font-size: 0.68rem;
+    color: var(--accent-2);
+    opacity: 0.8;
   }
 
-  .controls {
+  .seek-container {
+    grid-area: seek;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .seek-container input[type='range'] {
+    flex: 1;
+    height: 4px;
+  }
+
+  .transport {
+    grid-area: transport;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -205,15 +246,24 @@
     color: var(--accent);
   }
 
-  .progress {
+  .now-playing.terminal .icon.primary {
+    width: auto;
+    min-width: 6.5rem;
+    height: 2.2rem;
+    padding: 0.35rem 0.8rem;
     display: flex;
-    align-items: center;
-    gap: 0.5rem;
+    gap: 0.45rem;
+    font-size: 0.85rem;
   }
 
-  .progress input[type='range'] {
-    flex: 1;
-    height: 4px;
+  .now-playing.terminal .icon.nav {
+    border: 1px dashed var(--border);
+    background: color-mix(in srgb, var(--bg-raised) 33%, transparent);
+    min-width: 2.1rem;
+  }
+
+  .play-text {
+    text-transform: lowercase;
   }
 
   .time {
@@ -225,10 +275,12 @@
   }
 
   .volume {
+    grid-area: volume;
     display: flex;
     align-items: center;
     justify-content: flex-end;
     gap: 0.45rem;
+    flex-wrap: wrap;
   }
 
   .volume input[type='range'] {
@@ -244,6 +296,16 @@
     font-variant-numeric: tabular-nums;
   }
 
+  .layout-toggle {
+    padding: 0.08rem 0.4rem;
+    font-size: 0.65rem;
+    color: var(--fg-muted);
+  }
+
+  .layout-toggle:hover {
+    color: var(--accent);
+  }
+
   .retry {
     padding: 0.08rem 0.45rem;
     font-size: 0.7rem;
@@ -255,8 +317,21 @@
   @media (max-width: 860px) {
     .now-playing {
       grid-template-columns: 1fr;
+      grid-template-areas:
+        'track'
+        'transport'
+        'seek'
+        'volume';
       gap: 0.35rem;
       padding: 0.5rem 0.75rem;
+    }
+
+    .now-playing.terminal {
+      grid-template-areas:
+        'seek'
+        'track'
+        'transport'
+        'volume';
     }
 
     .volume {

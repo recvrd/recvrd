@@ -89,4 +89,26 @@ describe('NowPlaying', () => {
     await fireEvent.click(screen.getByRole('button', { name: /Repeat mode/ }));
     expect(api.setRepeat).toHaveBeenCalledWith('one');
   });
+
+  it('switches between compact and terminal player layouts', async () => {
+    const { api, store } = makeStore();
+    const { container } = render(NowPlaying, { props: { store } });
+
+    const footer = container.querySelector('.now-playing');
+    expect(footer).toHaveClass('compact');
+    expect(screen.getByRole('button', { name: 'Switch player layout' })).toHaveTextContent(
+      'terminal',
+    );
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Switch player layout' }));
+    await tick();
+
+    expect(store.playerLayout).toBe('terminal');
+    expect(footer).toHaveClass('terminal');
+    expect(screen.getByText('Track 1 of 1')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Pause' })).toHaveTextContent('pause');
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Pause' }));
+    expect(api.pause).toHaveBeenCalledOnce();
+  });
 });

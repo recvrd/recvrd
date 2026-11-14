@@ -51,6 +51,16 @@ artifacts contain the real app.
 - **Now playing** shows the current track, controls, seek, volume and download
   state.
 
+The now-playing bar has two layouts:
+
+- **compact** shows the track on the left, the transport above the seek bar,
+  and the volume on the right.
+- **terminal** shows a full-width seek bar, then the track, transport and
+  volume in one row. The play button shows text and an icon.
+
+Use the `terminal` or `bar` button in the now-playing bar to swap layouts. The
+web UI stores the choice in `localStorage`.
+
 The store subscribes once to `/api/events`. It applies the snapshot and
 incremental playback, queue, download, track-ended, error and library events.
 The app reconnects with exponential backoff and sends `last_event_id` in the
