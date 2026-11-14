@@ -70,7 +70,7 @@
 <div class="app">
   <header class="topbar">
     <div class="view-title">
-      <span class="slash" aria-hidden="true">//</span>
+      <span class="slash" aria-hidden="true">$</span>
       {title}
     </div>
     <button class="search-button" onclick={() => store.openSearch()}>
@@ -156,8 +156,9 @@
     align-items: center;
     gap: 0.6rem;
     padding: 0.5rem 1rem;
-    border-bottom: 1px solid var(--border);
-    background: color-mix(in srgb, var(--bg-sunken) 70%, transparent);
+    border-bottom: 2px solid transparent;
+    border-image: linear-gradient(to right, var(--accent), transparent) 1;
+    background: var(--bg);
     flex: none;
   }
 
@@ -169,12 +170,13 @@
     white-space: nowrap;
     font-size: 0.86rem;
     font-weight: 600;
-    color: var(--fg-bright);
+    color: var(--accent);
+    text-shadow: 0 0 8px color-mix(in srgb, var(--accent) 45%, transparent);
     letter-spacing: 0.03em;
   }
 
   .slash {
-    color: var(--accent);
+    color: var(--fg-muted);
     margin-right: 0.35rem;
   }
 
@@ -184,19 +186,20 @@
     gap: 0.4rem;
     min-width: 11rem;
     justify-content: space-between;
-    background: var(--bg-sunken);
+    background: color-mix(in srgb, var(--bg-raised) 33%, transparent);
     color: var(--fg-muted);
     font-size: 0.78rem;
   }
 
   .search-button:hover {
-    color: var(--fg-bright);
+    color: var(--accent);
   }
 
   kbd {
-    border: 1px solid var(--border);
+    border: 1px dashed var(--border);
     border-radius: 4px;
     padding: 0 0.3rem;
+    background: color-mix(in srgb, var(--bg-raised) 33%, transparent);
     font-size: 0.68rem;
   }
 
@@ -205,7 +208,7 @@
     height: 1.9rem;
     display: grid;
     place-items: center;
-    border-radius: 50%;
+    border-radius: 4px;
     font-size: 0.9rem;
     color: var(--fg-muted);
   }

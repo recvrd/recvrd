@@ -166,13 +166,14 @@
     justify-content: space-between;
     gap: 1rem;
     padding: 1rem 1.25rem 0.8rem;
-    border-bottom: 1px solid var(--border);
+    border-bottom: 1px dotted var(--accent);
   }
 
   h2 {
     margin: 0 0 0.2rem;
     font-size: 1.15rem;
-    color: var(--fg-bright);
+    color: var(--accent);
+    text-shadow: 0 0 8px color-mix(in srgb, var(--accent) 40%, transparent);
   }
 
   header .muted {
@@ -202,7 +203,7 @@
     align-items: center;
     gap: 0.6rem;
     padding: 0.5rem 1rem;
-    border-bottom: 1px solid color-mix(in srgb, var(--border) 45%, transparent);
+    border-bottom: 1px dotted color-mix(in srgb, var(--border) 35%, transparent);
     font-size: 0.84rem;
   }
 

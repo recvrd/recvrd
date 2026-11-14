@@ -191,7 +191,7 @@
 
   .table-header {
     height: 2rem;
-    border-bottom: 1px solid var(--border);
+    border-bottom: 1px dashed var(--border);
     color: var(--fg-muted);
     font-size: 0.72rem;
     text-transform: uppercase;
@@ -214,7 +214,7 @@
     position: absolute;
     left: 0;
     right: 0;
-    border-bottom: 1px solid color-mix(in srgb, var(--border) 45%, transparent);
+    border-bottom: 1px dotted color-mix(in srgb, var(--border) 35%, transparent);
     font-size: 0.84rem;
     cursor: default;
   }

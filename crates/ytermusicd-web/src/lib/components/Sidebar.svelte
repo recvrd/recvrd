@@ -115,8 +115,9 @@
     display: flex;
     flex-direction: column;
     min-height: 0;
-    border-right: 1px solid var(--border);
-    background: color-mix(in srgb, var(--bg-raised) 55%, transparent);
+    border-right: 1px dashed var(--border);
+    background: color-mix(in srgb, var(--bg-raised) 33%, transparent);
+    backdrop-filter: blur(4px);
   }
 
   .brand {
@@ -126,7 +127,8 @@
     padding: 0.85rem 1rem 0.7rem;
     font-weight: 700;
     letter-spacing: 0.04em;
-    color: var(--fg-bright);
+    color: var(--accent);
+    text-shadow: 0 0 8px color-mix(in srgb, var(--accent) 45%, transparent);
   }
 
   .mark {
@@ -134,8 +136,8 @@
     place-items: center;
     width: 1.6rem;
     height: 1.6rem;
-    border-radius: 6px;
-    background: linear-gradient(135deg, var(--accent), var(--accent-3));
+    border-radius: 4px;
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
     color: var(--bg);
     font-size: 0.9rem;
   }
@@ -158,7 +160,7 @@
     flex-direction: column;
     gap: 0.15rem;
     padding: 0.25rem 0.6rem 0.6rem;
-    border-bottom: 1px solid var(--border);
+    border-bottom: 1px dotted var(--accent);
   }
 
   .nav-item {
@@ -169,20 +171,22 @@
     background: transparent;
     text-align: left;
     padding: 0.42rem 0.55rem;
-    border-radius: 6px;
+    border-radius: 4px;
     font-size: 0.84rem;
     color: var(--fg-muted);
   }
 
   .nav-item:hover {
-    background: var(--selection);
-    color: var(--fg-bright);
+    background: color-mix(in srgb, var(--bg-raised) 33%, transparent);
+    color: var(--accent);
+    text-shadow: 0 0 8px var(--accent);
   }
 
   .nav-item.active {
-    background: var(--selection);
-    color: var(--accent-2);
-    box-shadow: inset 2px 0 0 var(--accent-2);
+    background: color-mix(in srgb, var(--bg-raised) 70%, transparent);
+    color: var(--accent);
+    box-shadow: inset 2px 0 0 var(--accent);
+    text-shadow: 0 0 8px color-mix(in srgb, var(--accent) 55%, transparent);
   }
 
   .count {
@@ -266,7 +270,8 @@
   }
 
   .playlist.active .playlist-name {
-    color: var(--accent-2);
+    color: var(--accent);
+    text-shadow: 0 0 6px color-mix(in srgb, var(--accent) 45%, transparent);
   }
 
   .playlist-sub {
@@ -292,7 +297,7 @@
     flex-direction: column;
     gap: 0.15rem;
     padding: 0.55rem 0.8rem;
-    border-top: 1px solid var(--border);
+    border-top: 1px dashed var(--border);
     font-size: 0.68rem;
     color: var(--fg);
   }

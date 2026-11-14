@@ -117,10 +117,11 @@
     align-items: center;
     gap: 1rem;
     padding: 0.6rem 1rem;
-    border-top: 1px solid var(--border);
+    border-top: 2px dashed var(--border);
     background:
-      linear-gradient(180deg, color-mix(in srgb, var(--accent-3) 8%, transparent), transparent),
-      var(--bg-raised);
+      linear-gradient(180deg, color-mix(in srgb, var(--accent) 6%, transparent), transparent),
+      color-mix(in srgb, var(--bg-raised) 55%, transparent);
+    backdrop-filter: blur(4px);
     flex: none;
     min-height: 5.2rem;
   }
@@ -138,7 +139,8 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    color: var(--fg-bright);
+    color: var(--accent);
+    text-shadow: 0 0 8px color-mix(in srgb, var(--accent) 35%, transparent);
     font-weight: 600;
     font-size: 0.92rem;
   }
@@ -171,16 +173,18 @@
     color: var(--fg-muted);
     font-size: 1rem;
     padding: 0.25rem 0.45rem;
-    border-radius: 50%;
+    border-radius: 4px;
   }
 
   .icon:hover {
-    color: var(--fg-bright);
+    color: var(--accent);
+    text-shadow: 0 0 8px var(--accent);
   }
 
   .icon.primary {
     color: var(--bg);
-    background: var(--accent-2);
+    background: var(--accent);
+    box-shadow: 0 0 14px color-mix(in srgb, var(--accent) 45%, transparent);
     width: 2.2rem;
     height: 2.2rem;
     display: grid;
@@ -188,7 +192,9 @@
   }
 
   .icon.primary:hover {
-    background: var(--fg-bright);
+    background: var(--accent-2);
+    color: var(--bg);
+    box-shadow: 0 0 14px color-mix(in srgb, var(--accent-2) 55%, transparent);
   }
 
   .icon.active {
