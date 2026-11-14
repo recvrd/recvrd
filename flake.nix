@@ -22,7 +22,7 @@
           pname = "ytermusicd-web";
           version = "0.1.1";
           src = ./crates/ytermusicd-web;
-          npmDepsHash = "sha256-R3k09yaMewaNojUaQJyN6JL9UnadoWBzbc5h2PF2PVU=";
+          npmDepsHash = "sha256-qvRf2gor+MdQP4G0a23dzkRSAepsqIOfGGhhF1cWMds=";
           buildPhase = "npm run build";
           installPhase = "cp -r dist $out";
         };
