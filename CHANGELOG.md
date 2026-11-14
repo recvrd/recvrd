@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.1.2 — 2026-11-14
+
+### Fixed
+
+- Report MPRIS attach failures. The daemon no longer logs “enabled” when the
+  D-Bus name or connection failed.
+- Retry audio startup when the output device is not ready. Play errors return
+  to the API and the web UI.
+- Use the browser `EventSource` when no test factory is set. The web UI now
+  shows the daemon as online.
+
+### Changed
+
+- Match the https://suorcd.us Cyberpunk Neon theme: navy background, magenta
+  accents, cyan dashed borders and frosted blue panels.
+
 ## 0.1.1 — 2026-11-14
 
 ### Fixed
