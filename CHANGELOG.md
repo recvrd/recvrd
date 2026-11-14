@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.3 — 2026-11-14
+
+### Added
+
+- Add a `terminal` now-playing layout based on pv-web-music. Use the
+  `terminal`/`bar` button to swap layouts. The choice persists in
+  `localStorage`.
+
+### Fixed
+
+- Return audio seek errors to the API and the web UI.
+- Keep the seek slider stable during a drag and restore the old position when
+  a seek fails.
+
 ## 0.1.2 — 2026-11-14
 
 ### Fixed
