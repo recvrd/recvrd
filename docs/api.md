@@ -80,7 +80,7 @@ curl http://127.0.0.1:8080/api/status
 ```json
 {
   "name": "ytermusicd",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "status": "ok",
   "uptime_seconds": 42,
   "auth": {
