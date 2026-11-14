@@ -57,14 +57,16 @@ export class EventStream {
 
   constructor(options: EventStreamOptions) {
     this.options = {
-      url: '/api/events',
-      create: defaultCreate,
-      offlineAfterMs: 5000,
-      retryBaseMs: 1000,
-      retryMaxMs: 30000,
-      setTimeoutFn: setTimeout,
-      clearTimeoutFn: clearTimeout,
-      ...options,
+      url: options.url ?? '/api/events',
+      create: options.create ?? defaultCreate,
+      onEvent: options.onEvent,
+      onState: options.onState,
+      onParseError: options.onParseError,
+      offlineAfterMs: options.offlineAfterMs ?? 5000,
+      retryBaseMs: options.retryBaseMs ?? 1000,
+      retryMaxMs: options.retryMaxMs ?? 30000,
+      setTimeoutFn: options.setTimeoutFn ?? setTimeout,
+      clearTimeoutFn: options.clearTimeoutFn ?? clearTimeout,
     };
   }
 
