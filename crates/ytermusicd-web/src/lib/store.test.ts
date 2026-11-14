@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiError } from './api';
-import { AppStore, removeQueueItem, reorderQueue } from './store.svelte';
+import { AppStore, PLAYER_LAYOUT_KEY, removeQueueItem, reorderQueue } from './store.svelte';
 import {
   FakeEventSource,
   downloadStatus,
@@ -53,6 +53,7 @@ describe('AppStore', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     window.history.replaceState(null, '', '/');
+    localStorage.clear();
   });
 
   afterEach(() => {
@@ -72,6 +73,23 @@ describe('AppStore', () => {
     sources[0].open();
     expect(store.connection).toBe('online');
     store.dispose();
+  });
+
+  it('toggles and persists the player layout', () => {
+    const { store } = setup();
+    expect(store.playerLayout).toBe('compact');
+
+    store.togglePlayerLayout();
+    expect(store.playerLayout).toBe('terminal');
+    expect(localStorage.getItem(PLAYER_LAYOUT_KEY)).toBe('terminal');
+
+    const { store: reloaded } = setup();
+    expect(reloaded.playerLayout).toBe('terminal');
+    reloaded.togglePlayerLayout();
+    expect(reloaded.playerLayout).toBe('compact');
+    expect(localStorage.getItem(PLAYER_LAYOUT_KEY)).toBe('compact');
+    store.dispose();
+    reloaded.dispose();
   });
 
   it('applies snapshot, playback, queue and download events', async () => {

@@ -17,6 +17,20 @@ export type View =
 
 export type ToastSeverity = 'info' | 'success' | 'warning' | 'error';
 
+export type PlayerLayout = 'compact' | 'terminal';
+
+export const PLAYER_LAYOUT_KEY = 'ytermusicd.player-layout';
+
+export function readPlayerLayout(): PlayerLayout {
+  try {
+    return globalThis.localStorage?.getItem(PLAYER_LAYOUT_KEY) === 'terminal'
+      ? 'terminal'
+      : 'compact';
+  } catch {
+    return 'compact';
+  }
+}
+
 export interface Toast {
   id: number;
   severity: ToastSeverity;
@@ -99,6 +113,7 @@ export class AppStore {
   helpOpen = $state(false);
   toasts = $state<Toast[]>([]);
   volume = $state(50);
+  playerLayout = $state<PlayerLayout>('compact');
 
   private readonly events: EventStream;
   private readonly options: Required<Pick<StoreOptions, 'toastTtlMs' | 'searchDebounceMs'>> &
@@ -115,6 +130,7 @@ export class AppStore {
       searchDebounceMs: DEFAULT_SEARCH_DEBOUNCE,
       ...options,
     };
+    this.playerLayout = readPlayerLayout();
     this.events = new EventStream({
       create: options.createEventSource,
       onEvent: (event) => this.handleEvent(event),
@@ -492,6 +508,19 @@ export class AppStore {
 
   toggleHelp(): void {
     this.helpOpen = !this.helpOpen;
+  }
+
+  setPlayerLayout(layout: PlayerLayout): void {
+    this.playerLayout = layout;
+    try {
+      globalThis.localStorage?.setItem(PLAYER_LAYOUT_KEY, layout);
+    } catch {
+      // Ignore storage failures.
+    }
+  }
+
+  togglePlayerLayout(): void {
+    this.setPlayerLayout(this.playerLayout === 'compact' ? 'terminal' : 'compact');
   }
 
   closeOverlays(): void {
