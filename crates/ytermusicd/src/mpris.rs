@@ -23,21 +23,22 @@ pub fn spawn(
                 display_name: "ytermusicd",
                 hwnd: None,
             }) {
-                Ok(controls) => {
-                    let _ = ready_tx.send(Ok(()));
-                    controls
-                }
+                Ok(controls) => controls,
                 Err(error) => {
                     let _ = ready_tx.send(Err(format!("{error:?}")));
                     return;
                 }
             };
 
-            let _ = controls.attach(move |event| {
+            if let Err(error) = controls.attach(move |event| {
                 if let Some(command) = map_event(event) {
                     let _ = commands.send(command);
                 }
-            });
+            }) {
+                let _ = ready_tx.send(Err(format!("{error:?}")));
+                return;
+            }
+            let _ = ready_tx.send(Ok(()));
 
             while let Ok(snapshot) = snapshot_rx.recv() {
                 update_controls(&mut controls, &snapshot);
