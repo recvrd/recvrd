@@ -987,7 +987,7 @@ dependencies = [
 
 [[package]]
 name = "common-structs"
-version = "0.1.0"
+version = "0.1.1"
 
 [[package]]
 name = "compact_str"
@@ -1488,7 +1488,7 @@ checksum = "0c87e182de0887fd5361989c677c4e8f5000cd9491d6d563161a8f3a5519fc7f"
 
 [[package]]
 name = "database"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "log",
  "serde_json",
@@ -1700,7 +1700,7 @@ checksum = "75b325c5dbd37f80359721ad39aca5a29fb04c89279657cffdda8736d0c0b9d2"
 
 [[package]]
 name = "download-manager"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "common-structs",
  "database",
@@ -3849,7 +3849,7 @@ checksum = "7edddbd0b52d732b21ad9a5fab5c704c14cd949e5e9a1ec5929a24fded1b904c"
 
 [[package]]
 name = "player"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "flume",
  "log",
@@ -6909,7 +6909,7 @@ dependencies = [
 
 [[package]]
 name = "ytermusic"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bincode",
  "common-structs",
@@ -6942,7 +6942,7 @@ dependencies = [
 
 [[package]]
 name = "ytermusicd"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -6972,7 +6972,7 @@ dependencies = [
 
 [[package]]
 name = "ytermusicd-api"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "schemars",
  "serde",
@@ -6982,7 +6982,7 @@ dependencies = [
 
 [[package]]
 name = "ytermusicd-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "common-structs",
  "directories",
@@ -6998,7 +6998,7 @@ dependencies = [
 
 [[package]]
 name = "ytpapi2"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "log",
  "reqwest 0.11.27",
