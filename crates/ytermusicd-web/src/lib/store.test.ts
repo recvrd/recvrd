@@ -241,6 +241,72 @@ describe('AppStore', () => {
     store.dispose();
   });
 
+  it('creates, renames and deletes playlists', async () => {
+    const { api, store } = setup();
+    await store.init();
+
+    expect(await store.createPlaylist('Mix')).toBe(true);
+    expect(api.createPlaylist).toHaveBeenCalledWith({
+      title: 'Mix',
+      description: '',
+      privacy: 'private',
+    });
+    expect(store.toasts.at(-1)?.message).toContain('Created');
+
+    await store.openPlaylist('p1');
+    expect(await store.renamePlaylist('p1', 'New name')).toBe(true);
+    expect(api.updatePlaylist).toHaveBeenCalledWith('p1', { title: 'New name' });
+    expect(store.playlist?.playlist.name).toBe('New name');
+    expect(store.view).toMatchObject({ kind: 'playlist', id: 'p1', name: 'New name' });
+
+    expect(await store.deletePlaylist('p1')).toBe(true);
+    expect(api.deletePlaylist).toHaveBeenCalledWith('p1');
+    expect(store.view).toEqual({ kind: 'library' });
+    store.dispose();
+  });
+
+  it('adds, moves and removes playlist tracks', async () => {
+    const { api, store } = setup();
+    await store.init();
+    await store.openPlaylist('p1');
+
+    expect(await store.addPlaylistTracks('p1', ['v3'])).toBe(true);
+    expect(api.addPlaylistTracks).toHaveBeenCalledWith('p1', ['v3']);
+    expect(store.playlist?.tracks.map((track) => track.video_id)).toContain('v3');
+
+    expect(await store.movePlaylistTrack('p1', 0, 1)).toBe(true);
+    expect(api.movePlaylistTrack).toHaveBeenCalledWith('p1', 0, 1);
+    expect(store.selection).toBe(1);
+
+    expect(await store.removePlaylistTrack('p1', 0)).toBe(true);
+    expect(api.removePlaylistTracks).toHaveBeenCalledWith('p1', [0]);
+    expect(store.playlist?.tracks).toHaveLength(2);
+    store.dispose();
+  });
+
+  it('adds search results to a playlist in add mode', async () => {
+    const { api, store } = setup();
+    await store.init();
+    await store.openPlaylist('p1');
+    store.openSearchForPlaylist('p1');
+
+    expect(store.searchMode).toBe('add-to-playlist');
+    expect(store.searchPlaylistId).toBe('p1');
+    expect(store.searchTargetName).toBe('Playlist p1');
+
+    await store.addSearchSelection(makeTrack('v9'));
+    expect(api.addPlaylistTracks).toHaveBeenCalledWith('p1', ['v9']);
+    expect(store.searchOpen).toBe(true);
+    expect(api.playTrack).not.toHaveBeenCalled();
+
+    store.openSearch();
+    expect(store.searchMode).toBe('normal');
+    await store.addSearchSelection(makeTrack('v8'));
+    expect(api.playTrack).toHaveBeenCalledWith(makeTrack('v8'));
+    expect(store.searchOpen).toBe(false);
+    store.dispose();
+  });
+
   it('debounces search input', async () => {
     const { api, store } = setup();
     await store.init();

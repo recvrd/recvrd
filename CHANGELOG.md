@@ -7,6 +7,11 @@
 - Cache YouTube cover art and serve it at `/api/tracks/{video_id}/cover`.
   The web UI shows thumbnails, and MPRIS sends `mpris:artUrl`.
 - Add `cover_cache_mb` to limit the cover cache. Default: 100 MiB.
+- Add playlist create, rename and delete support.
+- Add playlist track add, remove and move support.
+- Add an add-to-playlist mode to the search palette.
+- Add playlist edit tools to the MCP proxy.
+- Report auth expiry and rate limits during playlist edits.
 
 ## 0.1.3 — 2026-11-14
 

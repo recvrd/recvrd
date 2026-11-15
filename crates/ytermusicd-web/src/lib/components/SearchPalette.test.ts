@@ -63,6 +63,31 @@ describe('SearchPalette', () => {
     expect(store.searchOpen).toBe(true);
   });
 
+  it('adds tracks to a playlist in add mode', async () => {
+    const { api, store } = makeStore();
+    store.openSearchForPlaylist('p1');
+    store.searchQuery = 'test';
+    store.searchResults = makeSearchResults(
+      [makeTrack('v1')],
+      [makePlaylist('p1')],
+    );
+    render(SearchPalette, { props: { store } });
+
+    expect(screen.getByText(/Add tracks to/)).toBeInTheDocument();
+    expect(screen.queryByText('Playlist p1')).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Add Track v1 to the queue' }),
+    ).not.toBeInTheDocument();
+
+    const input = screen.getByRole('searchbox');
+    await fireEvent.keyDown(input, { key: 'Enter' });
+    await tick();
+
+    expect(api.addPlaylistTracks).toHaveBeenCalledWith('p1', ['v1']);
+    expect(api.playTrack).not.toHaveBeenCalled();
+    expect(store.searchOpen).toBe(true);
+  });
+
   it('closes on Escape and reports loading', async () => {
     const { store } = makeStore();
     store.searchLoading = true;

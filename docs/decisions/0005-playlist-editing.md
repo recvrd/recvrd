@@ -31,6 +31,12 @@ Version 1 is read-only for playlists. These actions are post-v1:
 
 The follow-up is tracked in [#51](https://github.com/suorcd/ytermusicd/issues/51).
 
+## Post-v1 update
+
+Issue #51 adds playlist create, rename, delete and track edits. This decision
+still applies to the v1 release. The `browse/edit_playlist` endpoint remains
+undocumented and needs the signed-in cookie.
+
 ## Consequences
 
 - No v1 API endpoint changes YouTube Music playlists.

@@ -127,6 +127,7 @@ pub fn video_ref(track: &Track) -> YoutubeMusicVideoRef {
         author: track.author.clone(),
         album: track.album.clone(),
         duration: track.duration.clone(),
+        set_video_id: None,
     }
 }
 

@@ -4,9 +4,65 @@
 
   let { store }: { store: AppStore } = $props();
 
+  let creating = $state(false);
+  let newName = $state('');
+  let renaming = $state(false);
+  let renameName = $state('');
+  let confirmDelete = $state(false);
+  let removal = $state<{ index: number; title: string } | null>(null);
+
   const playlistView = $derived(store.view.kind === 'playlist' ? store.view : null);
   const tracks = $derived(playlistView ? (store.playlist?.tracks ?? []) : []);
   const name = $derived(store.playlist?.playlist.name ?? playlistView?.name ?? 'Playlist');
+
+  async function create(): Promise<void> {
+    const value = newName.trim();
+    if (!value) return;
+    if (await store.createPlaylist(value)) {
+      newName = '';
+      creating = false;
+    }
+  }
+
+  function startRename(): void {
+    renameName = name;
+    renaming = true;
+  }
+
+  async function rename(): Promise<void> {
+    if (!playlistView) return;
+    const value = renameName.trim();
+    if (!value) return;
+    if (await store.renamePlaylist(playlistView.id, value)) {
+      renaming = false;
+    }
+  }
+
+  async function removePlaylist(): Promise<void> {
+    if (!playlistView) return;
+    if (await store.deletePlaylist(playlistView.id)) {
+      confirmDelete = false;
+    }
+  }
+
+  function requestRemove(index: number): void {
+    const track = tracks[index];
+    if (track) removal = { index, title: track.title };
+  }
+
+  async function confirmRemoval(): Promise<void> {
+    if (!playlistView || !removal) return;
+    if (await store.removePlaylistTrack(playlistView.id, removal.index)) {
+      removal = null;
+    }
+  }
+
+  function move(index: number, delta: number): void {
+    if (!playlistView) return;
+    const target = index + delta;
+    if (target < 0 || target >= tracks.length) return;
+    void store.movePlaylistTrack(playlistView.id, index, target);
+  }
 </script>
 
 {#if store.view.kind === 'library'}
@@ -22,7 +78,37 @@
           {/if}
         </p>
       </div>
-      <button class="refresh" onclick={() => store.loadPlaylists()}>Reload</button>
+      <div class="hero-actions">
+        {#if creating}
+          <form
+            class="inline-form"
+            onsubmit={(event) => {
+              event.preventDefault();
+              void create();
+            }}
+          >
+            <input
+              bind:value={newName}
+              placeholder="Playlist name"
+              aria-label="New playlist name"
+              maxlength="150"
+            />
+            <button type="submit" class="accent" disabled={!newName.trim()}>Create</button>
+            <button
+              type="button"
+              onclick={() => {
+                creating = false;
+                newName = '';
+              }}
+            >
+              Cancel
+            </button>
+          </form>
+        {:else}
+          <button class="accent" onclick={() => (creating = true)}>New playlist</button>
+        {/if}
+        <button class="refresh" onclick={() => store.loadPlaylists()}>Reload</button>
+      </div>
     </header>
 
     {#if store.playlistsLoading && store.playlists.length === 0}
@@ -68,7 +154,21 @@
       <div class="art large" aria-hidden="true">{name.slice(0, 1).toUpperCase()}</div>
       <div class="heading">
         <p class="eyebrow">Playlist</p>
-        <h1>{name}</h1>
+        {#if renaming}
+          <form
+            class="inline-form"
+            onsubmit={(event) => {
+              event.preventDefault();
+              void rename();
+            }}
+          >
+            <input bind:value={renameName} aria-label="Playlist name" maxlength="150" />
+            <button type="submit" class="accent" disabled={!renameName.trim()}>Save</button>
+            <button type="button" onclick={() => (renaming = false)}>Cancel</button>
+          </form>
+        {:else}
+          <h1>{name}</h1>
+        {/if}
         <p class="muted">
           {store.playlist?.playlist.subtitle ?? ''}
           {#if store.playlist}
@@ -77,21 +177,35 @@
         </p>
       </div>
       <div class="header-actions">
-        <button
-          class="accent"
-          disabled={!store.playlist || store.playlist.tracks.length === 0}
-          onclick={() => store.playPlaylist(playlistView.id)}
-        >
-          Play all
-        </button>
-        <button
-          disabled={!store.selectedTrack}
-          onclick={() => store.queueSelected()}
-        >
-          Queue selected
-        </button>
+        {#if confirmDelete}
+          <span class="confirm-text">Delete “{name}”?</span>
+          <button class="danger" onclick={removePlaylist}>Delete</button>
+          <button onclick={() => (confirmDelete = false)}>Cancel</button>
+        {:else}
+          <button
+            class="accent"
+            disabled={!store.playlist || store.playlist.tracks.length === 0}
+            onclick={() => store.playPlaylist(playlistView.id)}
+          >
+            Play all
+          </button>
+          <button disabled={!store.selectedTrack} onclick={() => store.queueSelected()}>
+            Queue selected
+          </button>
+          <button onclick={() => store.openSearchForPlaylist(playlistView.id)}>Add tracks</button>
+          <button onclick={startRename}>Rename</button>
+          <button class="danger" onclick={() => (confirmDelete = true)}>Delete</button>
+        {/if}
       </div>
     </header>
+
+    {#if removal}
+      <div class="confirm-bar" role="alert">
+        <span>Remove “{removal.title}” from this playlist?</span>
+        <button class="danger" onclick={confirmRemoval}>Remove</button>
+        <button onclick={() => (removal = null)}>Cancel</button>
+      </div>
+    {/if}
 
     <div class="table-wrap">
       {#if store.playlistLoading}
@@ -118,6 +232,9 @@
           onplay={(track) => store.playTrack(track)}
           onqueue={(track) => store.queueTrack(track)}
           onretry={(videoId) => store.retryDownload(videoId)}
+          onremove={requestRemove}
+          onmoveup={(index) => move(index, -1)}
+          onmovedown={(index) => move(index, 1)}
           emptyMessage="This playlist has no tracks."
         />
       {/if}
@@ -172,8 +289,32 @@
   }
 
   .refresh {
-    align-self: flex-start;
+    align-self: center;
     font-size: 0.78rem;
+  }
+
+  .hero-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  .inline-form {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    flex-wrap: wrap;
+  }
+
+  .inline-form input {
+    min-width: 12rem;
+  }
+
+  .inline-form button {
+    padding: 0.18rem 0.55rem;
+    font-size: 0.74rem;
   }
 
   .cards {
@@ -274,8 +415,35 @@
 
   .header-actions {
     display: flex;
+    align-items: center;
     gap: 0.4rem;
     flex: none;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  .confirm-text {
+    font-size: 0.75rem;
+    color: var(--danger);
+  }
+
+  .confirm-bar {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.45rem 1.25rem;
+    border-bottom: 1px solid var(--danger);
+    background: color-mix(in srgb, var(--danger) 12%, var(--bg-raised));
+    font-size: 0.8rem;
+  }
+
+  .confirm-bar span {
+    flex: 1;
+  }
+
+  .confirm-bar button {
+    padding: 0.15rem 0.5rem;
+    font-size: 0.75rem;
   }
 
   .table-wrap {

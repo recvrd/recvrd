@@ -47,6 +47,9 @@ pub struct YoutubeMusicVideoRef {
     pub album: String,
     pub video_id: String,
     pub duration: String,
+    /// Unique ID of one playlist item. Mutations need it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub set_video_id: Option<String>,
 }
 
 impl Display for YoutubeMusicVideoRef {
@@ -154,6 +157,7 @@ pub fn get_video_from_album(value: &Value) -> Option<YoutubeMusicVideoRef> {
         album: String::new(),
         video_id: video_id.to_string(),
         duration: String::new(),
+        set_video_id: get_set_video_id(value),
     })
 }
 
@@ -209,6 +213,19 @@ pub fn get_videoid(value: &Value) -> Option<String> {
     }
 }
 
+/// Tries to find a playlist item ID in the json.
+fn get_set_video_id(value: &Value) -> Option<String> {
+    match value {
+        Value::Array(items) => items.iter().find_map(get_set_video_id),
+        Value::Object(map) => map
+            .get("setVideoId")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .or_else(|| map.values().find_map(get_set_video_id)),
+        _ => None,
+    }
+}
+
 /// Tries to extract a video from a json value.
 /// Quite flexible to reduce odds of API change breaking this.
 pub(crate) fn get_video(value: &Value) -> Option<YoutubeMusicVideoRef> {
@@ -230,6 +247,7 @@ pub(crate) fn get_video(value: &Value) -> Option<YoutubeMusicVideoRef> {
         author: texts.next()?,
         album: texts.next().unwrap_or_default(),
         duration: String::new(),
+        set_video_id: get_set_video_id(value),
     })
 }
 
@@ -275,6 +293,32 @@ mod tests {
         assert_eq!(video.title, "Song");
         assert_eq!(video.author, "Artist");
         assert_eq!(video.album, "Album");
+        assert_eq!(video.set_video_id, None);
+    }
+
+    #[test]
+    fn extracts_playlist_item_id() {
+        let mut value = search_video();
+        value["menu"] = json!({
+            "menuRenderer": {
+                "items": [{
+                    "menuServiceItemRenderer": {
+                        "serviceEndpoint": {
+                            "playlistEditEndpoint": {
+                                "actions": [{
+                                    "setVideoId": "set-1",
+                                    "removedVideoId": "vid123",
+                                    "action": "ACTION_REMOVE_VIDEO"
+                                }]
+                            }
+                        }
+                    }
+                }]
+            }
+        });
+
+        let video = get_video(&value).expect("video");
+        assert_eq!(video.set_video_id.as_deref(), Some("set-1"));
     }
 
     #[test]
@@ -346,5 +390,6 @@ mod tests {
         let video = get_video_from_album(&value).expect("video");
         assert_eq!(video.video_id, "albumvid");
         assert_eq!(video.title, "Album Song");
+        assert_eq!(video.set_video_id, None);
     }
 }

@@ -1,5 +1,7 @@
+import type { CreatePlaylistRequest } from '@api/CreatePlaylistRequest';
 import type { DownloadStatus } from '@api/DownloadStatus';
 import type { ErrorEnvelope } from '@api/ErrorEnvelope';
+import type { OkResponse } from '@api/OkResponse';
 import type { PlaybackSnapshot } from '@api/PlaybackSnapshot';
 import type { Playlist } from '@api/Playlist';
 import type { PlaylistDetail } from '@api/PlaylistDetail';
@@ -8,6 +10,7 @@ import type { RepeatMode } from '@api/RepeatMode';
 import type { SearchResults } from '@api/SearchResults';
 import type { Status } from '@api/Status';
 import type { Track } from '@api/Track';
+import type { UpdatePlaylistRequest } from '@api/UpdatePlaylistRequest';
 
 export class ApiError extends Error {
   readonly code: string;
@@ -25,6 +28,12 @@ export interface YtermusicdApi {
   status(): Promise<Status>;
   playlists(): Promise<Playlist[]>;
   playlist(id: string): Promise<PlaylistDetail>;
+  createPlaylist(request: CreatePlaylistRequest): Promise<Playlist>;
+  updatePlaylist(id: string, request: UpdatePlaylistRequest): Promise<Playlist>;
+  deletePlaylist(id: string): Promise<OkResponse>;
+  addPlaylistTracks(id: string, videoIds: string[]): Promise<Track[]>;
+  removePlaylistTracks(id: string, indices: number[]): Promise<Track[]>;
+  movePlaylistTrack(id: string, from: number, to: number): Promise<Track[]>;
   search(query: string): Promise<SearchResults>;
   queue(): Promise<Queue>;
   playPlaylist(playlistId: string): Promise<Status>;
@@ -111,10 +120,36 @@ export function createApi(baseUrl = ''): YtermusicdApi {
       body: body === undefined ? undefined : JSON.stringify(body),
     });
 
+  const patch = <T>(path: string, body: unknown) =>
+    request<T>(path, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    });
+
+  const remove = <T>(path: string) => request<T>(path, { method: 'DELETE' });
+
   return {
     status: () => request<Status>('/api/status'),
     playlists: () => request<Playlist[]>('/api/playlists'),
     playlist: (id) => request<PlaylistDetail>(`/api/playlists/${encodeURIComponent(id)}`),
+    createPlaylist: (requestBody) => post<Playlist>('/api/playlists', requestBody),
+    updatePlaylist: (id, requestBody) =>
+      patch<Playlist>(`/api/playlists/${encodeURIComponent(id)}`, requestBody),
+    deletePlaylist: (id) =>
+      remove<OkResponse>(`/api/playlists/${encodeURIComponent(id)}`),
+    addPlaylistTracks: (id, videoIds) =>
+      post<Track[]>(`/api/playlists/${encodeURIComponent(id)}/tracks`, {
+        video_ids: videoIds,
+      }),
+    removePlaylistTracks: (id, indices) =>
+      post<Track[]>(`/api/playlists/${encodeURIComponent(id)}/tracks/remove`, {
+        indices,
+      }),
+    movePlaylistTrack: (id, from, to) =>
+      post<Track[]>(`/api/playlists/${encodeURIComponent(id)}/tracks/move`, {
+        from,
+        to,
+      }),
     search: (query) => request<SearchResults>(`/api/search?q=${encodeURIComponent(query)}`),
     queue: () => request<Queue>('/api/queue'),
     playPlaylist: (playlistId) => post<Status>('/api/play/playlist', { playlist_id: playlistId }),

@@ -10,11 +10,15 @@
   let active = $state(0);
 
   function buildEntries(): SearchEntry[] {
-    return [
-      ...(store.searchResults?.tracks.map((track) => ({ kind: 'track' as const, track })) ?? []),
-      ...(store.searchResults?.playlists.map((playlist) => ({ kind: 'playlist' as const, playlist })) ??
-        []),
-    ];
+    const tracks =
+      store.searchResults?.tracks.map((track) => ({ kind: 'track' as const, track })) ?? [];
+    if (store.searchMode === 'add-to-playlist') return tracks;
+    const playlists =
+      store.searchResults?.playlists.map((playlist) => ({
+        kind: 'playlist' as const,
+        playlist,
+      })) ?? [];
+    return [...tracks, ...playlists];
   }
 
   const entries = $derived(buildEntries());
@@ -38,8 +42,7 @@
 
   function activate(entry: SearchEntry): void {
     if (entry.kind === 'track') {
-      void store.playTrack(entry.track);
-      store.closeSearch();
+      void store.addSearchSelection(entry.track);
     } else {
       void store.openPlaylist(entry.playlist.id, entry.playlist.name);
       store.closeSearch();
@@ -105,17 +108,22 @@
       class="palette"
       role="dialog"
       aria-modal="true"
-      aria-label="Search YouTube Music"
+      aria-label={store.searchMode === 'add-to-playlist' ? 'Add tracks to a playlist' : 'Search YouTube Music'}
       tabindex="-1"
       bind:this={dialog}
     >
+      {#if store.searchMode === 'add-to-playlist'}
+        <p class="mode muted">Add tracks to “{store.searchTargetName ?? 'this playlist'}”</p>
+      {/if}
       <div class="search-row">
         <span aria-hidden="true">⌕</span>
         <input
           bind:this={input}
           type="search"
           value={store.searchQuery}
-          placeholder="Search tracks and playlists…"
+          placeholder={store.searchMode === 'add-to-playlist'
+            ? 'Search tracks to add…'
+            : 'Search tracks and playlists…'}
           aria-label="Search"
           aria-controls="search-results"
           aria-activedescendant={entries.length ? `search-entry-${active}` : undefined}
@@ -131,7 +139,11 @@
             <div class="skeleton result-skeleton"></div>
           {/each}
         {:else if store.searchQuery.trim() === ''}
-          <p class="hint muted">Type to search. Use ↑ and ↓ to select. Press Enter to play.</p>
+          <p class="hint muted">
+            {store.searchMode === 'add-to-playlist'
+              ? 'Type to search. Press Enter to add the track.'
+              : 'Type to search. Use ↑ and ↓ to select. Press Enter to play.'}
+          </p>
         {:else if !store.searchResults || entries.length === 0}
           <p class="hint muted">No results for “{store.searchQuery}”.</p>
         {:else}
@@ -160,7 +172,7 @@
                   <span class="duration">{entry.track.duration}</span>
                 {/if}
               </button>
-              {#if entry.kind === 'track'}
+              {#if entry.kind === 'track' && store.searchMode !== 'add-to-playlist'}
                 <button
                   class="queue"
                   title="Add to queue"
@@ -212,6 +224,12 @@
     gap: 0.55rem;
     padding: 0.7rem 0.85rem;
     border-bottom: 1px dotted var(--accent);
+  }
+
+  .mode {
+    margin: 0;
+    padding: 0.55rem 0.9rem 0;
+    font-size: 0.72rem;
   }
 
   .search-row > span {

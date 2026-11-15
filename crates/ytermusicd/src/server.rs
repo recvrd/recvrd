@@ -10,6 +10,7 @@ use axum::{
 };
 use serde::Deserialize;
 use std::{
+    collections::HashSet,
     convert::Infallible,
     io,
     net::SocketAddr,
@@ -22,12 +23,14 @@ use tokio::{
     sync::{Mutex, mpsc::UnboundedSender},
 };
 use ytermusicd_api::{
-    ApiError, AuthState, AuthStatus as ApiAuthStatus, DownloadStatus, DownloadSummary,
-    ErrorEnvelope, Event, EventKind, PlayNextRequest, PlayPlaylistRequest, PlayTrackRequest,
+    AddPlaylistTracksRequest, ApiError, AuthState, AuthStatus as ApiAuthStatus,
+    CreatePlaylistRequest, DownloadStatus, DownloadSummary, ErrorEnvelope, Event, EventKind,
+    MovePlaylistTrackRequest, OkResponse, PlayNextRequest, PlayPlaylistRequest, PlayTrackRequest,
     PlaybackSnapshot as ApiPlaybackSnapshot, PlaybackState, Playlist, PlaylistDetail,
-    Queue as ApiQueue, QueueItem as ApiQueueItem, QueueRequest, RemoveQueueRequest,
-    ReorderQueueRequest, RepeatMode as ApiRepeatMode, RepeatRequest, RetryDownloadRequest,
-    SearchResults, SeekRequest, ShuffleRequest, Status, Track, VolumeRequest,
+    Queue as ApiQueue, QueueItem as ApiQueueItem, QueueRequest, RemovePlaylistTracksRequest,
+    RemoveQueueRequest, ReorderQueueRequest, RepeatMode as ApiRepeatMode, RepeatRequest,
+    RetryDownloadRequest, SearchResults, SeekRequest, ShuffleRequest, Status, Track,
+    UpdatePlaylistRequest, VolumeRequest,
 };
 use ytermusicd_core::{
     AudioSink, AuthState as CoreAuthState, AuthStatus, CoreEvent, EventBus, PlaybackCommand,
@@ -38,7 +41,7 @@ use ytermusicd_core::{
 use crate::{
     artwork::ArtworkCache,
     downloads::DownloadControl,
-    music::{MusicApi, core_track},
+    music::{MusicApi, PlaylistEditError, core_track},
 };
 
 pub struct AppState<S: AudioSink + Send + 'static> {
@@ -143,8 +146,17 @@ impl IntoResponse for ApiFailure {
 pub fn router<S: AudioSink + Send + 'static>(state: AppState<S>) -> Router {
     Router::new()
         .route("/api/status", get(status))
-        .route("/api/playlists", get(playlists))
-        .route("/api/playlists/{id}", get(playlist))
+        .route("/api/playlists", get(playlists).post(create_playlist))
+        .route(
+            "/api/playlists/{id}",
+            get(playlist).patch(update_playlist).delete(delete_playlist),
+        )
+        .route("/api/playlists/{id}/tracks", post(add_playlist_tracks))
+        .route(
+            "/api/playlists/{id}/tracks/remove",
+            post(remove_playlist_tracks),
+        )
+        .route("/api/playlists/{id}/tracks/move", post(move_playlist_track))
         .route("/api/search", get(search))
         .route("/api/tracks/{video_id}/cover", get(cover))
         .route("/api/queue", get(queue).post(queue_add).delete(queue_clear))
@@ -206,6 +218,204 @@ async fn playlist<S: AudioSink + Send + 'static>(
         .await
         .map_err(ApiFailure::upstream)?;
     Ok(Json(PlaylistDetail { playlist, tracks }))
+}
+
+async fn create_playlist<S: AudioSink + Send + 'static>(
+    State(state): State<AppState<S>>,
+    Json(request): Json<CreatePlaylistRequest>,
+) -> Result<(StatusCode, Json<Playlist>), ApiFailure> {
+    let request = validate_create_playlist(request)?;
+    let playlist = state
+        .music
+        .create_playlist(&request)
+        .await
+        .map_err(playlist_failure)?;
+    Ok((StatusCode::CREATED, Json(playlist)))
+}
+
+async fn update_playlist<S: AudioSink + Send + 'static>(
+    State(state): State<AppState<S>>,
+    AxumPath(id): AxumPath<String>,
+    Json(request): Json<UpdatePlaylistRequest>,
+) -> Result<Json<Playlist>, ApiFailure> {
+    validate_playlist_id(&id)?;
+    let request = UpdatePlaylistRequest {
+        title: validate_title(&request.title)?,
+    };
+    state
+        .music
+        .update_playlist(&id, &request)
+        .await
+        .map(Json)
+        .map_err(playlist_failure)
+}
+
+async fn delete_playlist<S: AudioSink + Send + 'static>(
+    State(state): State<AppState<S>>,
+    AxumPath(id): AxumPath<String>,
+) -> Result<Json<OkResponse>, ApiFailure> {
+    validate_playlist_id(&id)?;
+    state
+        .music
+        .delete_playlist(&id)
+        .await
+        .map_err(playlist_failure)?;
+    Ok(Json(OkResponse { ok: true }))
+}
+
+async fn add_playlist_tracks<S: AudioSink + Send + 'static>(
+    State(state): State<AppState<S>>,
+    AxumPath(id): AxumPath<String>,
+    Json(request): Json<AddPlaylistTracksRequest>,
+) -> Result<Json<Vec<Track>>, ApiFailure> {
+    validate_playlist_id(&id)?;
+    validate_video_ids(&request.video_ids)?;
+    state
+        .music
+        .add_playlist_tracks(&id, &request.video_ids)
+        .await
+        .map(Json)
+        .map_err(playlist_failure)
+}
+
+async fn remove_playlist_tracks<S: AudioSink + Send + 'static>(
+    State(state): State<AppState<S>>,
+    AxumPath(id): AxumPath<String>,
+    Json(request): Json<RemovePlaylistTracksRequest>,
+) -> Result<Json<Vec<Track>>, ApiFailure> {
+    validate_playlist_id(&id)?;
+    validate_indices(&request.indices)?;
+    state
+        .music
+        .remove_playlist_tracks(&id, &request.indices)
+        .await
+        .map(Json)
+        .map_err(playlist_failure)
+}
+
+async fn move_playlist_track<S: AudioSink + Send + 'static>(
+    State(state): State<AppState<S>>,
+    AxumPath(id): AxumPath<String>,
+    Json(request): Json<MovePlaylistTrackRequest>,
+) -> Result<Json<Vec<Track>>, ApiFailure> {
+    validate_playlist_id(&id)?;
+    state
+        .music
+        .move_playlist_track(&id, request.from, request.to)
+        .await
+        .map(Json)
+        .map_err(playlist_failure)
+}
+
+const MAX_PLAYLIST_TITLE: usize = 150;
+const MAX_PLAYLIST_DESCRIPTION: usize = 5000;
+const MAX_PLAYLIST_TRACKS_PER_REQUEST: usize = 100;
+
+fn validate_title(title: &str) -> Result<String, ApiFailure> {
+    let title = title.trim();
+    if title.is_empty() {
+        return Err(ApiFailure::bad_request("playlist title must not be empty"));
+    }
+    if title.chars().count() > MAX_PLAYLIST_TITLE {
+        return Err(ApiFailure::bad_request(format!(
+            "playlist title must be {MAX_PLAYLIST_TITLE} characters or fewer"
+        )));
+    }
+    if title.chars().any(char::is_control) {
+        return Err(ApiFailure::bad_request(
+            "playlist title must not contain control characters",
+        ));
+    }
+    if title.contains('<') || title.contains('>') {
+        return Err(ApiFailure::bad_request(
+            "playlist title must not contain < or >",
+        ));
+    }
+    Ok(title.to_string())
+}
+
+fn validate_create_playlist(
+    mut request: CreatePlaylistRequest,
+) -> Result<CreatePlaylistRequest, ApiFailure> {
+    request.title = validate_title(&request.title)?;
+    request.description = request.description.trim().to_string();
+    if request.description.chars().count() > MAX_PLAYLIST_DESCRIPTION {
+        return Err(ApiFailure::bad_request(format!(
+            "playlist description must be {MAX_PLAYLIST_DESCRIPTION} characters or fewer"
+        )));
+    }
+    Ok(request)
+}
+
+fn validate_playlist_id(id: &str) -> Result<(), ApiFailure> {
+    if id.is_empty()
+        || id.len() > 128
+        || !id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+    {
+        return Err(ApiFailure::bad_request("invalid playlist ID"));
+    }
+    Ok(())
+}
+
+fn is_video_id(value: &str) -> bool {
+    value.len() == 11
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+}
+
+fn validate_video_ids(video_ids: &[String]) -> Result<(), ApiFailure> {
+    if video_ids.is_empty() {
+        return Err(ApiFailure::bad_request("select at least one track"));
+    }
+    if video_ids.len() > MAX_PLAYLIST_TRACKS_PER_REQUEST {
+        return Err(ApiFailure::bad_request(format!(
+            "add no more than {MAX_PLAYLIST_TRACKS_PER_REQUEST} tracks"
+        )));
+    }
+    let mut seen = HashSet::new();
+    for video_id in video_ids {
+        if !is_video_id(video_id) {
+            return Err(ApiFailure::bad_request(format!(
+                "invalid video ID {video_id}"
+            )));
+        }
+        if !seen.insert(video_id) {
+            return Err(ApiFailure::bad_request(format!(
+                "duplicate video ID {video_id}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_indices(indices: &[usize]) -> Result<(), ApiFailure> {
+    if indices.is_empty() {
+        return Err(ApiFailure::bad_request("select at least one track"));
+    }
+    if indices.len() > MAX_PLAYLIST_TRACKS_PER_REQUEST {
+        return Err(ApiFailure::bad_request(format!(
+            "remove no more than {MAX_PLAYLIST_TRACKS_PER_REQUEST} tracks"
+        )));
+    }
+    let mut seen = HashSet::new();
+    for index in indices {
+        if !seen.insert(*index) {
+            return Err(ApiFailure::bad_request(format!(
+                "duplicate track index {index}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn playlist_failure(error: PlaylistEditError) -> ApiFailure {
+    match error {
+        PlaylistEditError::Invalid(message) => ApiFailure::bad_request(message),
+        PlaylistEditError::Upstream(message) => ApiFailure::upstream(message),
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -824,7 +1034,10 @@ mod tests {
         }
     }
 
-    struct MockMusicApi;
+    #[derive(Default, Clone)]
+    struct MockMusicApi {
+        edits: Arc<std::sync::Mutex<Vec<String>>>,
+    }
 
     fn track(id: &str) -> Track {
         Track {
@@ -856,6 +1069,79 @@ mod tests {
                 playlists: vec![],
             })
         }
+
+        async fn create_playlist(
+            &self,
+            request: &CreatePlaylistRequest,
+        ) -> Result<Playlist, PlaylistEditError> {
+            self.edits
+                .lock()
+                .unwrap()
+                .push(format!("create {}", request.title));
+            Ok(Playlist {
+                id: "VLnew".to_string(),
+                name: request.title.clone(),
+                subtitle: "Private playlist".to_string(),
+            })
+        }
+
+        async fn update_playlist(
+            &self,
+            id: &str,
+            request: &UpdatePlaylistRequest,
+        ) -> Result<Playlist, PlaylistEditError> {
+            self.edits
+                .lock()
+                .unwrap()
+                .push(format!("rename {id} {}", request.title));
+            Ok(Playlist {
+                id: id.to_string(),
+                name: request.title.clone(),
+                subtitle: String::new(),
+            })
+        }
+
+        async fn delete_playlist(&self, id: &str) -> Result<(), PlaylistEditError> {
+            self.edits.lock().unwrap().push(format!("delete {id}"));
+            Ok(())
+        }
+
+        async fn add_playlist_tracks(
+            &self,
+            id: &str,
+            video_ids: &[String],
+        ) -> Result<Vec<Track>, PlaylistEditError> {
+            self.edits
+                .lock()
+                .unwrap()
+                .push(format!("add {id} {}", video_ids.join(",")));
+            Ok(vec![track("v1")])
+        }
+
+        async fn remove_playlist_tracks(
+            &self,
+            id: &str,
+            indices: &[usize],
+        ) -> Result<Vec<Track>, PlaylistEditError> {
+            self.edits
+                .lock()
+                .unwrap()
+                .push(format!("remove {id} {indices:?}"));
+            Ok(vec![track("v1")])
+        }
+
+        async fn move_playlist_track(
+            &self,
+            id: &str,
+            from: usize,
+            to: usize,
+        ) -> Result<Vec<Track>, PlaylistEditError> {
+            self.edits
+                .lock()
+                .unwrap()
+                .push(format!("move {id} {from} {to}"));
+            Ok(vec![track("v1")])
+        }
     }
 
     struct FailingMusicApi;
@@ -872,6 +1158,62 @@ mod tests {
 
         async fn search(&self, _query: &str) -> Result<SearchResults, String> {
             Err("upstream unavailable".to_string())
+        }
+
+        async fn create_playlist(
+            &self,
+            _request: &CreatePlaylistRequest,
+        ) -> Result<Playlist, PlaylistEditError> {
+            Err(PlaylistEditError::Upstream(
+                "upstream unavailable".to_string(),
+            ))
+        }
+
+        async fn update_playlist(
+            &self,
+            _id: &str,
+            _request: &UpdatePlaylistRequest,
+        ) -> Result<Playlist, PlaylistEditError> {
+            Err(PlaylistEditError::Upstream(
+                "upstream unavailable".to_string(),
+            ))
+        }
+
+        async fn delete_playlist(&self, _id: &str) -> Result<(), PlaylistEditError> {
+            Err(PlaylistEditError::Upstream(
+                "upstream unavailable".to_string(),
+            ))
+        }
+
+        async fn add_playlist_tracks(
+            &self,
+            _id: &str,
+            _video_ids: &[String],
+        ) -> Result<Vec<Track>, PlaylistEditError> {
+            Err(PlaylistEditError::Upstream(
+                "upstream unavailable".to_string(),
+            ))
+        }
+
+        async fn remove_playlist_tracks(
+            &self,
+            _id: &str,
+            _indices: &[usize],
+        ) -> Result<Vec<Track>, PlaylistEditError> {
+            Err(PlaylistEditError::Upstream(
+                "upstream unavailable".to_string(),
+            ))
+        }
+
+        async fn move_playlist_track(
+            &self,
+            _id: &str,
+            _from: usize,
+            _to: usize,
+        ) -> Result<Vec<Track>, PlaylistEditError> {
+            Err(PlaylistEditError::Upstream(
+                "upstream unavailable".to_string(),
+            ))
         }
     }
 
@@ -931,7 +1273,7 @@ mod tests {
     }
 
     fn test_state() -> AppState<MockSink> {
-        test_state_with(Arc::new(MockMusicApi))
+        test_state_with(Arc::new(MockMusicApi::default()))
     }
 
     fn test_state_with(music: Arc<dyn MusicApi>) -> AppState<MockSink> {
@@ -952,7 +1294,7 @@ mod tests {
 
     fn test_state_with_artwork(artwork: Arc<ArtworkCache>) -> AppState<MockSink> {
         test_state_with_downloads_and_artwork(
-            Arc::new(MockMusicApi),
+            Arc::new(MockMusicApi::default()),
             Arc::new(MockDownloads::default()),
             artwork,
         )
@@ -1362,7 +1704,7 @@ mod tests {
     async fn commands_queue_downloads() {
         let downloads = Arc::new(MockDownloads::default());
         let (base, server) = start_server(test_state_with_downloads(
-            Arc::new(MockMusicApi),
+            Arc::new(MockMusicApi::default()),
             downloads.clone(),
         ))
         .await;
@@ -1406,8 +1748,11 @@ mod tests {
             retryable: true,
             ..MockDownloads::default()
         });
-        let (base, server) =
-            start_server(test_state_with_downloads(Arc::new(MockMusicApi), downloads)).await;
+        let (base, server) = start_server(test_state_with_downloads(
+            Arc::new(MockMusicApi::default()),
+            downloads,
+        ))
+        .await;
         let client = reqwest::Client::new();
 
         let accepted = client
@@ -1662,6 +2007,87 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn playlist_mutations_forward_validated_requests() {
+        let music = Arc::new(MockMusicApi::default());
+        let (base, server) = start_server(test_state_with(music.clone())).await;
+        let client = reqwest::Client::new();
+
+        let created = client
+            .post(format!("{base}/api/playlists"))
+            .json(&serde_json::json!({
+                "title": "  New Mix  ",
+                "description": "  mix  ",
+                "privacy": "unlisted"
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(created.status(), reqwest::StatusCode::CREATED);
+        let created: serde_json::Value = created.json().await.unwrap();
+        assert_eq!(created["id"], "VLnew");
+        assert_eq!(created["name"], "New Mix");
+
+        let renamed = client
+            .patch(format!("{base}/api/playlists/VLnew"))
+            .json(&UpdatePlaylistRequest {
+                title: "  Renamed  ".to_string(),
+            })
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(renamed.status(), reqwest::StatusCode::OK);
+        let renamed: serde_json::Value = renamed.json().await.unwrap();
+        assert_eq!(renamed["name"], "Renamed");
+
+        let deleted = client
+            .delete(format!("{base}/api/playlists/VLnew"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(deleted.status(), reqwest::StatusCode::OK);
+        assert_eq!(
+            deleted.json::<serde_json::Value>().await.unwrap()["ok"],
+            true
+        );
+
+        let added = client
+            .post(format!("{base}/api/playlists/VLnew/tracks"))
+            .json(&AddPlaylistTracksRequest {
+                video_ids: vec!["abcdefghijk".to_string()],
+            })
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(added.status(), reqwest::StatusCode::OK);
+        assert_eq!(added.json::<Vec<Track>>().await.unwrap().len(), 1);
+
+        let removed = client
+            .post(format!("{base}/api/playlists/VLnew/tracks/remove"))
+            .json(&RemovePlaylistTracksRequest { indices: vec![0] })
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(removed.status(), reqwest::StatusCode::OK);
+
+        let moved = client
+            .post(format!("{base}/api/playlists/VLnew/tracks/move"))
+            .json(&MovePlaylistTrackRequest { from: 0, to: 1 })
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(moved.status(), reqwest::StatusCode::OK);
+
+        let calls = music.edits.lock().unwrap().clone();
+        assert!(calls.contains(&"create New Mix".to_string()));
+        assert!(calls.contains(&"rename VLnew Renamed".to_string()));
+        assert!(calls.contains(&"delete VLnew".to_string()));
+        assert!(calls.contains(&"add VLnew abcdefghijk".to_string()));
+        assert!(calls.contains(&"remove VLnew [0]".to_string()));
+        assert!(calls.contains(&"move VLnew 0 1".to_string()));
+        server.abort();
+    }
+
+    #[tokio::test]
     async fn rejects_invalid_and_unavailable_covers() {
         let dir = tempfile::tempdir().unwrap();
         let covers = Arc::new(FakeCovers::new());
@@ -1691,6 +2117,119 @@ mod tests {
         assert_eq!(missing.status(), reqwest::StatusCode::NOT_FOUND);
         assert_eq!(covers.calls(), 1);
         server.abort();
+    }
+
+    #[tokio::test]
+    async fn playlist_mutations_reject_invalid_input() {
+        let music = Arc::new(MockMusicApi::default());
+        let (base, server) = start_server(test_state_with(music.clone())).await;
+        let client = reqwest::Client::new();
+
+        for body in [
+            serde_json::json!({"title": "   "}),
+            serde_json::json!({"title": "Bad <name>"}),
+            serde_json::json!({"title": "x".repeat(151)}),
+            serde_json::json!({"title": "ok", "description": "x".repeat(5001)}),
+        ] {
+            let response = client
+                .post(format!("{base}/api/playlists"))
+                .json(&body)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                reqwest::StatusCode::BAD_REQUEST,
+                "{body}"
+            );
+        }
+
+        let bad_video = client
+            .post(format!("{base}/api/playlists/VL1/tracks"))
+            .json(&AddPlaylistTracksRequest {
+                video_ids: vec!["short".to_string()],
+            })
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(bad_video.status(), reqwest::StatusCode::BAD_REQUEST);
+
+        let duplicate_video = client
+            .post(format!("{base}/api/playlists/VL1/tracks"))
+            .json(&AddPlaylistTracksRequest {
+                video_ids: vec!["abcdefghijk".to_string(), "abcdefghijk".to_string()],
+            })
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(duplicate_video.status(), reqwest::StatusCode::BAD_REQUEST);
+
+        let empty_remove = client
+            .post(format!("{base}/api/playlists/VL1/tracks/remove"))
+            .json(&RemovePlaylistTracksRequest { indices: vec![] })
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(empty_remove.status(), reqwest::StatusCode::BAD_REQUEST);
+
+        let duplicate_remove = client
+            .post(format!("{base}/api/playlists/VL1/tracks/remove"))
+            .json(&RemovePlaylistTracksRequest {
+                indices: vec![0, 0],
+            })
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(duplicate_remove.status(), reqwest::StatusCode::BAD_REQUEST);
+
+        let bad_id = client
+            .patch(format!("{base}/api/playlists/bad!id"))
+            .json(&UpdatePlaylistRequest {
+                title: "ok".to_string(),
+            })
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(bad_id.status(), reqwest::StatusCode::BAD_REQUEST);
+
+        assert!(music.edits.lock().unwrap().is_empty());
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn playlist_edit_upstream_failures_are_502() {
+        let (base, server) = start_server(test_state_with(Arc::new(FailingMusicApi))).await;
+        let response = reqwest::Client::new()
+            .post(format!("{base}/api/playlists"))
+            .json(&CreatePlaylistRequest {
+                title: "Mix".to_string(),
+                description: String::new(),
+                privacy: Default::default(),
+            })
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::BAD_GATEWAY);
+        let body: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(body["error"]["code"], "upstream_error");
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("upstream unavailable")
+        );
+        server.abort();
+    }
+
+    #[test]
+    fn playlist_failures_map_to_http_statuses() {
+        let invalid = playlist_failure(PlaylistEditError::Invalid("bad".to_string()));
+        assert_eq!(invalid.status, StatusCode::BAD_REQUEST);
+        assert_eq!(invalid.error.code, "bad_request");
+
+        let upstream = playlist_failure(PlaylistEditError::Upstream("down".to_string()));
+        assert_eq!(upstream.status, StatusCode::BAD_GATEWAY);
+        assert_eq!(upstream.error.code, "upstream_error");
     }
 
     #[tokio::test]

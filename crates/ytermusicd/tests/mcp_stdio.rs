@@ -144,9 +144,10 @@ async fn mcp_stdio_lists_tools_and_exits_on_eof() {
         .iter()
         .map(|tool| tool["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names.len(), 13);
+    assert_eq!(names.len(), 19);
     assert!(names.contains(&"search"));
     assert!(names.contains(&"download_status"));
+    assert!(names.contains(&"create_playlist"));
 
     let call = responses
         .iter()

@@ -14,6 +14,9 @@
     onplay,
     onqueue,
     onretry,
+    onremove,
+    onmoveup,
+    onmovedown,
     emptyMessage = 'No tracks here.',
   }: {
     tracks: Track[];
@@ -24,6 +27,9 @@
     onplay: (track: Track) => void;
     onqueue: (track: Track) => void;
     onretry: (videoId: string) => void;
+    onremove?: (index: number) => void;
+    onmoveup?: (index: number) => void;
+    onmovedown?: (index: number) => void;
     emptyMessage?: string;
   } = $props();
 
@@ -65,7 +71,7 @@
 
   function buildMenu(): MenuItem[] {
     if (!menu) return [];
-    return [
+    const items: MenuItem[] = [
       { label: 'Play now', action: () => onplay(menu!.track) },
       { label: 'Add to queue', action: () => onqueue(menu!.track) },
       {
@@ -74,6 +80,27 @@
         action: () => onretry(menu!.track.video_id),
       },
     ];
+    if (onmoveup) {
+      items.push({
+        label: 'Move up',
+        disabled: menu.index === 0,
+        action: () => onmoveup(menu!.index),
+      });
+    }
+    if (onmovedown) {
+      items.push({
+        label: 'Move down',
+        disabled: menu.index === tracks.length - 1,
+        action: () => onmovedown(menu!.index),
+      });
+    }
+    if (onremove) {
+      items.push({
+        label: 'Remove from playlist',
+        action: () => onremove(menu!.index),
+      });
+    }
+    return items;
   }
 
   const menuItems = $derived(buildMenu());
