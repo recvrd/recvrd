@@ -11,8 +11,10 @@ use rmcp::{
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{fmt, time::Duration};
 use ytermusicd_api::{
-    DownloadSummary, ErrorEnvelope, PlayPlaylistRequest, PlayTrackRequest, Playlist,
-    PlaylistDetail, Queue, QueueItem, QueueRequest, SearchResults, Status, Track,
+    AddPlaylistTracksRequest, CreatePlaylistRequest, DownloadSummary, ErrorEnvelope,
+    MovePlaylistTrackRequest, OkResponse, PlayPlaylistRequest, PlayTrackRequest, Playlist,
+    PlaylistDetail, PlaylistPrivacy, Queue, QueueItem, QueueRequest, RemovePlaylistTracksRequest,
+    SearchResults, Status, Track, UpdatePlaylistRequest,
 };
 
 const DEFAULT_URL: &str = "http://127.0.0.1:8080";
@@ -105,6 +107,23 @@ impl DaemonClient {
         .await
     }
 
+    async fn patch<T: DeserializeOwned, B: Serialize>(
+        &self,
+        path: &str,
+        body: &B,
+    ) -> Result<T, DaemonError> {
+        self.request(
+            reqwest::Method::PATCH,
+            path,
+            Some(serde_json::to_value(body).map_err(DaemonError::invalid_response)?),
+        )
+        .await
+    }
+
+    async fn delete<T: DeserializeOwned>(&self, path: &str) -> Result<T, DaemonError> {
+        self.request(reqwest::Method::DELETE, path, None).await
+    }
+
     async fn request<T: DeserializeOwned>(
         &self,
         method: reqwest::Method,
@@ -143,6 +162,64 @@ impl DaemonClient {
     pub async fn playlist(&self, playlist_id: &str) -> Result<PlaylistDetail, DaemonError> {
         self.get(&format!("/api/playlists/{}", encode(playlist_id)))
             .await
+    }
+
+    pub async fn create_playlist(
+        &self,
+        request: &CreatePlaylistRequest,
+    ) -> Result<Playlist, DaemonError> {
+        self.post("/api/playlists", request).await
+    }
+
+    pub async fn update_playlist(
+        &self,
+        playlist_id: &str,
+        request: &UpdatePlaylistRequest,
+    ) -> Result<Playlist, DaemonError> {
+        self.patch(&format!("/api/playlists/{}", encode(playlist_id)), request)
+            .await
+    }
+
+    pub async fn delete_playlist(&self, playlist_id: &str) -> Result<OkResponse, DaemonError> {
+        self.delete(&format!("/api/playlists/{}", encode(playlist_id)))
+            .await
+    }
+
+    pub async fn add_playlist_tracks(
+        &self,
+        playlist_id: &str,
+        video_ids: Vec<String>,
+    ) -> Result<Vec<Track>, DaemonError> {
+        self.post(
+            &format!("/api/playlists/{}/tracks", encode(playlist_id)),
+            &AddPlaylistTracksRequest { video_ids },
+        )
+        .await
+    }
+
+    pub async fn remove_playlist_tracks(
+        &self,
+        playlist_id: &str,
+        indices: Vec<usize>,
+    ) -> Result<Vec<Track>, DaemonError> {
+        self.post(
+            &format!("/api/playlists/{}/tracks/remove", encode(playlist_id)),
+            &RemovePlaylistTracksRequest { indices },
+        )
+        .await
+    }
+
+    pub async fn move_playlist_track(
+        &self,
+        playlist_id: &str,
+        from: usize,
+        to: usize,
+    ) -> Result<Vec<Track>, DaemonError> {
+        self.post(
+            &format!("/api/playlists/{}/tracks/move", encode(playlist_id)),
+            &MovePlaylistTrackRequest { from, to },
+        )
+        .await
     }
 
     pub async fn search(&self, query: &str) -> Result<SearchResults, DaemonError> {
@@ -243,6 +320,52 @@ pub struct PlaylistArgs {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct CreatePlaylistArgs {
+    /// Playlist title.
+    pub title: String,
+    /// Optional playlist description.
+    #[serde(default)]
+    pub description: Option<String>,
+    /// Playlist privacy: public, private or unlisted. Default: private.
+    #[serde(default)]
+    pub privacy: Option<PlaylistPrivacy>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct RenamePlaylistArgs {
+    /// Playlist ID from list_playlists or search.
+    pub playlist_id: String,
+    /// New playlist title.
+    pub title: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct PlaylistTracksArgs {
+    /// Playlist ID from list_playlists or search.
+    pub playlist_id: String,
+    /// Video IDs to add.
+    pub video_ids: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct RemovePlaylistTracksArgs {
+    /// Playlist ID from list_playlists or search.
+    pub playlist_id: String,
+    /// Track indices from get_playlist.
+    pub indices: Vec<usize>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct MovePlaylistTrackArgs {
+    /// Playlist ID from list_playlists or search.
+    pub playlist_id: String,
+    /// Current track index.
+    pub from: usize,
+    /// New track index.
+    pub to: usize,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct TrackArgs {
     /// Track object from search or get_playlist.
     pub track: Track,
@@ -299,6 +422,92 @@ impl McpServer {
     ) -> Result<Json<PlaylistDetail>, McpError> {
         self.client
             .playlist(&args.playlist_id)
+            .await
+            .map(Json)
+            .map_err(|error| error.to_mcp())
+    }
+
+    /// Create a playlist.
+    #[tool(description = "Create a playlist")]
+    async fn create_playlist(
+        &self,
+        Parameters(args): Parameters<CreatePlaylistArgs>,
+    ) -> Result<Json<Playlist>, McpError> {
+        let request = CreatePlaylistRequest {
+            title: args.title,
+            description: args.description.unwrap_or_default(),
+            privacy: args.privacy.unwrap_or_default(),
+        };
+        self.client
+            .create_playlist(&request)
+            .await
+            .map(Json)
+            .map_err(|error| error.to_mcp())
+    }
+
+    /// Rename a playlist.
+    #[tool(description = "Rename a playlist")]
+    async fn rename_playlist(
+        &self,
+        Parameters(args): Parameters<RenamePlaylistArgs>,
+    ) -> Result<Json<Playlist>, McpError> {
+        self.client
+            .update_playlist(
+                &args.playlist_id,
+                &UpdatePlaylistRequest { title: args.title },
+            )
+            .await
+            .map(Json)
+            .map_err(|error| error.to_mcp())
+    }
+
+    /// Delete a playlist.
+    #[tool(description = "Delete a playlist")]
+    async fn delete_playlist(
+        &self,
+        Parameters(args): Parameters<PlaylistArgs>,
+    ) -> Result<Json<OkResponse>, McpError> {
+        self.client
+            .delete_playlist(&args.playlist_id)
+            .await
+            .map(Json)
+            .map_err(|error| error.to_mcp())
+    }
+
+    /// Add tracks to a playlist.
+    #[tool(description = "Add tracks to a playlist")]
+    async fn add_playlist_tracks(
+        &self,
+        Parameters(args): Parameters<PlaylistTracksArgs>,
+    ) -> Result<Json<Vec<Track>>, McpError> {
+        self.client
+            .add_playlist_tracks(&args.playlist_id, args.video_ids)
+            .await
+            .map(Json)
+            .map_err(|error| error.to_mcp())
+    }
+
+    /// Remove tracks from a playlist by index.
+    #[tool(description = "Remove tracks from a playlist by index")]
+    async fn remove_playlist_tracks(
+        &self,
+        Parameters(args): Parameters<RemovePlaylistTracksArgs>,
+    ) -> Result<Json<Vec<Track>>, McpError> {
+        self.client
+            .remove_playlist_tracks(&args.playlist_id, args.indices)
+            .await
+            .map(Json)
+            .map_err(|error| error.to_mcp())
+    }
+
+    /// Move a track within a playlist.
+    #[tool(description = "Move a track within a playlist")]
+    async fn move_playlist_track(
+        &self,
+        Parameters(args): Parameters<MovePlaylistTrackArgs>,
+    ) -> Result<Json<Vec<Track>>, McpError> {
+        self.client
+            .move_playlist_track(&args.playlist_id, args.from, args.to)
             .await
             .map(Json)
             .map_err(|error| error.to_mcp())
@@ -450,7 +659,7 @@ impl McpServer {
 impl ServerHandler for McpServer {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
-            "Tools for the ytermusicd daemon. Playlist editing, lyrics and HTTP transport are post-v1.",
+            "Tools for the ytermusicd daemon. Playlist editing is available. Lyrics and HTTP transport are post-v1.",
         )
     }
 }
@@ -483,8 +692,8 @@ mod tests {
         atomic::{AtomicBool, Ordering},
     };
     use ytermusicd_api::{
-        AuthState, AuthStatus, DownloadStatus, PlaybackSnapshot, PlaybackState, Playlist,
-        QueueItem, RepeatMode,
+        AuthState, AuthStatus, DownloadStatus, OkResponse, PlaybackSnapshot, PlaybackState,
+        Playlist, PlaylistPrivacy, QueueItem, RepeatMode,
     };
 
     #[derive(Clone, Default)]
@@ -548,8 +757,25 @@ mod tests {
     async fn mock_router(state: MockState) -> (String, tokio::task::JoinHandle<()>) {
         let router = Router::new()
             .route("/api/status", get(mock_status))
-            .route("/api/playlists", get(mock_playlists))
-            .route("/api/playlists/{id}", get(mock_playlist))
+            .route(
+                "/api/playlists",
+                get(mock_playlists).post(mock_create_playlist),
+            )
+            .route(
+                "/api/playlists/{id}",
+                get(mock_playlist)
+                    .patch(mock_update_playlist)
+                    .delete(mock_delete_playlist),
+            )
+            .route("/api/playlists/{id}/tracks", post(mock_add_playlist_tracks))
+            .route(
+                "/api/playlists/{id}/tracks/remove",
+                post(mock_remove_playlist_tracks),
+            )
+            .route(
+                "/api/playlists/{id}/tracks/move",
+                post(mock_move_playlist_track),
+            )
             .route("/api/search", get(mock_search))
             .route("/api/queue", get(mock_queue).post(mock_queue_add))
             .route("/api/play/playlist", post(mock_play_playlist))
@@ -610,6 +836,93 @@ mod tests {
             },
             tracks: vec![track("v1")],
         })
+    }
+
+    async fn mock_create_playlist(
+        State(state): State<MockState>,
+        AxumJson(request): AxumJson<CreatePlaylistRequest>,
+    ) -> (StatusCode, AxumJson<Playlist>) {
+        state
+            .calls
+            .lock()
+            .unwrap()
+            .push(format!("POST /api/playlists {}", request.title));
+        (
+            StatusCode::CREATED,
+            AxumJson(Playlist {
+                id: "p9".to_string(),
+                name: request.title,
+                subtitle: "Private playlist".to_string(),
+            }),
+        )
+    }
+
+    async fn mock_update_playlist(
+        State(state): State<MockState>,
+        Path(id): Path<String>,
+        AxumJson(request): AxumJson<UpdatePlaylistRequest>,
+    ) -> AxumJson<Playlist> {
+        state
+            .calls
+            .lock()
+            .unwrap()
+            .push(format!("PATCH /api/playlists/{id}"));
+        AxumJson(Playlist {
+            id,
+            name: request.title,
+            subtitle: "Artist".to_string(),
+        })
+    }
+
+    async fn mock_delete_playlist(
+        State(state): State<MockState>,
+        Path(id): Path<String>,
+    ) -> AxumJson<OkResponse> {
+        state
+            .calls
+            .lock()
+            .unwrap()
+            .push(format!("DELETE /api/playlists/{id}"));
+        AxumJson(OkResponse { ok: true })
+    }
+
+    async fn mock_add_playlist_tracks(
+        State(state): State<MockState>,
+        Path(id): Path<String>,
+        AxumJson(_request): AxumJson<AddPlaylistTracksRequest>,
+    ) -> AxumJson<Vec<Track>> {
+        state
+            .calls
+            .lock()
+            .unwrap()
+            .push(format!("POST /api/playlists/{id}/tracks"));
+        AxumJson(vec![track("v1")])
+    }
+
+    async fn mock_remove_playlist_tracks(
+        State(state): State<MockState>,
+        Path(id): Path<String>,
+        AxumJson(_request): AxumJson<RemovePlaylistTracksRequest>,
+    ) -> AxumJson<Vec<Track>> {
+        state
+            .calls
+            .lock()
+            .unwrap()
+            .push(format!("POST /api/playlists/{id}/tracks/remove"));
+        AxumJson(vec![track("v1")])
+    }
+
+    async fn mock_move_playlist_track(
+        State(state): State<MockState>,
+        Path(id): Path<String>,
+        AxumJson(_request): AxumJson<MovePlaylistTrackRequest>,
+    ) -> AxumJson<Vec<Track>> {
+        state
+            .calls
+            .lock()
+            .unwrap()
+            .push(format!("POST /api/playlists/{id}/tracks/move"));
+        AxumJson(vec![track("v1")])
     }
 
     async fn mock_search(State(state): State<MockState>) -> AxumJson<SearchResults> {
@@ -708,16 +1021,20 @@ mod tests {
     }
 
     #[test]
-    fn lists_the_13_v1_tools() {
+    fn lists_the_tools() {
         let server = McpServer::new(DaemonClient::new("http://127.0.0.1:1").unwrap());
         let mut names = server.tool_names();
         names.sort();
         assert_eq!(
             names,
             vec![
+                "add_playlist_tracks",
+                "create_playlist",
+                "delete_playlist",
                 "download_status",
                 "get_playlist",
                 "list_playlists",
+                "move_playlist_track",
                 "next",
                 "now_playing",
                 "pause",
@@ -725,11 +1042,82 @@ mod tests {
                 "play_track",
                 "previous",
                 "queue_add",
+                "remove_playlist_tracks",
+                "rename_playlist",
                 "resume",
                 "search",
                 "volume",
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn playlist_tools_call_the_daemon() {
+        let (server, state, handle) = server().await;
+
+        let Json(created) = server
+            .create_playlist(Parameters(CreatePlaylistArgs {
+                title: "Mix".to_string(),
+                description: Some("desc".to_string()),
+                privacy: Some(PlaylistPrivacy::Unlisted),
+            }))
+            .await
+            .unwrap();
+        assert_eq!(created.id, "p9");
+
+        let Json(renamed) = server
+            .rename_playlist(Parameters(RenamePlaylistArgs {
+                playlist_id: "p1".to_string(),
+                title: "New".to_string(),
+            }))
+            .await
+            .unwrap();
+        assert_eq!(renamed.name, "New");
+
+        let Json(deleted) = server
+            .delete_playlist(Parameters(PlaylistArgs {
+                playlist_id: "p1".to_string(),
+            }))
+            .await
+            .unwrap();
+        assert!(deleted.ok);
+
+        let Json(added) = server
+            .add_playlist_tracks(Parameters(PlaylistTracksArgs {
+                playlist_id: "p1".to_string(),
+                video_ids: vec!["v1".to_string()],
+            }))
+            .await
+            .unwrap();
+        assert_eq!(added[0].video_id, "v1");
+
+        let Json(removed) = server
+            .remove_playlist_tracks(Parameters(RemovePlaylistTracksArgs {
+                playlist_id: "p1".to_string(),
+                indices: vec![0],
+            }))
+            .await
+            .unwrap();
+        assert_eq!(removed.len(), 1);
+
+        let Json(moved) = server
+            .move_playlist_track(Parameters(MovePlaylistTrackArgs {
+                playlist_id: "p1".to_string(),
+                from: 0,
+                to: 1,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(moved.len(), 1);
+
+        let calls = state.calls.lock().unwrap().clone();
+        assert!(calls.contains(&"POST /api/playlists Mix".to_string()));
+        assert!(calls.contains(&"PATCH /api/playlists/p1".to_string()));
+        assert!(calls.contains(&"DELETE /api/playlists/p1".to_string()));
+        assert!(calls.contains(&"POST /api/playlists/p1/tracks".to_string()));
+        assert!(calls.contains(&"POST /api/playlists/p1/tracks/remove".to_string()));
+        assert!(calls.contains(&"POST /api/playlists/p1/tracks/move".to_string()));
+        handle.abort();
     }
 
     #[tokio::test]

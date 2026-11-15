@@ -44,8 +44,8 @@ artifacts contain the real app.
 
 ## Views and state
 
-- **Library** shows the playlist collection and a reload button.
-- **Playlist** shows the track table and a *Play all* action.
+- **Library** shows the playlist collection, a reload button and a create form.
+- **Playlist** shows the track table, playlist actions and track edit actions.
 - **Queue** shows current and upcoming tracks.
 - **Search** is a modal palette.
 - **Now playing** shows the current track, cover art, controls, seek, volume
@@ -63,6 +63,23 @@ web UI stores the choice in `localStorage`.
 
 The track table and the now-playing bar show cover art from
 `/api/tracks/{video_id}/cover`. A missing image leaves the placeholder visible.
+
+## Playlist editing
+
+The library has a *New playlist* action. Enter a name and click *Create*.
+
+The playlist view has these actions:
+
+- *Rename* opens an inline name field.
+- *Delete* needs a second click on *Delete*.
+- *Add tracks* opens the search palette in add mode. Press Enter on a result to
+  add the track. The palette stays open for more tracks.
+- Right-click a track to move it up or down, or to remove it. The UI shows a
+  confirmation bar before it removes a track.
+
+The daemon returns the updated track list after each track edit. The UI replaces
+the table from that response. The daemon rejects invalid titles, video IDs and
+indices with an actionable message.
 
 The store subscribes once to `/api/events`. It applies the snapshot and
 incremental playback, queue, download, track-ended, error and library events.
@@ -116,6 +133,8 @@ table.
   shows cookie values.
 - A download failure shows a *retry* action. The action calls
   `/api/downloads/retry`.
+- An expired playlist edit session shows the auth banner. Update `headers.txt`
+  and try again.
 - API errors use one envelope and become dismissible toasts with an actionable
   message.
 - A Svelte error boundary catches component failures and shows a retry button.

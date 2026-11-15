@@ -19,6 +19,8 @@ export type ToastSeverity = 'info' | 'success' | 'warning' | 'error';
 
 export type PlayerLayout = 'compact' | 'terminal';
 
+export type SearchMode = 'normal' | 'add-to-playlist';
+
 export const PLAYER_LAYOUT_KEY = 'ytermusicd.player-layout';
 
 export function readPlayerLayout(): PlayerLayout {
@@ -110,6 +112,8 @@ export class AppStore {
   searchQuery = $state('');
   searchResults = $state<SearchResults | null>(null);
   searchLoading = $state(false);
+  searchMode = $state<SearchMode>('normal');
+  searchPlaylistId = $state<string | null>(null);
   helpOpen = $state(false);
   toasts = $state<Toast[]>([]);
   volume = $state(50);
@@ -188,6 +192,16 @@ export class AppStore {
     return this.viewTracks[this.selection] ?? null;
   }
 
+  get searchTargetName(): string | null {
+    if (!this.searchPlaylistId) return null;
+    return (
+      this.playlists.find((playlist) => playlist.id === this.searchPlaylistId)?.name ??
+      (this.playlist?.playlist.id === this.searchPlaylistId
+        ? this.playlist.playlist.name
+        : null)
+    );
+  }
+
   get selectionCount(): number {
     return this.viewTracks.length;
   }
@@ -219,18 +233,126 @@ export class AppStore {
     }
   }
 
-  async openPlaylist(id: string, name?: string): Promise<void> {
+  openPlaylist(id: string, name?: string): Promise<void> {
     this.view = { kind: 'playlist', id, name };
     this.selection = 0;
     this.playlist = null;
     this.playlistLoading = true;
     this.syncLocation();
+    return this.loadPlaylist(id);
+  }
+
+  private async loadPlaylist(id: string): Promise<void> {
     try {
       this.playlist = await this.api.playlist(id);
     } catch (error) {
       this.error = describeError(error);
     } finally {
       this.playlistLoading = false;
+    }
+  }
+
+  async createPlaylist(name: string): Promise<boolean> {
+    try {
+      const playlist = await this.api.createPlaylist({
+        title: name,
+        description: '',
+        privacy: 'private',
+      });
+      await this.loadPlaylists();
+      this.notify('success', `Created “${playlist.name}”.`);
+      return true;
+    } catch (error) {
+      this.report(error);
+      return false;
+    }
+  }
+
+  async renamePlaylist(id: string, name: string): Promise<boolean> {
+    try {
+      const current = this.playlists.find((playlist) => playlist.id === id);
+      const updated = await this.api.updatePlaylist(id, { title: name });
+      const subtitle = current?.subtitle ?? this.playlist?.playlist.subtitle ?? '';
+      this.playlists = this.playlists.map((playlist) =>
+        playlist.id === id ? { ...playlist, name: updated.name } : playlist,
+      );
+      if (this.playlist?.playlist.id === id) {
+        this.playlist = {
+          ...this.playlist,
+          playlist: { ...this.playlist.playlist, name: updated.name, subtitle },
+        };
+      }
+      if (this.view.kind === 'playlist' && this.view.id === id) {
+        this.view = { ...this.view, name: updated.name };
+      }
+      this.notify('success', `Renamed to “${updated.name}”.`);
+      return true;
+    } catch (error) {
+      this.report(error);
+      return false;
+    }
+  }
+
+  async deletePlaylist(id: string): Promise<boolean> {
+    try {
+      await this.api.deletePlaylist(id);
+      this.playlists = this.playlists.filter((playlist) => playlist.id !== id);
+      if (this.view.kind === 'playlist' && this.view.id === id) {
+        this.openLibrary();
+      }
+      this.notify('success', 'Playlist deleted.');
+      return true;
+    } catch (error) {
+      this.report(error);
+      return false;
+    }
+  }
+
+  async addPlaylistTracks(id: string, videoIds: string[]): Promise<boolean> {
+    try {
+      const tracks = await this.api.addPlaylistTracks(id, videoIds);
+      if (this.playlist?.playlist.id === id) {
+        this.playlist = { ...this.playlist, tracks };
+      }
+      this.notify(
+        'success',
+        videoIds.length === 1
+          ? 'Track added to the playlist.'
+          : `${videoIds.length} tracks added to the playlist.`,
+      );
+      return true;
+    } catch (error) {
+      this.report(error);
+      return false;
+    }
+  }
+
+  async removePlaylistTrack(id: string, index: number): Promise<boolean> {
+    try {
+      const tracks = await this.api.removePlaylistTracks(id, [index]);
+      if (this.playlist?.playlist.id === id) {
+        this.playlist = { ...this.playlist, tracks };
+        this.selection = Math.max(0, Math.min(this.selection, tracks.length - 1));
+      }
+      this.notify('success', 'Track removed from the playlist.');
+      return true;
+    } catch (error) {
+      this.report(error);
+      return false;
+    }
+  }
+
+  async movePlaylistTrack(id: string, from: number, to: number): Promise<boolean> {
+    try {
+      const tracks = await this.api.movePlaylistTrack(id, from, to);
+      if (this.playlist?.playlist.id === id) {
+        this.playlist = { ...this.playlist, tracks };
+        this.selection = to;
+      }
+      return true;
+    } catch (error) {
+      this.report(error);
+      return false;
     }
   }
 
@@ -470,11 +592,34 @@ export class AppStore {
   }
 
   openSearch(): void {
+    this.searchMode = 'normal';
+    this.searchPlaylistId = null;
+    this.searchOpen = true;
+  }
+
+  openSearchForPlaylist(playlistId: string): void {
+    this.clearSearchTimer();
+    this.searchMode = 'add-to-playlist';
+    this.searchPlaylistId = playlistId;
+    this.searchQuery = '';
+    this.searchResults = null;
+    this.searchLoading = false;
     this.searchOpen = true;
   }
 
   closeSearch(): void {
     this.searchOpen = false;
+    this.searchMode = 'normal';
+    this.searchPlaylistId = null;
+  }
+
+  async addSearchSelection(track: Track): Promise<void> {
+    if (this.searchMode === 'add-to-playlist' && this.searchPlaylistId) {
+      await this.addPlaylistTracks(this.searchPlaylistId, [track.video_id]);
+      return;
+    }
+    this.closeSearch();
+    await this.playTrack(track);
   }
 
   setSearchQuery(query: string): void {

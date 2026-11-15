@@ -84,15 +84,27 @@ next track and surface an error event. `/api/status` reports queued/active/
 completed/retrying/failed counts, and `/api/downloads/retry` re-queues a failed
 track. The web UI and MCP proxy never download directly.
 
+## Playlist edits
+
+The daemon sends playlist changes through the authenticated YouTube Music
+`playlist/create`, `browse/edit_playlist` and `playlist/delete` endpoints.
+Remove and move actions need each playlist item's `setVideoId`. The daemon
+fetches the playlist before an edit, maps the requested index to that ID and
+returns the new track list.
+
+The API rejects invalid titles, video IDs and indices before it sends an
+upstream request. An expired session or a rate limit returns an actionable
+message. A failed upstream edit does not change local playback state.
+
 ## API
 
 The full contract and curl examples live in [docs/api.md](api.md). DTOs come
 from `ytermusicd-api`, which also generates the TypeScript bindings consumed by
 the web UI and MCP proxy.
 
-- REST: status, playlists, playlist detail, search, cover art, queue
-  CRUD/reorder, play playlist/track, pause/resume, next/previous, volume, seek,
-  shuffle, repeat.
+- REST: status, playlists, playlist edits, playlist detail, search, cover art,
+  queue CRUD/reorder, play playlist/track, pause/resume, next/previous, volume,
+  seek, shuffle, repeat.
 - Every command returns the updated `Status` or `Queue`, so clients can render
   without waiting for the event stream.
 - SSE: an initial snapshot followed by playback, queue, download, track-ended,
@@ -124,10 +136,10 @@ display name `ytermusicd`. `playerctl -l` lists it while the daemon runs.
 ## MCP
 
 `ytermusicd mcp` is a stdio proxy to the REST API. It uses `rmcp` and holds no
-playback state. The proxy has 13 tools: search, playlists, playback transport,
-queue add, now playing, volume and download status. It reads the daemon URL from
-`--url` or `YTERMUSICD_URL`, applies a 30-second timeout, and exits when stdin
-closes. See [docs/mcp.md](mcp.md). Playlist editing, lyrics and HTTP transport
+playback state. The proxy has 19 tools: search, playlists, playlist edits,
+playback transport, queue add, now playing, volume and download status. It reads
+the daemon URL from `--url` or `YTERMUSICD_URL`, applies a 30-second timeout, and
+exits when stdin closes. See [docs/mcp.md](mcp.md). Lyrics and HTTP transport
 are post-v1.
 
 ## Security

@@ -2,8 +2,8 @@
 
 > **v0.1.3.** `ytermusicd` is a headless daemon fork of
 > [ytermusic](https://github.com/ccgauche/ytermusic), adding a web UI, MPRIS and
-> MCP. The daemon, REST/SSE API, web UI, MPRIS, MCP and packaging work today.
-> Playlist editing is post-v1 ([#51](https://github.com/suorcd/ytermusicd/issues/51)).
+> MCP. The daemon, REST/SSE API, web UI, MPRIS, MCP, playlist editing and
+> packaging work today.
 
 [Build plan](https://sb.ser.ink/llm-wiki/concepts/ytermusicd-build-plan) ·
 [Roadmap](https://github.com/suorcd/ytermusicd/issues/25) ·
@@ -14,7 +14,8 @@
 `ytermusicd` keeps YouTube Music playback, queue and downloads in a long-running
 daemon. Clients are thin:
 
-- **Web UI** — library, search, queue, now playing, cover art and vim-style keys.
+- **Web UI** — library, search, queue, now playing, cover art, vim-style keys
+  and playlist editing.
 - **MCP** — a stdio proxy exposing search/playback tools to assistants.
 - **MPRIS** — desktop media controls with cover art (`playerctl`, shell media
   widgets).
@@ -32,9 +33,10 @@ UI, MCP proxy and any future TUI are clients.
 | Auth/config/path extraction | ✅ |
 | Playback, queue, downloads, event bus, MPRIS | ✅ |
 | Full REST + SSE API | ✅ |
+| Playlist create, rename, delete and track edits | ✅ |
 | Web UI (library, search, queue, now playing, vim keys) | ✅ |
 | systemd unit, Nix package/module | ✅ |
-| MCP proxy (13 tools) | ✅ |
+| MCP proxy (19 tools) | ✅ |
 | v0.1.3 release | ✅ |
 
 See the [roadmap](https://github.com/suorcd/ytermusicd/issues/25) for the
@@ -138,7 +140,7 @@ just test
 - [docs/testing.md](docs/testing.md) — local workflow, fixtures, regression policy
 - [docs/api.md](docs/api.md) — REST/SSE reference, curl examples and reconnect semantics
 - [docs/web.md](docs/web.md) — web UI development, keymap and failure states
-- [docs/mcp.md](docs/mcp.md) — MCP client setup and the 13 v1 tools
+- [docs/mcp.md](docs/mcp.md) — MCP client setup and the 19 tools
 - [docs/release.md](docs/release.md) — release checklist and smoke tests
 - [CHANGELOG.md](CHANGELOG.md) — release notes
 - [CONTRIBUTING.md](CONTRIBUTING.md) — contribution rules
@@ -180,8 +182,10 @@ The daemon serves the web UI at `/` and the API under `/api`.
 
 ## MCP
 
-`ytermusicd mcp` is a stdio proxy to the daemon. It exposes 13 tools:
-`search`, `list_playlists`, `get_playlist`, `play_playlist`, `play_track`,
+`ytermusicd mcp` is a stdio proxy to the daemon. It exposes 19 tools:
+`search`, `list_playlists`, `get_playlist`, `create_playlist`,
+`rename_playlist`, `delete_playlist`, `add_playlist_tracks`,
+`remove_playlist_tracks`, `move_playlist_track`, `play_playlist`, `play_track`,
 `queue_add`, `now_playing`, `pause`, `resume`, `next`, `previous`, `volume` and
 `download_status`.
 
@@ -191,7 +195,7 @@ YTERMUSICD_URL=http://127.0.0.1:9000 ytermusicd mcp
 ```
 
 See [docs/mcp.md](docs/mcp.md) for client configuration, tool arguments and
-error behavior. Playlist editing, lyrics and HTTP transport are post-v1.
+error behavior. Lyrics and HTTP transport are post-v1.
 
 ## Troubleshooting
 

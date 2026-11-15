@@ -67,6 +67,49 @@ describe('api client', () => {
     expect(fetchMock.mock.calls[1][0]).toBe('/api/playlists/VL%2F1');
   });
 
+  it('calls the playlist edit endpoints', async () => {
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        new Response('[]', {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const api = createApi();
+
+    await api.createPlaylist({ title: 'Mix', description: '', privacy: 'private' });
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/playlists');
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({ method: 'POST' });
+
+    await api.updatePlaylist('VL/1', { title: 'New' });
+    expect(fetchMock.mock.calls[1][0]).toBe('/api/playlists/VL%2F1');
+    expect(fetchMock.mock.calls[1][1]).toMatchObject({ method: 'PATCH' });
+
+    await api.deletePlaylist('VL1');
+    expect(fetchMock.mock.calls[2][0]).toBe('/api/playlists/VL1');
+    expect(fetchMock.mock.calls[2][1]).toMatchObject({ method: 'DELETE' });
+
+    await api.addPlaylistTracks('VL1', ['v1']);
+    expect(fetchMock.mock.calls[3][0]).toBe('/api/playlists/VL1/tracks');
+    expect(fetchMock.mock.calls[3][1]).toMatchObject({
+      method: 'POST',
+      body: JSON.stringify({ video_ids: ['v1'] }),
+    });
+
+    await api.removePlaylistTracks('VL1', [0]);
+    expect(fetchMock.mock.calls[4][0]).toBe('/api/playlists/VL1/tracks/remove');
+    expect(fetchMock.mock.calls[4][1]).toMatchObject({
+      body: JSON.stringify({ indices: [0] }),
+    });
+
+    await api.movePlaylistTrack('VL1', 0, 1);
+    expect(fetchMock.mock.calls[5][0]).toBe('/api/playlists/VL1/tracks/move');
+    expect(fetchMock.mock.calls[5][1]).toMatchObject({
+      body: JSON.stringify({ from: 0, to: 1 }),
+    });
+  });
+
   it('maps error envelopes to ApiError', async () => {
     vi.stubGlobal(
       'fetch',

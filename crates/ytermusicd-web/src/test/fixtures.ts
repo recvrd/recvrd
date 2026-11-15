@@ -97,6 +97,38 @@ export function makeApi(
       ),
     ),
     search: vi.fn(async () => makeSearchResults(tracks, playlists.slice(0, 1))),
+    createPlaylist: vi.fn(async (request) => {
+      const playlist = makePlaylist(`p${playlists.length + 1}`, {
+        name: request.title,
+        subtitle: 'Private playlist',
+      });
+      playlists.push(playlist);
+      return playlist;
+    }),
+    updatePlaylist: vi.fn(async (id: string, request) => {
+      const playlist = playlists.find((entry) => entry.id === id) ?? makePlaylist(id);
+      playlist.name = request.title;
+      return { ...playlist };
+    }),
+    deletePlaylist: vi.fn(async (id: string) => {
+      const index = playlists.findIndex((entry) => entry.id === id);
+      if (index >= 0) playlists.splice(index, 1);
+      return { ok: true };
+    }),
+    addPlaylistTracks: vi.fn(async (_id: string, videoIds: string[]) => {
+      const added = videoIds.map((videoId) => makeTrack(videoId));
+      tracks.push(...added);
+      return tracks;
+    }),
+    removePlaylistTracks: vi.fn(async (_id: string, indices: number[]) => {
+      for (const index of [...indices].sort((a, b) => b - a)) tracks.splice(index, 1);
+      return tracks;
+    }),
+    movePlaylistTrack: vi.fn(async (_id: string, from: number, to: number) => {
+      const [moved] = tracks.splice(from, 1);
+      tracks.splice(to, 0, moved);
+      return tracks;
+    }),
     queue: vi.fn(async () => queue),
     playPlaylist: vi.fn(async () => {
       status = makeStatus({

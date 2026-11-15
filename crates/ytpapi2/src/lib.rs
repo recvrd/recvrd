@@ -15,7 +15,7 @@ use log::{debug, error, trace};
 pub use reqwest::header::HeaderMap;
 pub use reqwest::header::*;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 use sha1::{Digest, Sha1};
 use string_utils::StringUtils;
 
@@ -140,6 +140,7 @@ pub struct YoutubeMusicInstance {
     cookies: String,
     account_id: Option<String>,
     client: reqwest::Client,
+    base_url: String,
 }
 
 /// Consume one continuation from the budget and report whether the response
@@ -260,7 +261,27 @@ impl YoutubeMusicInstance {
             cookies,
             account_id,
             client: rest_client,
+            base_url: YTM_DOMAIN.to_string(),
         })
+    }
+
+    #[cfg(test)]
+    fn for_test(
+        base_url: String,
+        innertube_api_key: String,
+        client_version: String,
+        cookies: String,
+        account_id: Option<String>,
+    ) -> Self {
+        Self {
+            sapisid: "test-sapisid".to_string(),
+            innertube_api_key,
+            client_version,
+            cookies,
+            account_id,
+            client: reqwest::Client::new(),
+            base_url,
+        }
     }
     fn compute_sapi_hash(&self) -> String {
         let start = SystemTime::now();
@@ -545,6 +566,227 @@ impl YoutubeMusicInstance {
         }
         Ok(SearchResults { playlists, videos })
     }
+
+    fn context(&self) -> Value {
+        let client = json!({
+            "clientName": "WEB_REMIX",
+            "clientVersion": self.client_version,
+        });
+        match &self.account_id {
+            Some(id) => json!({
+                "client": client,
+                "user": { "onBehalfOfUser": id },
+            }),
+            None => json!({ "client": client }),
+        }
+    }
+
+    async fn post_edit(&self, route: &str, mut body: Value) -> Result<Value> {
+        body["context"] = self.context();
+        let url = format!(
+            "{}/youtubei/v1/{route}?key={}&prettyPrint=false",
+            self.base_url, self.innertube_api_key
+        );
+        let response = self
+            .client
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .header(
+                "Authorization",
+                format!("SAPISIDHASH {}", self.compute_sapi_hash()),
+            )
+            .header("X-Origin", self.base_url.as_str())
+            .header("Cookie", &self.cookies)
+            .body(body.to_string())
+            .send()
+            .await
+            .map_err(YoutubeMusicError::RequestError)?;
+        let status = response.status();
+        let text = response
+            .text()
+            .await
+            .map_err(YoutubeMusicError::RequestError)?;
+        let response: Value = serde_json::from_str(&text).map_err(YoutubeMusicError::SerdeJson)?;
+        classify_edit_response(status, response)
+    }
+
+    /// Create a playlist and return its browse ID.
+    pub async fn create_playlist(
+        &self,
+        title: &str,
+        description: &str,
+        privacy: PlaylistPrivacy,
+    ) -> Result<String> {
+        let body = create_playlist_body(title, description, privacy);
+        let response = self.post_edit("playlist/create", body).await?;
+        let id = response
+            .get("playlistId")
+            .and_then(Value::as_str)
+            .ok_or_else(|| YoutubeMusicError::YoutubeMusicError(response.clone()))?;
+        if id.starts_with("VL") {
+            Ok(id.to_string())
+        } else {
+            Ok(format!("VL{id}"))
+        }
+    }
+
+    /// Rename a playlist.
+    pub async fn rename_playlist(&self, playlist_id: &str, title: &str) -> Result<()> {
+        let actions = vec![json!({
+            "action": "ACTION_SET_PLAYLIST_NAME",
+            "playlistName": title,
+        })];
+        let body = edit_playlist_body(playlist_id, actions)?;
+        let response = self.post_edit("browse/edit_playlist", body).await?;
+        ensure_edit_succeeded(&response)
+    }
+
+    /// Delete a playlist.
+    pub async fn delete_playlist(&self, playlist_id: &str) -> Result<()> {
+        let body = json!({ "playlistId": edit_playlist_id(playlist_id)? });
+        let response = self.post_edit("playlist/delete", body).await?;
+        ensure_edit_succeeded(&response)
+    }
+
+    /// Add tracks to a playlist.
+    pub async fn add_playlist_items(&self, playlist_id: &str, video_ids: &[String]) -> Result<()> {
+        if video_ids.is_empty() {
+            return Err(YoutubeMusicError::Other("no video IDs".to_string()));
+        }
+        let body = edit_playlist_body(playlist_id, add_video_actions(video_ids))?;
+        let response = self.post_edit("browse/edit_playlist", body).await?;
+        ensure_edit_succeeded(&response)
+    }
+
+    /// Remove playlist items. Each item needs its video ID and set video ID.
+    pub async fn remove_playlist_items(
+        &self,
+        playlist_id: &str,
+        items: &[(String, String)],
+    ) -> Result<()> {
+        if items.is_empty() {
+            return Err(YoutubeMusicError::Other("no playlist items".to_string()));
+        }
+        let body = edit_playlist_body(playlist_id, remove_video_actions(items))?;
+        let response = self.post_edit("browse/edit_playlist", body).await?;
+        ensure_edit_succeeded(&response)
+    }
+
+    /// Move one playlist item before a successor item. A missing successor
+    /// moves the item to the end.
+    pub async fn move_playlist_item(
+        &self,
+        playlist_id: &str,
+        set_video_id: &str,
+        successor: Option<&str>,
+    ) -> Result<()> {
+        let actions = vec![move_video_action(set_video_id, successor)];
+        let body = edit_playlist_body(playlist_id, actions)?;
+        let response = self.post_edit("browse/edit_playlist", body).await?;
+        ensure_edit_succeeded(&response)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlaylistPrivacy {
+    Public,
+    Private,
+    Unlisted,
+}
+
+impl PlaylistPrivacy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Public => "PUBLIC",
+            Self::Private => "PRIVATE",
+            Self::Unlisted => "UNLISTED",
+        }
+    }
+}
+
+fn edit_playlist_id(playlist_id: &str) -> Result<&str> {
+    let id = playlist_id.strip_prefix("VL").unwrap_or(playlist_id);
+    if id.is_empty() {
+        return Err(YoutubeMusicError::Other("playlist ID is empty".to_string()));
+    }
+    Ok(id)
+}
+
+fn create_playlist_body(title: &str, description: &str, privacy: PlaylistPrivacy) -> Value {
+    json!({
+        "title": title,
+        "description": description,
+        "privacyStatus": privacy.as_str(),
+    })
+}
+
+fn edit_playlist_body(playlist_id: &str, actions: Vec<Value>) -> Result<Value> {
+    Ok(json!({
+        "playlistId": edit_playlist_id(playlist_id)?,
+        "actions": actions,
+    }))
+}
+
+fn add_video_actions(video_ids: &[String]) -> Vec<Value> {
+    video_ids
+        .iter()
+        .map(|video_id| {
+            json!({
+                "action": "ACTION_ADD_VIDEO",
+                "addedVideoId": video_id,
+            })
+        })
+        .collect()
+}
+
+fn remove_video_actions(items: &[(String, String)]) -> Vec<Value> {
+    items
+        .iter()
+        .map(|(video_id, set_video_id)| {
+            json!({
+                "action": "ACTION_REMOVE_VIDEO",
+                "removedVideoId": video_id,
+                "setVideoId": set_video_id,
+            })
+        })
+        .collect()
+}
+
+fn move_video_action(set_video_id: &str, successor: Option<&str>) -> Value {
+    let mut action = json!({
+        "action": "ACTION_MOVE_VIDEO_BEFORE",
+        "setVideoId": set_video_id,
+    });
+    if let Some(successor) = successor {
+        action["movedSetVideoIdSuccessor"] = Value::String(successor.to_string());
+    }
+    action
+}
+
+fn classify_edit_response(status: reqwest::StatusCode, response: Value) -> Result<Value> {
+    let code = response.pointer("/error/code").and_then(Value::as_i64);
+    if status == reqwest::StatusCode::UNAUTHORIZED
+        || status == reqwest::StatusCode::FORBIDDEN
+        || matches!(code, Some(401 | 403))
+    {
+        return Err(YoutubeMusicError::AuthExpired(response));
+    }
+    if status == reqwest::StatusCode::TOO_MANY_REQUESTS || code == Some(429) {
+        return Err(YoutubeMusicError::RateLimited(response));
+    }
+    if !status.is_success() || response.get("error").is_some() {
+        return Err(YoutubeMusicError::YoutubeMusicError(response));
+    }
+    Ok(response)
+}
+
+fn ensure_edit_succeeded(response: &Value) -> Result<()> {
+    if let Some(status) = response.get("status").and_then(Value::as_str)
+        && status != "STATUS_SUCCEEDED"
+    {
+        return Err(YoutubeMusicError::YoutubeMusicError(response.clone()));
+    }
+    Ok(())
 }
 
 fn parse_playlist(playlist_json: &Value) -> Result<Vec<YoutubeMusicVideoRef>> {
@@ -626,7 +868,194 @@ pub enum YoutubeMusicError {
     SerdeJson(serde_json::Error),
     IoError(std::io::Error),
     YoutubeMusicError(Value),
+    AuthExpired(Value),
+    RateLimited(Value),
     InvalidHeaders,
+}
+
+#[cfg(test)]
+mod edit_tests {
+    use super::*;
+
+    #[test]
+    fn normalizes_playlist_ids() {
+        assert_eq!(edit_playlist_id("VLPL123").unwrap(), "PL123");
+        assert_eq!(edit_playlist_id("PL123").unwrap(), "PL123");
+        assert!(edit_playlist_id("VL").is_err());
+        assert!(edit_playlist_id("").is_err());
+    }
+
+    #[test]
+    fn builds_create_body() {
+        let body = create_playlist_body("Mix", "A description", PlaylistPrivacy::Unlisted);
+        assert_eq!(body["title"], "Mix");
+        assert_eq!(body["description"], "A description");
+        assert_eq!(body["privacyStatus"], "UNLISTED");
+    }
+
+    #[test]
+    fn builds_add_actions() {
+        let actions = add_video_actions(&["v1".to_string(), "v2".to_string()]);
+        assert_eq!(actions.len(), 2);
+        assert_eq!(actions[0]["action"], "ACTION_ADD_VIDEO");
+        assert_eq!(actions[0]["addedVideoId"], "v1");
+        assert_eq!(actions[1]["addedVideoId"], "v2");
+    }
+
+    #[test]
+    fn builds_remove_actions() {
+        let actions = remove_video_actions(&[("v1".to_string(), "s1".to_string())]);
+        assert_eq!(actions[0]["action"], "ACTION_REMOVE_VIDEO");
+        assert_eq!(actions[0]["removedVideoId"], "v1");
+        assert_eq!(actions[0]["setVideoId"], "s1");
+    }
+
+    #[test]
+    fn builds_move_actions() {
+        let before = move_video_action("s2", Some("s3"));
+        assert_eq!(before["action"], "ACTION_MOVE_VIDEO_BEFORE");
+        assert_eq!(before["setVideoId"], "s2");
+        assert_eq!(before["movedSetVideoIdSuccessor"], "s3");
+
+        let last = move_video_action("s2", None);
+        assert!(last.get("movedSetVideoIdSuccessor").is_none());
+    }
+
+    #[test]
+    fn edit_body_strips_the_browse_prefix() {
+        let body = edit_playlist_body(
+            "VLPL1",
+            vec![json!({
+                "action": "ACTION_SET_PLAYLIST_NAME",
+                "playlistName": "New name",
+            })],
+        )
+        .unwrap();
+        assert_eq!(body["playlistId"], "PL1");
+        assert_eq!(body["actions"][0]["playlistName"], "New name");
+    }
+
+    #[test]
+    fn classifies_auth_and_rate_limit_errors() {
+        let auth_body = json!({"error": {"code": 401, "message": "unauthorized"}});
+        assert!(matches!(
+            classify_edit_response(reqwest::StatusCode::UNAUTHORIZED, auth_body.clone()),
+            Err(YoutubeMusicError::AuthExpired(_))
+        ));
+        assert!(matches!(
+            classify_edit_response(reqwest::StatusCode::FORBIDDEN, auth_body),
+            Err(YoutubeMusicError::AuthExpired(_))
+        ));
+
+        let rate_body = json!({"error": {"code": 429, "message": "quota"}});
+        assert!(matches!(
+            classify_edit_response(reqwest::StatusCode::TOO_MANY_REQUESTS, rate_body),
+            Err(YoutubeMusicError::RateLimited(_))
+        ));
+
+        let bad_body = json!({"error": {"code": 400, "message": "bad request"}});
+        assert!(matches!(
+            classify_edit_response(reqwest::StatusCode::BAD_REQUEST, bad_body),
+            Err(YoutubeMusicError::YoutubeMusicError(_))
+        ));
+
+        let auth_json = json!({"error": {"code": 401, "message": "unauthorized"}});
+        assert!(matches!(
+            classify_edit_response(reqwest::StatusCode::OK, auth_json),
+            Err(YoutubeMusicError::AuthExpired(_))
+        ));
+        let rate_json = json!({"error": {"code": 429, "message": "quota"}});
+        assert!(matches!(
+            classify_edit_response(reqwest::StatusCode::OK, rate_json),
+            Err(YoutubeMusicError::RateLimited(_))
+        ));
+    }
+
+    #[test]
+    fn accepts_successful_edits() {
+        let response = json!({"status": "STATUS_SUCCEEDED"});
+        assert!(classify_edit_response(reqwest::StatusCode::OK, response.clone()).is_ok());
+        assert!(ensure_edit_succeeded(&response).is_ok());
+        assert!(ensure_edit_succeeded(&json!({})).is_ok());
+        assert!(ensure_edit_succeeded(&json!({"status": "STATUS_FAILED"})).is_err());
+    }
+
+    async fn read_request(socket: &mut tokio::net::TcpStream) -> String {
+        use tokio::io::AsyncReadExt;
+
+        let mut buffer = Vec::new();
+        let mut chunk = [0u8; 1024];
+        loop {
+            let count = socket.read(&mut chunk).await.unwrap();
+            if count == 0 {
+                break;
+            }
+            buffer.extend_from_slice(&chunk[..count]);
+            if let Some(position) = buffer.windows(4).position(|window| window == b"\r\n\r\n") {
+                let header_end = position + 4;
+                let headers = String::from_utf8_lossy(&buffer[..header_end]).to_string();
+                let length = headers
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().ok())
+                            .flatten()
+                    })
+                    .unwrap_or(0);
+                if buffer.len() >= header_end + length {
+                    break;
+                }
+            }
+        }
+        String::from_utf8_lossy(&buffer).to_string()
+    }
+
+    #[tokio::test]
+    async fn posts_playlist_edits_with_auth_and_context() {
+        use tokio::io::AsyncWriteExt;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (request_tx, request_rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let request = read_request(&mut socket).await;
+            let _ = request_tx.send(request);
+            let response = r#"{"playlistId":"PL123"}"#;
+            let reply = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                response.len(),
+                response
+            );
+            socket.write_all(reply.as_bytes()).await.unwrap();
+        });
+
+        let instance = YoutubeMusicInstance::for_test(
+            format!("http://{address}"),
+            "test-key".to_string(),
+            "1.0".to_string(),
+            "SAPISID=x".to_string(),
+            None,
+        );
+        let id = instance
+            .create_playlist("Mix", "desc", PlaylistPrivacy::Unlisted)
+            .await
+            .unwrap();
+        assert_eq!(id, "VLPL123");
+
+        let request = request_rx.await.unwrap();
+        let request_lower = request.to_lowercase();
+        assert!(request.starts_with("POST /youtubei/v1/playlist/create?key=test-key"));
+        assert!(request_lower.contains("authorization: sapisidhash "));
+        assert!(request_lower.contains(&format!("x-origin: http://{address}")));
+
+        let body = request.split("\r\n\r\n").nth(1).unwrap();
+        let body: Value = serde_json::from_str(body).unwrap();
+        assert_eq!(body["title"], "Mix");
+        assert_eq!(body["privacyStatus"], "UNLISTED");
+        assert_eq!(body["context"]["client"]["clientName"], "WEB_REMIX");
+    }
 }
 
 #[cfg(test)]

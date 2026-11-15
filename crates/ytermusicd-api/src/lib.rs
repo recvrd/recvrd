@@ -35,6 +35,64 @@ pub struct PlaylistDetail {
 }
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS, Default)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum PlaylistPrivacy {
+    Public,
+    #[default]
+    Private,
+    Unlisted,
+}
+
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct CreatePlaylistRequest {
+    pub title: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub privacy: PlaylistPrivacy,
+}
+
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct UpdatePlaylistRequest {
+    pub title: String,
+}
+
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct AddPlaylistTracksRequest {
+    pub video_ids: Vec<String>,
+}
+
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RemovePlaylistTracksRequest {
+    pub indices: Vec<usize>,
+}
+
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct MovePlaylistTrackRequest {
+    pub from: usize,
+    pub to: usize,
+}
+
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct OkResponse {
+    pub ok: bool,
+}
+
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct SearchResults {
@@ -301,6 +359,33 @@ mod tests {
         let track = track();
         let json = serde_json::to_string(&track).unwrap();
         assert_eq!(serde_json::from_str::<Track>(&json).unwrap(), track);
+    }
+
+    #[test]
+    fn playlist_requests_round_trip() {
+        let create = CreatePlaylistRequest {
+            title: "Mix".to_string(),
+            description: String::new(),
+            privacy: PlaylistPrivacy::Private,
+        };
+        let json = serde_json::to_string(&create).unwrap();
+        assert_eq!(
+            serde_json::from_str::<CreatePlaylistRequest>(&json).unwrap(),
+            create
+        );
+        assert_eq!(
+            serde_json::to_value(PlaylistPrivacy::Unlisted).unwrap(),
+            serde_json::json!("unlisted")
+        );
+
+        let update = UpdatePlaylistRequest {
+            title: "New name".to_string(),
+        };
+        let json = serde_json::to_string(&update).unwrap();
+        assert_eq!(
+            serde_json::from_str::<UpdatePlaylistRequest>(&json).unwrap(),
+            update
+        );
     }
 
     #[test]

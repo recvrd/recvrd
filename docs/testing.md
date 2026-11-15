@@ -64,16 +64,20 @@ Current offline coverage is in `crates/ytpapi2`, `crates/ytermusicd-core`,
 
 - `string_utils` tests cover cookie/header parsing helpers.
 - `json_extractor` tests cover search, playlist, continuation, album and
-  nested video-ID parsing with inline JSON fixtures.
+  nested video-ID parsing with inline JSON fixtures. They also cover playlist
+  item `setVideoId` parsing.
+- `ytpapi2` tests cover the playlist edit request bodies, ID normalization and
+  auth/rate-limit response mapping.
 - `ytermusicd-core` tests cover auth/config/paths, queue transitions,
   repeat/shuffle restoration, download-failure handling, playback position and
   event-bus replay using a mock audio sink.
 - `ytermusicd` integration tests start the router on an ephemeral port and
-  cover every REST endpoint, SSE replay, cover art caching, download retry,
-  static serving and upstream error envelopes.
+  cover every REST endpoint, playlist edit validation, SSE replay, cover art
+  caching, download retry, static serving and upstream error envelopes.
 - Web tests cover the API client, event stream, store, keymap, track table,
-  queue, now playing, search, feedback banners and the app shell. The track
-  table and now-playing tests check cover URLs and the missing-image fallback.
+  queue, now playing, search, playlist editing, feedback banners and the app
+  shell. The track table and now-playing tests check cover URLs and the
+  missing-image fallback.
 
 The test harness provides:
 
@@ -95,6 +99,19 @@ If a deterministic test is impractical (real audio device, DBus/MPRIS, live
 YouTube network), document the manual reproduction steps and add the closest
 automated smoke test instead. Pull requests without this evidence are
 incomplete.
+
+Playlist mutations change the user's YouTube Music account. Use a disposable
+playlist for manual checks:
+
+1. Create a playlist in the web UI.
+2. Add one track from the *Add tracks* search.
+3. Move the track up or down, then remove it.
+4. Rename the playlist.
+5. Delete the playlist.
+6. Repeat with invalid input. The API must return 400.
+7. Expire or corrupt the cookie in a test account and check the auth message.
+
+Never commit the test account's `headers.txt` or `account_id.txt`.
 
 ## CI
 
@@ -142,7 +159,7 @@ XDG directories, then checks status, the web page, search, SSE and the MCP
 
 ## Current gaps
 
-The daemon, REST/SSE API, web UI, MPRIS, MCP and systemd/Nix packaging exist.
-Playlist editing is post-v1. See
+The daemon, REST/SSE API, web UI, MPRIS, MCP, playlist editing and systemd/Nix
+packaging exist. Live playlist mutation tests need a test account. See
 [#51](https://github.com/suorcd/ytermusicd/issues/51) and
 [decision 0005](decisions/0005-playlist-editing.md).

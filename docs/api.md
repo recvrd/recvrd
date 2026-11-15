@@ -47,7 +47,13 @@ Every non-2xx response uses one envelope:
 | --- | --- | --- |
 | GET | `/api/status` | Daemon, auth, playback and queue summary |
 | GET | `/api/playlists` | Library playlists |
+| POST | `/api/playlists` | Create a playlist |
 | GET | `/api/playlists/{id}` | Playlist metadata and tracks |
+| PATCH | `/api/playlists/{id}` | Rename a playlist |
+| DELETE | `/api/playlists/{id}` | Delete a playlist |
+| POST | `/api/playlists/{id}/tracks` | Add tracks (`{video_ids}`) |
+| POST | `/api/playlists/{id}/tracks/remove` | Remove tracks (`{indices}`) |
+| POST | `/api/playlists/{id}/tracks/move` | Move a track (`{from,to}`) |
 | GET | `/api/search?q=...` | Track and playlist search |
 | GET | `/api/tracks/{video_id}/cover` | Cached cover art (JPEG) |
 | GET | `/api/queue` | Queue snapshot |
@@ -158,6 +164,56 @@ ID or a failed fetch returns 404 with the normal error envelope.
 Set `cover_cache_mb` in `config.toml` to limit the cache size. The default is
 100 MiB. A value of 0 disables the limit. This endpoint does not change the
 JSON `Track` shape.
+
+### Playlist edits
+
+Playlist IDs are browse IDs. They start with `VL`:
+
+```sh
+# Create a playlist. The response is 201 with the new Playlist.
+curl -X POST http://127.0.0.1:8080/api/playlists \
+  -H 'content-type: application/json' \
+  -d '{"title":"Mix","description":"","privacy":"private"}'
+
+# Rename a playlist. The response is the updated Playlist.
+curl -X PATCH http://127.0.0.1:8080/api/playlists/VLPL123 \
+  -H 'content-type: application/json' \
+  -d '{"title":"New name"}'
+
+# Delete a playlist. The response is {"ok":true}.
+curl -X DELETE http://127.0.0.1:8080/api/playlists/VLPL123
+
+# Add tracks. The response is the updated track list.
+curl -X POST http://127.0.0.1:8080/api/playlists/VLPL123/tracks \
+  -H 'content-type: application/json' \
+  -d '{"video_ids":["abcdefghijk"]}'
+
+# Remove tracks by index. The response is the updated track list.
+curl -X POST http://127.0.0.1:8080/api/playlists/VLPL123/tracks/remove \
+  -H 'content-type: application/json' \
+  -d '{"indices":[0]}'
+
+# Move a track. The response is the updated track list.
+curl -X POST http://127.0.0.1:8080/api/playlists/VLPL123/tracks/move \
+  -H 'content-type: application/json' \
+  -d '{"from":0,"to":1}'
+```
+
+The daemon validates these values before it sends an upstream request:
+
+- The title has 1 to 150 characters. It cannot contain `<`, `>` or control
+  characters.
+- The description has 5000 characters or fewer.
+- Each video ID has 11 characters from `A-Z`, `a-z`, `0-9`, `-` and `_`.
+- One request adds or removes 100 tracks or fewer.
+- Indices and video IDs are unique in one request.
+
+An out-of-range track index or move position returns 400. An expired session
+returns 502 with a message that asks the user to sign in again.
+
+`ytpapi2` sends the edits to the authenticated `playlist/create`,
+`browse/edit_playlist` and `playlist/delete` endpoints. Removal and reordering
+need each item's `setVideoId`. The daemon fetches the playlist before each edit.
 
 ### Playback and queue
 

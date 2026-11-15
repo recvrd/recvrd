@@ -24,6 +24,7 @@ fn read_video(buffer: &mut Cursor<Vec<u8>>) -> Option<YoutubeMusicVideoRef> {
         album: read_str(buffer)?,
         video_id: read_str(buffer)?,
         duration: read_str(buffer)?,
+        set_video_id: None,
     })
 }
 

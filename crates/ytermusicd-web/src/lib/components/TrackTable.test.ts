@@ -66,6 +66,26 @@ describe('TrackTable', () => {
     expect(actions.onqueue).toHaveBeenCalledWith(actions.tracks[0]);
   });
 
+  it('adds playlist actions to the context menu', async () => {
+    const actions = {
+      ...props(),
+      onremove: vi.fn(),
+      onmoveup: vi.fn(),
+      onmovedown: vi.fn(),
+    };
+    const { container } = render(TrackTable, { props: actions });
+
+    await fireEvent.contextMenu(container.querySelectorAll('.row')[0]);
+    expect(screen.getByRole('menuitem', { name: 'Move up' })).toBeDisabled();
+    expect(screen.getByRole('menuitem', { name: 'Move down' })).not.toBeDisabled();
+    await fireEvent.click(screen.getByRole('menuitem', { name: 'Move down' }));
+    expect(actions.onmovedown).toHaveBeenCalledWith(0);
+
+    await fireEvent.contextMenu(container.querySelectorAll('.row')[0]);
+    await fireEvent.click(screen.getByRole('menuitem', { name: 'Remove from playlist' }));
+    expect(actions.onremove).toHaveBeenCalledWith(0);
+  });
+
   it('disables retry unless the download failed', async () => {
     const actions = props();
     const { container } = render(TrackTable, { props: actions });

@@ -1,7 +1,7 @@
 # MCP proxy
 
 `ytermusicd mcp` is a stdio MCP proxy. It connects to a running daemon and
-exposes the v1 tool set. It holds no playback state.
+exposes the tool set. It holds no playback state.
 
 ```sh
 ytermusicd mcp
@@ -50,6 +50,12 @@ your-mcp-client --server "ytermusicd mcp"
 | `search` | `query` | Tracks and playlists |
 | `list_playlists` | none | Library playlists |
 | `get_playlist` | `playlist_id` | Playlist detail and tracks |
+| `create_playlist` | `title`, `description`, `privacy` | New playlist |
+| `rename_playlist` | `playlist_id`, `title` | Updated playlist |
+| `delete_playlist` | `playlist_id` | `{ok: true}` |
+| `add_playlist_tracks` | `playlist_id`, `video_ids` | Updated track list |
+| `remove_playlist_tracks` | `playlist_id`, `indices` | Updated track list |
+| `move_playlist_track` | `playlist_id`, `from`, `to` | Updated track list |
 | `play_playlist` | `playlist_id` | Updated status |
 | `play_track` | `track` | Updated status |
 | `queue_add` | `track` | Updated queue |
@@ -81,9 +87,8 @@ The proxy does not crash on daemon errors. The client shows the message.
 
 ## Scope
 
-The v1 proxy has the 13 tools above. These items are post-v1:
+The proxy has the 19 tools above. These items are post-v1:
 
-- playlist create, rename, delete and track edits;
 - lyrics;
 - streamable HTTP MCP transport;
 - resources and prompts.
@@ -96,5 +101,6 @@ cargo test -p ytermusicd --test mcp_stdio
 ```
 
 The unit tests use an in-process mock daemon. The stdio test starts the real
-binary, performs the MCP handshake, lists 13 tools, calls `now_playing` and
-checks that the process exits when stdin closes.
+binary, performs the MCP handshake, lists 19 tools, calls `now_playing` and
+checks that the process exits when stdin closes. The playlist tool tests cover
+the create, rename, delete, add, remove and move calls.
