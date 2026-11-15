@@ -1,7 +1,7 @@
 use axum::{
     Json, Router,
     extract::{Path as AxumPath, Query, State},
-    http::{HeaderMap, StatusCode},
+    http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{
         IntoResponse, Response,
         sse::{Event as SseEvent, KeepAlive, Sse},
@@ -36,6 +36,7 @@ use ytermusicd_core::{
 };
 
 use crate::{
+    artwork::ArtworkCache,
     downloads::DownloadControl,
     music::{MusicApi, core_track},
 };
@@ -47,6 +48,7 @@ pub struct AppState<S: AudioSink + Send + 'static> {
     playback: Arc<Mutex<PlaybackService<S>>>,
     events: EventBus,
     downloads: Arc<dyn DownloadControl>,
+    artwork: Arc<ArtworkCache>,
 }
 
 impl<S: AudioSink + Send + 'static> Clone for AppState<S> {
@@ -58,6 +60,7 @@ impl<S: AudioSink + Send + 'static> Clone for AppState<S> {
             playback: self.playback.clone(),
             events: self.events.clone(),
             downloads: self.downloads.clone(),
+            artwork: self.artwork.clone(),
         }
     }
 }
@@ -69,6 +72,7 @@ impl<S: AudioSink + Send + 'static> AppState<S> {
         playback: Arc<Mutex<PlaybackService<S>>>,
         events: EventBus,
         downloads: Arc<dyn DownloadControl>,
+        artwork: Arc<ArtworkCache>,
     ) -> Self {
         Self {
             started_at: Instant::now(),
@@ -77,6 +81,7 @@ impl<S: AudioSink + Send + 'static> AppState<S> {
             playback,
             events,
             downloads,
+            artwork,
         }
     }
 }
@@ -141,6 +146,7 @@ pub fn router<S: AudioSink + Send + 'static>(state: AppState<S>) -> Router {
         .route("/api/playlists", get(playlists))
         .route("/api/playlists/{id}", get(playlist))
         .route("/api/search", get(search))
+        .route("/api/tracks/{video_id}/cover", get(cover))
         .route("/api/queue", get(queue).post(queue_add).delete(queue_clear))
         .route("/api/queue/reorder", post(queue_reorder))
         .route("/api/queue/remove", post(queue_remove))
@@ -226,6 +232,49 @@ async fn search<S: AudioSink + Send + 'static>(
         .await
         .map(Json)
         .map_err(ApiFailure::upstream)
+}
+
+/// Serve a cached cover image.
+async fn cover<S: AudioSink + Send + 'static>(
+    State(state): State<AppState<S>>,
+    AxumPath(video_id): AxumPath<String>,
+    headers: HeaderMap,
+) -> Result<Response, ApiFailure> {
+    let Some(path) = state.artwork.ensure(&video_id).await else {
+        let message = if ArtworkCache::is_valid_video_id(&video_id) {
+            format!("cover art for {video_id} is not available")
+        } else {
+            format!("invalid video id {video_id}")
+        };
+        return Err(ApiFailure::not_found(message));
+    };
+    let bytes = tokio::fs::read(&path)
+        .await
+        .map_err(|error| ApiFailure::internal(format!("could not read cover art: {error}")))?;
+    let etag = format!("\"{video_id}-{}\"", bytes.len());
+    let matches = headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|value| value.to_str().ok())
+        == Some(etag.as_str());
+    if matches {
+        let mut response = StatusCode::NOT_MODIFIED.into_response();
+        set_cover_headers(response.headers_mut(), &etag);
+        return Ok(response);
+    }
+    let mut response = bytes.into_response();
+    set_cover_headers(response.headers_mut(), &etag);
+    Ok(response)
+}
+
+fn set_cover_headers(headers: &mut HeaderMap, etag: &str) {
+    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("image/jpeg"));
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("public, max-age=604800, immutable"),
+    );
+    if let Ok(value) = HeaderValue::from_str(etag) {
+        headers.insert(header::ETAG, value);
+    }
 }
 
 async fn queue<S: AudioSink + Send + 'static>(State(state): State<AppState<S>>) -> Json<ApiQueue> {
@@ -537,6 +586,7 @@ pub async fn serve<S: AudioSink + Send + 'static>(
     music: Arc<dyn MusicApi>,
     playback: Arc<Mutex<PlaybackService<S>>>,
     downloads: Arc<dyn DownloadControl>,
+    artwork: Arc<ArtworkCache>,
     commands: UnboundedSender<PlaybackCommand>,
     dbus: bool,
 ) -> io::Result<()> {
@@ -549,7 +599,7 @@ pub async fn serve<S: AudioSink + Send + 'static>(
 
     let events = playback.lock().await.events();
     if dbus {
-        match crate::mpris::spawn(commands, events.clone()) {
+        match crate::mpris::spawn(commands, events.clone(), artwork.clone()) {
             Ok(_) => log::info!("MPRIS media controls enabled"),
             Err(error) => log::warn!("MPRIS unavailable: {error}"),
         }
@@ -561,7 +611,7 @@ pub async fn serve<S: AudioSink + Send + 'static>(
     let local_addr = listener.local_addr()?;
     println!("ytermusicd listening on http://{local_addr}");
 
-    let state = AppState::new(auth, music, playback, events, downloads);
+    let state = AppState::new(auth, music, playback, events, downloads, artwork);
     axum::serve(listener, router(state))
         .with_graceful_shutdown(shutdown_signal())
         .await
@@ -739,9 +789,13 @@ fn playback_failure(error: PlaybackError) -> ApiFailure {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::artwork::CoverFetcher;
     use async_trait::async_trait;
     use futures_util::StreamExt;
-    use std::path::Path;
+    use std::{
+        path::Path,
+        sync::atomic::{AtomicUsize, Ordering},
+    };
     use ytermusicd_core::Track as CoreTrack;
 
     #[derive(Default)]
@@ -852,6 +906,30 @@ mod tests {
         }
     }
 
+    struct FakeCovers {
+        calls: AtomicUsize,
+    }
+
+    impl FakeCovers {
+        fn new() -> Self {
+            Self {
+                calls: AtomicUsize::new(0),
+            }
+        }
+
+        fn calls(&self) -> usize {
+            self.calls.load(Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait]
+    impl CoverFetcher for FakeCovers {
+        async fn fetch(&self, video_id: &str) -> Option<Vec<u8>> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            (video_id == "abcdefghijk").then(|| b"fake-jpeg-data".to_vec())
+        }
+    }
+
     fn test_state() -> AppState<MockSink> {
         test_state_with(Arc::new(MockMusicApi))
     }
@@ -864,6 +942,27 @@ mod tests {
         music: Arc<dyn MusicApi>,
         downloads: Arc<dyn DownloadControl>,
     ) -> AppState<MockSink> {
+        let artwork = Arc::new(ArtworkCache::with_fetcher(
+            std::env::temp_dir().join("ytermusicd-test-covers"),
+            0,
+            Arc::new(FakeCovers::new()),
+        ));
+        test_state_with_downloads_and_artwork(music, downloads, artwork)
+    }
+
+    fn test_state_with_artwork(artwork: Arc<ArtworkCache>) -> AppState<MockSink> {
+        test_state_with_downloads_and_artwork(
+            Arc::new(MockMusicApi),
+            Arc::new(MockDownloads::default()),
+            artwork,
+        )
+    }
+
+    fn test_state_with_downloads_and_artwork(
+        music: Arc<dyn MusicApi>,
+        downloads: Arc<dyn DownloadControl>,
+        artwork: Arc<ArtworkCache>,
+    ) -> AppState<MockSink> {
         let service = PlaybackService::new(MockSink, "/tmp/ytermusicd-test");
         let events = service.events();
         let playback = Arc::new(Mutex::new(service));
@@ -873,6 +972,7 @@ mod tests {
             playback,
             events,
             downloads,
+            artwork,
         )
     }
 
@@ -1512,6 +1612,84 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(missing_api.status(), reqwest::StatusCode::NOT_FOUND);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn serves_cached_cover_art_with_headers() {
+        let dir = tempfile::tempdir().unwrap();
+        let covers = Arc::new(FakeCovers::new());
+        let artwork = Arc::new(ArtworkCache::with_fetcher(
+            dir.path().join("covers"),
+            0,
+            covers.clone(),
+        ));
+        let (base, server) = start_server(test_state_with_artwork(artwork)).await;
+        let client = reqwest::Client::new();
+
+        let response = client
+            .get(format!("{base}/api/tracks/abcdefghijk/cover"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        assert_eq!(response.headers()["content-type"], "image/jpeg");
+        assert_eq!(
+            response.headers()["cache-control"],
+            "public, max-age=604800, immutable"
+        );
+        let etag = response.headers()["etag"].to_str().unwrap().to_string();
+        assert_eq!(response.bytes().await.unwrap().as_ref(), b"fake-jpeg-data");
+
+        let cached = client
+            .get(format!("{base}/api/tracks/abcdefghijk/cover"))
+            .header("If-None-Match", etag)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(cached.status(), reqwest::StatusCode::NOT_MODIFIED);
+        assert_eq!(covers.calls(), 1);
+        assert!(
+            std::fs::read_dir(dir.path().join("covers"))
+                .unwrap()
+                .filter_map(Result::ok)
+                .all(|entry| entry
+                    .path()
+                    .extension()
+                    .is_none_or(|extension| extension != "tmp"))
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn rejects_invalid_and_unavailable_covers() {
+        let dir = tempfile::tempdir().unwrap();
+        let covers = Arc::new(FakeCovers::new());
+        let artwork = Arc::new(ArtworkCache::with_fetcher(
+            dir.path().join("covers"),
+            0,
+            covers.clone(),
+        ));
+        let (base, server) = start_server(test_state_with_artwork(artwork)).await;
+        let client = reqwest::Client::new();
+
+        let invalid = client
+            .get(format!("{base}/api/tracks/short/cover"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(invalid.status(), reqwest::StatusCode::NOT_FOUND);
+        let body: serde_json::Value = invalid.json().await.unwrap();
+        assert_eq!(body["error"]["code"], "not_found");
+        assert_eq!(covers.calls(), 0);
+
+        let missing = client
+            .get(format!("{base}/api/tracks/zzzzzzzzzzz/cover"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(missing.status(), reqwest::StatusCode::NOT_FOUND);
+        assert_eq!(covers.calls(), 1);
         server.abort();
     }
 

@@ -21,11 +21,23 @@ if ! curl -fsS --max-time 5 "$BASE_URL/" | grep -q 'id="app"'; then
 fi
 echo "web: ok"
 
-if ! curl -fsS --max-time 15 "$BASE_URL/api/search?q=civilization" >/dev/null; then
+search=$(curl -fsS --max-time 15 "$BASE_URL/api/search?q=civilization")
+if ! grep -q '"tracks"' <<<"$search"; then
   echo "error: search endpoint failed" >&2
   exit 1
 fi
 echo "search: ok"
+
+video_id=$(grep -m1 -o '"video_id":"[^"]*"' <<<"$search" | cut -d'"' -f4)
+if [[ -z "$video_id" ]]; then
+  echo "error: search returned no video id" >&2
+  exit 1
+fi
+if ! curl -fsS --max-time 20 -o /dev/null "$BASE_URL/api/tracks/$video_id/cover"; then
+  echo "error: cover art endpoint failed" >&2
+  exit 1
+fi
+echo "cover: ok"
 
 sse_file=$(mktemp)
 trap 'rm -f "$sse_file"' EXIT

@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { DownloadStatus } from '@api/DownloadStatus';
   import type { Track } from '@api/Track';
-  import { downloadLabel, formatDuration, durationSeconds } from '../api';
+  import { downloadLabel, formatDuration, durationSeconds, coverUrl } from '../api';
   import type { MenuItem } from '../types';
   import ContextMenu from './ContextMenu.svelte';
 
@@ -101,6 +101,7 @@
 {:else}
   <div class="table-header" role="row">
     <span class="index">#</span>
+    <span class="cover-header" aria-hidden="true"></span>
     <span>Title</span>
     <span>Artist</span>
     <span class="optional">Album</span>
@@ -139,6 +140,19 @@
           <span class="index">
             {#if playing}<span class="play-marker" aria-label="Now playing">▶</span>{/if}
             {index + 1}
+          </span>
+          <span class="cover">
+            <img
+              src={coverUrl(track.video_id)}
+              alt=""
+              loading="lazy"
+              onload={(event) => {
+                (event.currentTarget as HTMLImageElement).style.display = '';
+              }}
+              onerror={(event) => {
+                (event.currentTarget as HTMLImageElement).style.display = 'none';
+              }}
+            />
           </span>
           <span class="title" title={track.title}>{track.title}</span>
           <span class="artist" title={track.artist}>{track.artist}</span>
@@ -183,7 +197,9 @@
   .table-header,
   .row {
     display: grid;
-    grid-template-columns: 3rem minmax(0, 2.2fr) minmax(0, 1.4fr) minmax(0, 1.2fr) 4rem 5.5rem 2rem;
+    grid-template-columns:
+      3rem 2.25rem minmax(0, 2.2fr) minmax(0, 1.4fr) minmax(0, 1.2fr) 4rem 5.5rem
+      2rem;
     align-items: center;
     gap: 0.6rem;
     padding: 0 0.75rem;
@@ -248,6 +264,24 @@
     white-space: nowrap;
   }
 
+  .cover {
+    width: 2rem;
+    height: 2rem;
+    overflow: hidden;
+    border: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+    border-radius: 2px;
+    background:
+      linear-gradient(135deg, color-mix(in srgb, var(--border) 18%, transparent), transparent),
+      color-mix(in srgb, var(--bg-raised) 70%, transparent);
+  }
+
+  .cover img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+
   .artist,
   .album {
     overflow: hidden;
@@ -292,7 +326,8 @@
   @media (max-width: 900px) {
     .table-header,
     .row {
-      grid-template-columns: 2.5rem minmax(0, 2fr) minmax(0, 1.2fr) 3.5rem 4.8rem 2rem;
+      grid-template-columns:
+        2.5rem 2rem minmax(0, 2fr) minmax(0, 1.2fr) 3.5rem 4.8rem 2rem;
     }
 
     .optional {

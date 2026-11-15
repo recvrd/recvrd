@@ -69,10 +69,11 @@ Current offline coverage is in `crates/ytpapi2`, `crates/ytermusicd-core`,
   repeat/shuffle restoration, download-failure handling, playback position and
   event-bus replay using a mock audio sink.
 - `ytermusicd` integration tests start the router on an ephemeral port and
-  cover every REST endpoint, SSE replay, download retry, static serving and
-  upstream error envelopes.
+  cover every REST endpoint, SSE replay, cover art caching, download retry,
+  static serving and upstream error envelopes.
 - Web tests cover the API client, event stream, store, keymap, track table,
-  queue, now playing, search, feedback banners and the app shell.
+  queue, now playing, search, feedback banners and the app shell. The track
+  table and now-playing tests check cover URLs and the missing-image fallback.
 
 The test harness provides:
 

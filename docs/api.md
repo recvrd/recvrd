@@ -49,6 +49,7 @@ Every non-2xx response uses one envelope:
 | GET | `/api/playlists` | Library playlists |
 | GET | `/api/playlists/{id}` | Playlist metadata and tracks |
 | GET | `/api/search?q=...` | Track and playlist search |
+| GET | `/api/tracks/{video_id}/cover` | Cached cover art (JPEG) |
 | GET | `/api/queue` | Queue snapshot |
 | POST | `/api/queue` | Enqueue a track (alias: `/api/queue/add`) |
 | DELETE | `/api/queue` | Clear the queue |
@@ -138,6 +139,25 @@ curl 'http://127.0.0.1:8080/api/search?q=civilization'
 
 Search returns `{ "tracks": [...], "playlists": [...] }`. An empty `q` is
 rejected with 400. Upstream failures return 502 with an actionable message.
+
+### Cover art
+
+```sh
+curl -o cover.jpg http://127.0.0.1:8080/api/tracks/abcdefghijk/cover
+```
+
+The daemon returns a JPEG with `Cache-Control: public, max-age=604800,
+immutable` and an `ETag`. A request with a matching `If-None-Match` header
+returns 304.
+
+The daemon fetches the image from YouTube and stores it in
+`$XDG_CACHE_HOME/ytermusicd/covers/<video_id>.jpg`. It tries
+`maxresdefault.jpg` first and falls back to `hqdefault.jpg`. An invalid video
+ID or a failed fetch returns 404 with the normal error envelope.
+
+Set `cover_cache_mb` in `config.toml` to limit the cache size. The default is
+100 MiB. A value of 0 disables the limit. This endpoint does not change the
+JSON `Track` shape.
 
 ### Playback and queue
 

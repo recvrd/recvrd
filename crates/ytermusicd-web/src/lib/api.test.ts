@@ -1,9 +1,16 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ApiError, createApi, durationSeconds, formatDuration } from './api';
+import { ApiError, coverUrl, createApi, durationSeconds, formatDuration } from './api';
 import { makeStatus, makeTrack } from '../test/fixtures';
 
 afterEach(() => {
   vi.unstubAllGlobals();
+});
+
+describe('cover URLs', () => {
+  it('encodes the video id', () => {
+    expect(coverUrl('abcdefghijk')).toBe('/api/tracks/abcdefghijk/cover');
+    expect(coverUrl('a/b c')).toBe('/api/tracks/a%2Fb%20c/cover');
+  });
 });
 
 describe('duration helpers', () => {

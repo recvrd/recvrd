@@ -42,6 +42,14 @@ describe('NowPlaying', () => {
     expect(api.next).toHaveBeenCalledOnce();
   });
 
+  it('shows cover art for the current track', () => {
+    const { store } = makeStore();
+    const { container } = render(NowPlaying, { props: { store } });
+
+    const cover = container.querySelector<HTMLImageElement>('.track .cover');
+    expect(cover?.getAttribute('src')).toBe('/api/tracks/v1/cover');
+  });
+
   it('seeks and changes the volume', async () => {
     const { api, store } = makeStore();
     render(NowPlaying, { props: { store } });

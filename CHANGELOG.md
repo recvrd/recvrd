@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Cache YouTube cover art and serve it at `/api/tracks/{video_id}/cover`.
+  The web UI shows thumbnails, and MPRIS sends `mpris:artUrl`.
+- Add `cover_cache_mb` to limit the cover cache. Default: 100 MiB.
+
 ## 0.1.3 — 2026-11-14
 
 ### Added

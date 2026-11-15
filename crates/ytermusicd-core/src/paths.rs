@@ -61,6 +61,7 @@ impl Paths {
             &self.data_dir,
             &self.state_dir,
             &self.downloads_dir(),
+            &self.covers_dir(),
         ] {
             std::fs::create_dir_all(dir)?;
         }
@@ -88,6 +89,10 @@ impl Paths {
 
     pub fn downloads_dir(&self) -> PathBuf {
         self.cache_dir.join("downloads")
+    }
+
+    pub fn covers_dir(&self) -> PathBuf {
+        self.cache_dir.join("covers")
     }
 
     pub fn database_file(&self) -> PathBuf {
@@ -132,6 +137,7 @@ mod tests {
             PathBuf::from("/legacy-config/headers.txt")
         );
         assert_eq!(paths.downloads_dir(), PathBuf::from("/cache/downloads"));
+        assert_eq!(paths.covers_dir(), PathBuf::from("/cache/covers"));
         assert_eq!(paths.database_file(), PathBuf::from("/cache/db.bin"));
         assert_eq!(paths.state_file(), PathBuf::from("/state/state.json"));
         assert_eq!(

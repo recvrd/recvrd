@@ -59,8 +59,20 @@ echo "health: ok"
 curl -fsS --max-time 5 "$base/" | grep -q 'id="app"'
 echo "web: ok"
 
-curl -fsS --max-time 30 "$base/api/search?q=civilization" | grep -q '"tracks"'
+search=$(curl -fsS --max-time 30 "$base/api/search?q=civilization")
+if ! grep -q '"tracks"' <<<"$search"; then
+  echo "error: search endpoint failed" >&2
+  exit 1
+fi
 echo "search: ok"
+
+video_id=$(grep -m1 -o '"video_id":"[^"]*"' <<<"$search" | cut -d'"' -f4)
+if [[ -z "$video_id" ]]; then
+  echo "error: search returned no video id" >&2
+  exit 1
+fi
+curl -fsS --max-time 20 -o /dev/null "$base/api/tracks/$video_id/cover"
+echo "cover: ok"
 
 sse=$(curl -sS -N --max-time 2 "$base/api/events" || true)
 if ! grep -q 'snapshot' <<<"$sse"; then
