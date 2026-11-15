@@ -26,7 +26,8 @@ schemars = "1.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 souvlaki = "0.7.3"
-tokio = { version = "1.36", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
+tokio = { version = "1.36", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
+url = "2"
 ytermusicd-api = { workspace = true, features = ["schema"] }
 ytermusicd-core.workspace = true
 ytpapi2.workspace = true
@@ -34,3 +35,4 @@ ytpapi2.workspace = true
 [dev-dependencies]
 common-structs.workspace = true
 serde_json = "1"
+tempfile = "3"

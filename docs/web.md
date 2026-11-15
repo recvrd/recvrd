@@ -48,8 +48,8 @@ artifacts contain the real app.
 - **Playlist** shows the track table and a *Play all* action.
 - **Queue** shows current and upcoming tracks.
 - **Search** is a modal palette.
-- **Now playing** shows the current track, controls, seek, volume and download
-  state.
+- **Now playing** shows the current track, cover art, controls, seek, volume
+  and download state.
 
 The now-playing bar has two layouts:
 
@@ -60,6 +60,9 @@ The now-playing bar has two layouts:
 
 Use the `terminal` or `bar` button in the now-playing bar to swap layouts. The
 web UI stores the choice in `localStorage`.
+
+The track table and the now-playing bar show cover art from
+`/api/tracks/{video_id}/cover`. A missing image leaves the placeholder visible.
 
 The store subscribes once to `/api/events`. It applies the snapshot and
 incremental playback, queue, download, track-ended, error and library events.

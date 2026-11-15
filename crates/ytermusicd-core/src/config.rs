@@ -29,6 +29,8 @@ pub struct DaemonConfig {
     pub dbus: bool,
     /// Initial volume, 0-100.
     pub initial_volume: u8,
+    /// Maximum size of the cover cache in MiB. 0 disables the limit.
+    pub cover_cache_mb: u64,
 }
 
 impl Default for DaemonConfig {
@@ -41,6 +43,7 @@ impl Default for DaemonConfig {
             downloader: Downloader::Ytdlp,
             dbus: true,
             initial_volume: 50,
+            cover_cache_mb: 100,
         }
     }
 }
@@ -119,6 +122,7 @@ mod tests {
         assert_eq!(config.downloader, Downloader::Ytdlp);
         assert!(config.dbus);
         assert_eq!(config.initial_volume, 50);
+        assert_eq!(config.cover_cache_mb, 100);
         assert_eq!(config.bind, None);
         assert_eq!(config.port, None);
         assert_eq!(config.headers, None);
@@ -138,6 +142,7 @@ parallel_downloads = 2
 downloader = "rusty_ytdl"
 dbus = false
 initial_volume = 75
+cover_cache_mb = 25
 "#,
         )
         .unwrap();
@@ -150,6 +155,7 @@ initial_volume = 75
         assert_eq!(config.downloader, Downloader::RustyYtdl);
         assert!(!config.dbus);
         assert_eq!(config.initial_volume, 75);
+        assert_eq!(config.cover_cache_mb, 25);
     }
 
     #[test]

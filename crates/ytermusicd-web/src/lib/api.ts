@@ -136,6 +136,10 @@ export function createApi(baseUrl = ''): YtermusicdApi {
   };
 }
 
+export function coverUrl(videoId: string): string {
+  return `/api/tracks/${encodeURIComponent(videoId)}/cover`;
+}
+
 export function durationSeconds(duration: string): number {
   const parts = duration.split(':').map(Number);
   if (parts.some((part) => !Number.isFinite(part))) return 0;

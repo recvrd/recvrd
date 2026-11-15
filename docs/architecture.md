@@ -62,8 +62,8 @@ routing fallback. See [docs/web.md](web.md).
 - **Config**: `config.toml` under the XDG config directory.
 - **Auth**: `headers.txt` (`Cookie` + `User-Agent`) and optional
   `account_id.txt`; never committed or logged.
-- **Cache**: downloaded `<video-id>.mp4` and `<video-id>.json` files plus
-  `db.bin`.
+- **Cache**: downloaded `<video-id>.mp4` and `<video-id>.json` files,
+  `covers/<video-id>.jpg` cover art and `db.bin`.
 - Runtime state: queue, current index, position, volume, shuffle/repeat,
   written atomically after commands, periodically while the daemon runs and on
   shutdown, then restored on startup (invalid state is quarantined as
@@ -90,8 +90,9 @@ The full contract and curl examples live in [docs/api.md](api.md). DTOs come
 from `ytermusicd-api`, which also generates the TypeScript bindings consumed by
 the web UI and MCP proxy.
 
-- REST: status, playlists, playlist detail, search, queue CRUD/reorder, play
-  playlist/track, pause/resume, next/previous, volume, seek, shuffle, repeat.
+- REST: status, playlists, playlist detail, search, cover art, queue
+  CRUD/reorder, play playlist/track, pause/resume, next/previous, volume, seek,
+  shuffle, repeat.
 - Every command returns the updated `Status` or `Queue`, so clients can render
   without waiting for the event stream.
 - SSE: an initial snapshot followed by playback, queue, download, track-ended,
@@ -110,6 +111,8 @@ display name `ytermusicd`. `playerctl -l` lists it while the daemon runs.
   the requested amount, set position and set volume.
 - Metadata and playback progress come from the event bus, so shell widgets and
   the HTTP API always agree.
+- Cover art comes from the cover cache. The daemon fetches the image in the
+  background and sends a `file://` URI in `mpris:artUrl`.
 - `OpenUri` and `Raise` are explicitly ignored (logged at info/debug level)
   instead of panicking: the daemon has no window to raise and does not accept
   arbitrary URIs.

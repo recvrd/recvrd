@@ -14,9 +14,10 @@
 `ytermusicd` keeps YouTube Music playback, queue and downloads in a long-running
 daemon. Clients are thin:
 
-- **Web UI** — library, search, queue, now playing and vim-style keys.
+- **Web UI** — library, search, queue, now playing, cover art and vim-style keys.
 - **MCP** — a stdio proxy exposing search/playback tools to assistants.
-- **MPRIS** — desktop media controls (`playerctl`, shell media widgets).
+- **MPRIS** — desktop media controls with cover art (`playerctl`, shell media
+  widgets).
 - **Legacy TUI** — the existing `ytermusic` client remains available.
 
 The API is the contract. State and DTOs live in the daemon/API crates; the web

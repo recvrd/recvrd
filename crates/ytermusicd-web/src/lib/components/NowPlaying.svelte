@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { AppStore } from '../store.svelte';
-  import { downloadLabel, durationSeconds, formatDuration } from '../api';
+  import { downloadLabel, durationSeconds, formatDuration, coverUrl } from '../api';
 
   let { store }: { store: AppStore } = $props();
 
@@ -44,26 +44,42 @@
 
   <div class="track">
     {#if track}
-      <div class="title" title={track.title}>{track.title}</div>
-      <div class="meta" title={`${track.artist} — ${track.album}`}>
-        {track.artist}
-        {#if track.album}<span class="muted"> · {track.album}</span>{/if}
-      </div>
-      {#if store.playerLayout === 'terminal' && store.queue?.current != null}
-        <div class="queue-position">
-          Track {store.queue.current + 1} of {store.queue.items.length}
+      <img
+        class="cover"
+        src={coverUrl(track.video_id)}
+        alt=""
+        loading="lazy"
+        onload={(event) => {
+          (event.currentTarget as HTMLImageElement).style.display = '';
+        }}
+        onerror={(event) => {
+          (event.currentTarget as HTMLImageElement).style.display = 'none';
+        }}
+      />
+      <div class="track-text">
+        <div class="title" title={track.title}>{track.title}</div>
+        <div class="meta" title={`${track.artist} — ${track.album}`}>
+          {track.artist}
+          {#if track.album}<span class="muted"> · {track.album}</span>{/if}
         </div>
-      {/if}
-      {#if download && download.state === 'failed'}
-        <button class="retry" onclick={() => store.retryDownload(track.video_id)}>
-          Download failed — retry
-        </button>
-      {:else if download}
-        <span class="badge {download.state}">{downloadLabel(download)}</span>
-      {/if}
+        {#if store.playerLayout === 'terminal' && store.queue?.current != null}
+          <div class="queue-position">
+            Track {store.queue.current + 1} of {store.queue.items.length}
+          </div>
+        {/if}
+        {#if download && download.state === 'failed'}
+          <button class="retry" onclick={() => store.retryDownload(track.video_id)}>
+            Download failed — retry
+          </button>
+        {:else if download}
+          <span class="badge {download.state}">{downloadLabel(download)}</span>
+        {/if}
+      </div>
     {:else}
-      <div class="title muted">Nothing playing</div>
-      <div class="meta muted">Select a track and press Enter.</div>
+      <div class="track-text">
+        <div class="title muted">Nothing playing</div>
+        <div class="meta muted">Select a track and press Enter.</div>
+      </div>
     {/if}
   </div>
 
@@ -161,9 +177,27 @@
     grid-area: track;
     min-width: 0;
     display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 0.65rem;
+  }
+
+  .track-text {
+    min-width: 0;
+    display: flex;
     flex-direction: column;
     gap: 0.15rem;
     align-items: flex-start;
+  }
+
+  .cover {
+    width: 2.75rem;
+    height: 2.75rem;
+    flex: none;
+    object-fit: cover;
+    border: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+    border-radius: 3px;
+    background: color-mix(in srgb, var(--bg-raised) 70%, transparent);
   }
 
   .title {

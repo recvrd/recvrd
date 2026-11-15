@@ -1,19 +1,34 @@
 use souvlaki::{MediaControlEvent, MediaMetadata, MediaPlayback, MediaPosition, SeekDirection};
-use std::{sync::mpsc, thread, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex, mpsc},
+    thread,
+    time::Duration,
+};
 use tokio::sync::mpsc::UnboundedSender;
+use url::Url;
 use ytermusicd_core::{CoreEvent, EventBus, PlaybackCommand, PlaybackSnapshot, PlaybackStatus};
 
+use crate::artwork::ArtworkCache;
+
 pub struct MprisHandle;
+
+enum MprisUpdate {
+    Snapshot(PlaybackSnapshot),
+    Cover { video_id: String, path: PathBuf },
+}
 
 #[cfg(target_os = "linux")]
 pub fn spawn(
     commands: UnboundedSender<PlaybackCommand>,
     events: EventBus,
+    artwork: Arc<ArtworkCache>,
 ) -> Result<MprisHandle, String> {
     use souvlaki::{MediaControls, PlatformConfig};
 
     let (ready_tx, ready_rx) = mpsc::channel();
-    let (snapshot_tx, snapshot_rx) = mpsc::channel();
+    let (update_tx, update_rx) = mpsc::channel();
+    let thread_artwork = artwork.clone();
 
     thread::Builder::new()
         .name("ytermusicd-mpris".to_string())
@@ -40,8 +55,27 @@ pub fn spawn(
             }
             let _ = ready_tx.send(Ok(()));
 
-            while let Ok(snapshot) = snapshot_rx.recv() {
-                update_controls(&mut controls, &snapshot);
+            let mut current = PlaybackSnapshot::default();
+            while let Ok(update) = update_rx.recv() {
+                match update {
+                    MprisUpdate::Snapshot(snapshot) => {
+                        current = snapshot;
+                        let cover = current
+                            .current
+                            .as_ref()
+                            .and_then(|track| thread_artwork.cached_path(&track.video_id));
+                        update_controls(&mut controls, &current, cover.as_deref());
+                    }
+                    MprisUpdate::Cover { video_id, path } => {
+                        if current
+                            .current
+                            .as_ref()
+                            .is_some_and(|track| track.video_id == video_id)
+                        {
+                            update_controls(&mut controls, &current, Some(&path));
+                        }
+                    }
+                }
             }
         })
         .map_err(|error| error.to_string())?;
@@ -49,11 +83,38 @@ pub fn spawn(
     ready_rx.recv().map_err(|error| error.to_string())??;
 
     let (initial, mut receiver) = events.subscribe();
-    let _ = snapshot_tx.send(initial.playback);
+    let initial_id = initial
+        .playback
+        .current
+        .as_ref()
+        .map(|track| track.video_id.clone());
+    let current_id = Arc::new(Mutex::new(initial_id.clone()));
+    let _ = update_tx.send(MprisUpdate::Snapshot(initial.playback));
+    if let Some(video_id) = initial_id {
+        prefetch_cover(
+            artwork.clone(),
+            update_tx.clone(),
+            current_id.clone(),
+            video_id,
+        );
+    }
     tokio::spawn(async move {
         while let Ok(envelope) = receiver.recv().await {
             if let CoreEvent::Playback(snapshot) = envelope.event {
-                let _ = snapshot_tx.send(snapshot);
+                let video_id = snapshot
+                    .current
+                    .as_ref()
+                    .map(|track| track.video_id.clone());
+                *current_id.lock().unwrap() = video_id.clone();
+                let _ = update_tx.send(MprisUpdate::Snapshot(snapshot));
+                if let Some(video_id) = video_id {
+                    prefetch_cover(
+                        artwork.clone(),
+                        update_tx.clone(),
+                        current_id.clone(),
+                        video_id,
+                    );
+                }
             }
         }
     });
@@ -65,12 +126,41 @@ pub fn spawn(
 pub fn spawn(
     _commands: UnboundedSender<PlaybackCommand>,
     _events: EventBus,
+    _artwork: Arc<ArtworkCache>,
 ) -> Result<MprisHandle, String> {
     Ok(MprisHandle)
 }
 
-fn update_controls(controls: &mut souvlaki::MediaControls, snapshot: &PlaybackSnapshot) {
-    let metadata = media_metadata(snapshot);
+fn prefetch_cover(
+    artwork: Arc<ArtworkCache>,
+    updates: mpsc::Sender<MprisUpdate>,
+    current_id: Arc<Mutex<Option<String>>>,
+    video_id: String,
+) {
+    tokio::spawn(async move {
+        if artwork.cached_path(&video_id).is_some() {
+            return;
+        }
+        let Some(path) = artwork.ensure(&video_id).await else {
+            return;
+        };
+        if is_current_track(&current_id, &video_id) {
+            let _ = updates.send(MprisUpdate::Cover { video_id, path });
+        }
+    });
+}
+
+fn is_current_track(current_id: &Mutex<Option<String>>, video_id: &str) -> bool {
+    current_id.lock().unwrap().as_deref() == Some(video_id)
+}
+
+fn update_controls(
+    controls: &mut souvlaki::MediaControls,
+    snapshot: &PlaybackSnapshot,
+    cover: Option<&Path>,
+) {
+    let cover_url = cover.and_then(cover_uri);
+    let metadata = media_metadata(snapshot, cover_url.as_deref());
     if let Err(error) = controls.set_metadata(metadata) {
         log::warn!("MPRIS metadata update failed: {error:?}");
     }
@@ -80,7 +170,15 @@ fn update_controls(controls: &mut souvlaki::MediaControls, snapshot: &PlaybackSn
     }
 }
 
-pub fn media_metadata(snapshot: &PlaybackSnapshot) -> MediaMetadata<'_> {
+/// Build a `file://` URL for MPRIS cover art.
+pub fn cover_uri(path: &Path) -> Option<String> {
+    Url::from_file_path(path).ok().map(|url| url.to_string())
+}
+
+pub fn media_metadata<'a>(
+    snapshot: &'a PlaybackSnapshot,
+    cover_url: Option<&'a str>,
+) -> MediaMetadata<'a> {
     let current = snapshot.current.as_ref();
     let duration = current
         .and_then(|track| parse_duration(&track.duration))
@@ -89,7 +187,7 @@ pub fn media_metadata(snapshot: &PlaybackSnapshot) -> MediaMetadata<'_> {
         title: current.map(|track| track.title.as_str()),
         album: current.map(|track| track.album.as_str()),
         artist: current.map(|track| track.author.as_str()),
-        cover_url: None,
+        cover_url,
         duration,
     }
 }
@@ -174,11 +272,39 @@ mod tests {
     #[test]
     fn metadata_comes_from_the_snapshot() {
         let snapshot = snapshot(PlaybackStatus::Playing);
-        let metadata = media_metadata(&snapshot);
+        let metadata = media_metadata(&snapshot, None);
         assert_eq!(metadata.title, Some("Song"));
         assert_eq!(metadata.artist, Some("Artist"));
         assert_eq!(metadata.album, Some("Album"));
         assert_eq!(metadata.duration, Some(Duration::from_secs(185)));
+        assert_eq!(metadata.cover_url, None);
+    }
+
+    #[test]
+    fn cover_urls_use_the_file_scheme() {
+        assert_eq!(
+            cover_uri(Path::new("/tmp/covers/v1.jpg")).as_deref(),
+            Some("file:///tmp/covers/v1.jpg")
+        );
+        assert_eq!(
+            cover_uri(Path::new("/tmp/a b.jpg")).as_deref(),
+            Some("file:///tmp/a%20b.jpg")
+        );
+        assert_eq!(cover_uri(Path::new("relative.jpg")), None);
+
+        let snapshot = snapshot(PlaybackStatus::Playing);
+        let metadata = media_metadata(&snapshot, Some("file:///tmp/covers/v1.jpg"));
+        assert_eq!(metadata.cover_url, Some("file:///tmp/covers/v1.jpg"));
+    }
+
+    #[test]
+    fn stale_cover_updates_are_ignored() {
+        let current = Mutex::new(Some("abcdefghijk".to_string()));
+        assert!(is_current_track(&current, "abcdefghijk"));
+        assert!(!is_current_track(&current, "zzzzzzzzzzz"));
+
+        *current.lock().unwrap() = None;
+        assert!(!is_current_track(&current, "abcdefghijk"));
     }
 
     #[test]

@@ -29,6 +29,26 @@ describe('TrackTable', () => {
     expect(container.querySelector('.row.playing')).not.toBeNull();
   });
 
+  it('loads cover art for each row', () => {
+    const { container } = render(TrackTable, { props: props() });
+    const covers = container.querySelectorAll<HTMLImageElement>('.row .cover img');
+
+    expect(covers).toHaveLength(2);
+    expect(covers[0].getAttribute('src')).toBe('/api/tracks/v1/cover');
+    expect(covers[0]).toHaveAttribute('loading', 'lazy');
+  });
+
+  it('hides a cover that fails to load and shows it again on load', async () => {
+    const { container } = render(TrackTable, { props: props() });
+    const cover = container.querySelector<HTMLImageElement>('.row .cover img')!;
+
+    await fireEvent.error(cover);
+    expect(cover.style.display).toBe('none');
+
+    await fireEvent.load(cover);
+    expect(cover.style.display).toBe('');
+  });
+
   it('selects, plays and opens the context menu', async () => {
     const actions = props();
     const { container } = render(TrackTable, { props: actions });

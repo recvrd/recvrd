@@ -5,6 +5,7 @@ use ytermusicd_core::{
     AuthStatus, DaemonConfig, Downloader as ConfigDownloader, Paths, PlaybackService, resolve_auth,
 };
 
+mod artwork;
 mod audio;
 mod downloads;
 mod mcp;
@@ -14,6 +15,7 @@ mod server;
 mod web;
 
 use crate::{
+    artwork::ArtworkCache,
     audio::RodioSink,
     downloads::{DownloadControl, DownloadService},
     music::{MusicApi, UnavailableMusicApi, YoutubeMusicApi},
@@ -139,6 +141,7 @@ fn run_serve(
 
     let dbus = config.dbus;
     let parallel_downloads = config.parallel_downloads;
+    let cover_cache_bytes = config.cover_cache_mb.saturating_mul(1024 * 1024);
     let downloader = match config.downloader {
         ConfigDownloader::Ytdlp => download_manager::Downloader::YtDlp,
         ConfigDownloader::RustyYtdl => {
@@ -147,6 +150,7 @@ fn run_serve(
         }
     };
     let cache_dir = paths.cache_dir.clone();
+    let covers_dir = paths.covers_dir();
     let state_path = paths.state_file();
     log::info!("starting ytermusicd serve on {bind}:{port}");
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -203,6 +207,7 @@ fn run_serve(
             downloads.queue_playlist(&restored_tracks);
         }
         let downloads: Arc<dyn DownloadControl> = Arc::new(downloads);
+        let artwork = Arc::new(ArtworkCache::new(covers_dir, cover_cache_bytes));
 
         let (commands, mut command_rx) = mpsc::unbounded_channel();
         let command_playback = playback.clone();
@@ -247,6 +252,7 @@ fn run_serve(
             music,
             serve_playback,
             downloads,
+            artwork,
             commands,
             dbus,
         )

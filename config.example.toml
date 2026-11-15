@@ -24,3 +24,6 @@ dbus = true
 
 # Initial player volume, 0-100.
 initial_volume = 50
+
+# Maximum size of the cover cache in MiB. 0 disables the limit.
+cover_cache_mb = 100
