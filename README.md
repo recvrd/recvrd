@@ -1,6 +1,6 @@
 # ytermusicd
 
-> **v0.1.3.** `ytermusicd` is a headless daemon fork of
+> **v0.2.0.** `ytermusicd` is a headless daemon fork of
 > [ytermusic](https://github.com/ccgauche/ytermusic), adding a web UI, MPRIS and
 > MCP. The daemon, REST/SSE API, web UI, MPRIS, MCP, playlist editing and
 > packaging work today.
@@ -37,7 +37,7 @@ UI, MCP proxy and any future TUI are clients.
 | Web UI (library, search, queue, now playing, vim keys) | ✅ |
 | systemd unit, Nix package/module | ✅ |
 | MCP proxy (19 tools) | ✅ |
-| v0.1.3 release | ✅ |
+| v0.2.0 release | ✅ |
 
 See the [roadmap](https://github.com/suorcd/ytermusicd/issues/25) for the
 ordered backlog.

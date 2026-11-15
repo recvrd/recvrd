@@ -20,9 +20,9 @@
         in
         pkgs.buildNpmPackage {
           pname = "ytermusicd-web";
-          version = "0.1.3";
+          version = "0.2.0";
           src = ./crates/ytermusicd-web;
-          npmDepsHash = "sha256-+XBmzgLPhwCHvknc87v0a/8dDu/qNxD2bBtO343qfZM=";
+          npmDepsHash = "sha256-OFvOHkfAUf+UcN9d39jkrh7Uo5biAbARAdKSTHy4ZIM=";
           buildPhase = "npm run build";
           installPhase = "cp -r dist $out";
         };
@@ -35,7 +35,7 @@
         in
         pkgs.rustPlatform.buildRustPackage {
           pname = "ytermusicd";
-          version = "0.1.3";
+          version = "0.2.0";
           src = self;
 
           cargoLock = {
