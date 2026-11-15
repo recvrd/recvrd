@@ -28,7 +28,7 @@ if ! grep -q '"tracks"' <<<"$search"; then
 fi
 echo "search: ok"
 
-video_id=$(grep -m1 -o '"video_id":"[^"]*"' <<<"$search" | cut -d'"' -f4)
+video_id=$(printf '%s' "$search" | tr ',' '\n' | grep -m1 -o '"video_id":"[^"]*"' | cut -d'"' -f4)
 if [[ -z "$video_id" ]]; then
   echo "error: search returned no video id" >&2
   exit 1
