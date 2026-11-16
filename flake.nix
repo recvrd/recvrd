@@ -84,6 +84,34 @@
           };
         };
 
+      ytermusicTuiFor =
+        system:
+        let
+          pkgs = import nixpkgs { inherit system; };
+          inherit (pkgs) lib;
+        in
+        pkgs.rustPlatform.buildRustPackage {
+          pname = "ytermusic-tui";
+          version = "0.2.0";
+          src = self;
+
+          cargoLock = {
+            lockFile = ./Cargo.lock;
+            outputHashes = {
+              "rusty_ytdl-0.7.4" = "sha256-mCX+vylB4uV8GFhv8vLC69MEszEkfUgA7xXtD1fP6go=";
+            };
+          };
+
+          cargoBuildFlags = [ "--package" "ytermusic-tui" ];
+          doCheck = false;
+
+          meta = {
+            description = "Terminal client for the ytermusicd daemon";
+            license = lib.licenses.asl20;
+            mainProgram = "ytermusic-tui";
+          };
+        };
+
       nixosModule =
         { config, lib, pkgs, ... }:
         let
@@ -218,12 +246,17 @@
       packages = forAllSystems (system: {
         default = ytermusicdFor system;
         ytermusicd = ytermusicdFor system;
+        ytermusic-tui = ytermusicTuiFor system;
       });
 
       apps = forAllSystems (system: {
         default = {
           type = "app";
           program = "${self.packages.${system}.ytermusicd}/bin/ytermusicd";
+        };
+        ytermusic-tui = {
+          type = "app";
+          program = "${self.packages.${system}.ytermusic-tui}/bin/ytermusic-tui";
         };
       });
 

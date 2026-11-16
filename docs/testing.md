@@ -17,6 +17,7 @@ nix develop
 | `just fmt` | Format the workspace |
 | `just clippy` | Clippy only |
 | `just dev` | Run the daemon with the default bind/port |
+| `just tui` | Run the terminal client against the default daemon URL |
 | `just web-install` | Install web UI dependencies (`npm ci`) |
 | `just web` | Run the Vite dev server with an `/api` proxy |
 | `just web-check` | Type-check and build the web UI |
@@ -36,7 +37,9 @@ for non-Nix setups.
 3. **Credentialed tests** are marked `#[ignore]`. The `ytpapi2` tests are the
    current example: they read a real `headers.txt` and call YouTube Music.
 4. **Web tests** use Vitest and Testing Library in `crates/ytermusicd-web`.
-5. **Smoke tests** run against a real daemon and are scripted in
+5. **Terminal client tests** use `ratatui::backend::TestBackend`. They render at
+   80x24 and 120x40, and they need no TTY or network.
+6. **Smoke tests** run against a real daemon and are scripted in
    `scripts/smoke.sh`.
 
 ### Credentialed tests

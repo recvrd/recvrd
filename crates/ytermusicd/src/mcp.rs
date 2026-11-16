@@ -8,280 +8,18 @@ use rmcp::{
     schemars, tool, tool_handler, tool_router,
     transport::stdio,
 };
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use std::{fmt, time::Duration};
+use serde::{Deserialize, Serialize};
 use ytermusicd_api::{
-    AddPlaylistTracksRequest, CreatePlaylistRequest, DownloadSummary, ErrorEnvelope,
-    MovePlaylistTrackRequest, OkResponse, PlayPlaylistRequest, PlayTrackRequest, Playlist,
-    PlaylistDetail, PlaylistPrivacy, Queue, QueueItem, QueueRequest, RemovePlaylistTracksRequest,
-    SearchResults, Status, Track, UpdatePlaylistRequest,
+    CreatePlaylistRequest, DownloadSummary, OkResponse, Playlist, PlaylistDetail, PlaylistPrivacy,
+    Queue, QueueItem, SearchResults, Status, Track, UpdatePlaylistRequest,
 };
+use ytermusicd_client::DaemonClient;
 
-const DEFAULT_URL: &str = "http://127.0.0.1:8080";
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// HTTP client for the daemon. It holds no playback state.
-#[derive(Debug, Clone)]
-pub struct DaemonClient {
-    base_url: String,
-    http: reqwest::Client,
-}
-
-#[derive(Debug)]
-pub struct DaemonError {
-    code: String,
-    message: String,
-}
-
-impl DaemonError {
-    fn unavailable(base_url: &str, error: impl fmt::Display) -> Self {
-        Self {
-            code: "daemon_unavailable".to_string(),
-            message: format!(
-                "Cannot reach the daemon at {base_url}. Start it with: ytermusicd serve ({error})"
-            ),
-        }
-    }
-
-    fn response(status: reqwest::StatusCode, envelope: Option<ErrorEnvelope>) -> Self {
-        match envelope {
-            Some(envelope) => Self {
-                code: envelope.error.code,
-                message: envelope.error.message,
-            },
-            None => Self {
-                code: "http_error".to_string(),
-                message: format!("the daemon returned HTTP {status}"),
-            },
-        }
-    }
-
-    fn invalid_response(error: impl fmt::Display) -> Self {
-        Self {
-            code: "invalid_response".to_string(),
-            message: format!("the daemon returned an invalid response: {error}"),
-        }
-    }
-
-    fn to_mcp(&self) -> McpError {
-        McpError::internal_error(
-            format!("daemon error ({}): {}", self.code, self.message),
-            None,
-        )
-    }
-}
-
-impl fmt::Display for DaemonError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "{}: {}", self.code, self.message)
-    }
-}
-
-impl std::error::Error for DaemonError {}
-
-impl DaemonClient {
-    pub fn new(base_url: impl Into<String>) -> Result<Self, reqwest::Error> {
-        let http = reqwest::Client::builder()
-            .timeout(REQUEST_TIMEOUT)
-            .build()?;
-        Ok(Self {
-            base_url: base_url.into().trim_end_matches('/').to_string(),
-            http,
-        })
-    }
-
-    async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, DaemonError> {
-        self.request(reqwest::Method::GET, path, None).await
-    }
-
-    async fn post<T: DeserializeOwned, B: Serialize>(
-        &self,
-        path: &str,
-        body: &B,
-    ) -> Result<T, DaemonError> {
-        self.request(
-            reqwest::Method::POST,
-            path,
-            Some(serde_json::to_value(body).map_err(DaemonError::invalid_response)?),
-        )
-        .await
-    }
-
-    async fn patch<T: DeserializeOwned, B: Serialize>(
-        &self,
-        path: &str,
-        body: &B,
-    ) -> Result<T, DaemonError> {
-        self.request(
-            reqwest::Method::PATCH,
-            path,
-            Some(serde_json::to_value(body).map_err(DaemonError::invalid_response)?),
-        )
-        .await
-    }
-
-    async fn delete<T: DeserializeOwned>(&self, path: &str) -> Result<T, DaemonError> {
-        self.request(reqwest::Method::DELETE, path, None).await
-    }
-
-    async fn request<T: DeserializeOwned>(
-        &self,
-        method: reqwest::Method,
-        path: &str,
-        body: Option<serde_json::Value>,
-    ) -> Result<T, DaemonError> {
-        let mut request = self
-            .http
-            .request(method, format!("{}{path}", self.base_url));
-        if let Some(body) = body {
-            request = request.json(&body);
-        }
-        let response = request
-            .send()
-            .await
-            .map_err(|error| DaemonError::unavailable(&self.base_url, error))?;
-        let status = response.status();
-        if !status.is_success() {
-            let envelope = response.json::<ErrorEnvelope>().await.ok();
-            return Err(DaemonError::response(status, envelope));
-        }
-        response
-            .json::<T>()
-            .await
-            .map_err(DaemonError::invalid_response)
-    }
-
-    pub async fn status(&self) -> Result<Status, DaemonError> {
-        self.get("/api/status").await
-    }
-
-    pub async fn playlists(&self) -> Result<Vec<Playlist>, DaemonError> {
-        self.get("/api/playlists").await
-    }
-
-    pub async fn playlist(&self, playlist_id: &str) -> Result<PlaylistDetail, DaemonError> {
-        self.get(&format!("/api/playlists/{}", encode(playlist_id)))
-            .await
-    }
-
-    pub async fn create_playlist(
-        &self,
-        request: &CreatePlaylistRequest,
-    ) -> Result<Playlist, DaemonError> {
-        self.post("/api/playlists", request).await
-    }
-
-    pub async fn update_playlist(
-        &self,
-        playlist_id: &str,
-        request: &UpdatePlaylistRequest,
-    ) -> Result<Playlist, DaemonError> {
-        self.patch(&format!("/api/playlists/{}", encode(playlist_id)), request)
-            .await
-    }
-
-    pub async fn delete_playlist(&self, playlist_id: &str) -> Result<OkResponse, DaemonError> {
-        self.delete(&format!("/api/playlists/{}", encode(playlist_id)))
-            .await
-    }
-
-    pub async fn add_playlist_tracks(
-        &self,
-        playlist_id: &str,
-        video_ids: Vec<String>,
-    ) -> Result<Vec<Track>, DaemonError> {
-        self.post(
-            &format!("/api/playlists/{}/tracks", encode(playlist_id)),
-            &AddPlaylistTracksRequest { video_ids },
-        )
-        .await
-    }
-
-    pub async fn remove_playlist_tracks(
-        &self,
-        playlist_id: &str,
-        indices: Vec<usize>,
-    ) -> Result<Vec<Track>, DaemonError> {
-        self.post(
-            &format!("/api/playlists/{}/tracks/remove", encode(playlist_id)),
-            &RemovePlaylistTracksRequest { indices },
-        )
-        .await
-    }
-
-    pub async fn move_playlist_track(
-        &self,
-        playlist_id: &str,
-        from: usize,
-        to: usize,
-    ) -> Result<Vec<Track>, DaemonError> {
-        self.post(
-            &format!("/api/playlists/{}/tracks/move", encode(playlist_id)),
-            &MovePlaylistTrackRequest { from, to },
-        )
-        .await
-    }
-
-    pub async fn search(&self, query: &str) -> Result<SearchResults, DaemonError> {
-        self.get(&format!("/api/search?q={}", encode(query))).await
-    }
-
-    pub async fn queue(&self) -> Result<Queue, DaemonError> {
-        self.get("/api/queue").await
-    }
-
-    pub async fn play_playlist(&self, playlist_id: &str) -> Result<Status, DaemonError> {
-        self.post(
-            "/api/play/playlist",
-            &PlayPlaylistRequest {
-                playlist_id: playlist_id.to_string(),
-            },
-        )
-        .await
-    }
-
-    pub async fn play_track(&self, track: Track) -> Result<Status, DaemonError> {
-        self.post("/api/play/track", &PlayTrackRequest { track })
-            .await
-    }
-
-    pub async fn queue_add(&self, track: Track) -> Result<Queue, DaemonError> {
-        self.post("/api/queue", &QueueRequest { track }).await
-    }
-
-    pub async fn pause(&self) -> Result<Status, DaemonError> {
-        self.post("/api/pause", &serde_json::json!({})).await
-    }
-
-    pub async fn resume(&self) -> Result<Status, DaemonError> {
-        self.post("/api/resume", &serde_json::json!({})).await
-    }
-
-    pub async fn next(&self) -> Result<Status, DaemonError> {
-        self.post("/api/next", &serde_json::json!({})).await
-    }
-
-    pub async fn previous(&self) -> Result<Status, DaemonError> {
-        self.post("/api/previous", &serde_json::json!({})).await
-    }
-
-    pub async fn volume(&self, volume: u8) -> Result<Status, DaemonError> {
-        self.post("/api/volume", &serde_json::json!({ "volume": volume }))
-            .await
-    }
-}
-
-fn encode(value: &str) -> String {
-    let mut encoded = String::with_capacity(value.len());
-    for byte in value.bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                encoded.push(byte as char);
-            }
-            _ => encoded.push_str(&format!("%{byte:02X}")),
-        }
-    }
-    encoded
+fn to_mcp(error: ytermusicd_client::DaemonError) -> McpError {
+    McpError::internal_error(
+        format!("daemon error ({}): {}", error.code, error.message),
+        None,
+    )
 }
 
 #[derive(Debug, Clone)]
@@ -401,17 +139,13 @@ impl McpServer {
             .search(&args.query)
             .await
             .map(Json)
-            .map_err(|error| error.to_mcp())
+            .map_err(to_mcp)
     }
 
     /// List the playlists in the YouTube Music library.
     #[tool(description = "List the playlists in the YouTube Music library")]
     async fn list_playlists(&self) -> Result<Json<Vec<Playlist>>, McpError> {
-        self.client
-            .playlists()
-            .await
-            .map(Json)
-            .map_err(|error| error.to_mcp())
+        self.client.playlists().await.map(Json).map_err(to_mcp)
     }
 
     /// Get one playlist and its tracks.
@@ -424,7 +158,7 @@ impl McpServer {
             .playlist(&args.playlist_id)
             .await
             .map(Json)
-            .map_err(|error| error.to_mcp())
+            .map_err(to_mcp)
     }
 
     /// Create a playlist.
@@ -442,7 +176,7 @@ impl McpServer {
             .create_playlist(&request)
             .await
             .map(Json)
-            .map_err(|error| error.to_mcp())
+            .map_err(to_mcp)
     }
 
     /// Rename a playlist.
@@ -458,7 +192,7 @@ impl McpServer {
             )
             .await
             .map(Json)
-            .map_err(|error| error.to_mcp())
+            .map_err(to_mcp)
     }
 
     /// Delete a playlist.
@@ -471,7 +205,7 @@ impl McpServer {
             .delete_playlist(&args.playlist_id)
             .await
             .map(Json)
-            .map_err(|error| error.to_mcp())
+            .map_err(to_mcp)
     }
 
     /// Add tracks to a playlist.
@@ -484,7 +218,7 @@ impl McpServer {
             .add_playlist_tracks(&args.playlist_id, args.video_ids)
             .await
             .map(Json)
-            .map_err(|error| error.to_mcp())
+            .map_err(to_mcp)
     }
 
     /// Remove tracks from a playlist by index.
@@ -497,7 +231,7 @@ impl McpServer {
             .remove_playlist_tracks(&args.playlist_id, args.indices)
             .await
             .map(Json)
-            .map_err(|error| error.to_mcp())
+            .map_err(to_mcp)
     }
 
     /// Move a track within a playlist.
@@ -510,7 +244,7 @@ impl McpServer {
             .move_playlist_track(&args.playlist_id, args.from, args.to)
             .await
             .map(Json)
-            .map_err(|error| error.to_mcp())
+            .map_err(to_mcp)
     }
 
     /// Replace the queue with a playlist and start playback.
@@ -523,7 +257,7 @@ impl McpServer {
             .play_playlist(&args.playlist_id)
             .await
             .map(Json)
-            .map_err(|error| error.to_mcp())
+            .map_err(to_mcp)
     }
 
     /// Play a track immediately.
@@ -536,7 +270,7 @@ impl McpServer {
             .play_track(args.track)
             .await
             .map(Json)
-            .map_err(|error| error.to_mcp())
+            .map_err(to_mcp)
     }
 
     /// Add a track to the queue.
@@ -549,57 +283,37 @@ impl McpServer {
             .queue_add(args.track)
             .await
             .map(Json)
-            .map_err(|error| error.to_mcp())
+            .map_err(to_mcp)
     }
 
     /// Get the current track and playback state.
     #[tool(description = "Get the current track and playback state")]
     async fn now_playing(&self) -> Result<Json<Status>, McpError> {
-        self.client
-            .status()
-            .await
-            .map(Json)
-            .map_err(|error| error.to_mcp())
+        self.client.status().await.map(Json).map_err(to_mcp)
     }
 
     /// Pause playback.
     #[tool(description = "Pause playback")]
     async fn pause(&self) -> Result<Json<Status>, McpError> {
-        self.client
-            .pause()
-            .await
-            .map(Json)
-            .map_err(|error| error.to_mcp())
+        self.client.pause().await.map(Json).map_err(to_mcp)
     }
 
     /// Resume playback.
     #[tool(description = "Resume playback")]
     async fn resume(&self) -> Result<Json<Status>, McpError> {
-        self.client
-            .resume()
-            .await
-            .map(Json)
-            .map_err(|error| error.to_mcp())
+        self.client.resume().await.map(Json).map_err(to_mcp)
     }
 
     /// Skip to the next track.
     #[tool(description = "Skip to the next track")]
     async fn next(&self) -> Result<Json<Status>, McpError> {
-        self.client
-            .next()
-            .await
-            .map(Json)
-            .map_err(|error| error.to_mcp())
+        self.client.next().await.map(Json).map_err(to_mcp)
     }
 
     /// Go to the previous track.
     #[tool(description = "Go to the previous track")]
     async fn previous(&self) -> Result<Json<Status>, McpError> {
-        self.client
-            .previous()
-            .await
-            .map(Json)
-            .map_err(|error| error.to_mcp())
+        self.client.previous().await.map(Json).map_err(to_mcp)
     }
 
     /// Set the playback volume.
@@ -618,7 +332,7 @@ impl McpServer {
             .volume(args.volume)
             .await
             .map(Json)
-            .map_err(|error| error.to_mcp())
+            .map_err(to_mcp)
     }
 
     /// Report download status for queue tracks.
@@ -628,8 +342,8 @@ impl McpServer {
         Parameters(args): Parameters<DownloadStatusArgs>,
     ) -> Result<Json<DownloadStatusOutput>, McpError> {
         let (status, queue) = tokio::join!(self.client.status(), self.client.queue());
-        let status = status.map_err(|error| error.to_mcp())?;
-        let queue = queue.map_err(|error| error.to_mcp())?;
+        let status = status.map_err(to_mcp)?;
+        let queue = queue.map_err(to_mcp)?;
         let tracks = match args.video_id {
             Some(video_id) => {
                 let item = queue
@@ -666,7 +380,7 @@ impl ServerHandler for McpServer {
 
 /// Run the stdio MCP proxy. It exits when stdin closes.
 pub async fn run(base_url: Option<String>) -> std::io::Result<()> {
-    let base_url = base_url.unwrap_or_else(|| DEFAULT_URL.to_string());
+    let base_url = base_url.unwrap_or_else(|| ytermusicd_client::DEFAULT_URL.to_string());
     let client = DaemonClient::new(base_url).map_err(std::io::Error::other)?;
     let server = McpServer::new(client);
     log::info!(
@@ -692,9 +406,12 @@ mod tests {
         atomic::{AtomicBool, Ordering},
     };
     use ytermusicd_api::{
-        AuthState, AuthStatus, DownloadStatus, OkResponse, PlaybackSnapshot, PlaybackState,
-        Playlist, PlaylistPrivacy, QueueItem, RepeatMode,
+        AddPlaylistTracksRequest, AuthState, AuthStatus, DownloadStatus, MovePlaylistTrackRequest,
+        OkResponse, PlayPlaylistRequest, PlayTrackRequest, PlaybackSnapshot, PlaybackState,
+        Playlist, PlaylistPrivacy, QueueItem, QueueRequest, RemovePlaylistTracksRequest,
+        RepeatMode,
     };
+    use ytermusicd_client::encode;
 
     #[derive(Clone, Default)]
     struct MockState {

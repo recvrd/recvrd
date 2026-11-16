@@ -29,6 +29,7 @@ souvlaki = "0.7.3"
 tokio = { version = "1.36", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 url = "2"
 ytermusicd-api = { workspace = true, features = ["schema"] }
+ytermusicd-client.workspace = true
 ytermusicd-core.workspace = true
 ytpapi2.workspace = true
 

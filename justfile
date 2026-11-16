@@ -26,6 +26,10 @@ clippy:
 dev:
     cargo run -p ytermusicd -- serve
 
+# Run the terminal client against the default daemon URL.
+tui:
+    cargo run -p ytermusic-tui
+
 # Install web UI dependencies.
 web-install:
     cd crates/ytermusicd-web && npm ci
