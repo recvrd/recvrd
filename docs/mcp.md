@@ -65,6 +65,14 @@ your-mcp-client --server "ytermusicd mcp"
 | `next` | none | Updated status |
 | `previous` | none | Updated status |
 | `volume` | `volume` (0-100) | Updated status |
+| `seek` | `position_secs` | Updated status |
+| `shuffle` | `enabled` | Updated status |
+| `repeat` | `repeat` (off, one or all) | Updated status |
+| `queue_remove` | `index` | Updated queue |
+| `queue_reorder` | `from`, `to` | Updated queue |
+| `queue_play_next` | `index` | Updated queue |
+| `queue_clear` | none | Updated queue |
+| `retry_download` | `video_id` | `{ok: true}` |
 | `download_status` | `video_id` (optional) | Download summary and queue tracks |
 
 `track` is the object from `search` or `get_playlist`:
@@ -87,7 +95,7 @@ The proxy does not crash on daemon errors. The client shows the message.
 
 ## Scope
 
-The proxy has the 19 tools above. These items are post-v1:
+The proxy has the 27 tools above. These items are post-v1:
 
 - lyrics;
 - streamable HTTP MCP transport;
@@ -101,6 +109,8 @@ cargo test -p ytermusicd --test mcp_stdio
 ```
 
 The unit tests use an in-process mock daemon. The stdio test starts the real
-binary, performs the MCP handshake, lists 19 tools, calls `now_playing` and
+binary, performs the MCP handshake, lists 27 tools, calls `now_playing` and
 checks that the process exits when stdin closes. The playlist tool tests cover
-the create, rename, delete, add, remove and move calls.
+the create, rename, delete, add, remove and move calls. The new tool tests
+cover seek, shuffle, repeat, queue remove, queue reorder, queue play next,
+queue clear and retry download.
