@@ -80,6 +80,10 @@ async fn download_with_ytdlp(
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        // Dropping this future cancels the download. Kill the child when
+        // its handle is dropped, or it keeps running and keeps writing
+        // to the part file while the next attempt deletes it.
+        .kill_on_drop(true)
         .spawn()?;
 
     let stdout = child.stdout.take().ok_or_else(|| {
