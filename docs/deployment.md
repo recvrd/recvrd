@@ -89,6 +89,10 @@ session.
 }
 ```
 
+The module installs `ytermusicd` and `ytmc` on `PATH`. It sets
+`YTERMUSICD_URL` to the configured bind address and port, so `ytmc` connects
+without extra flags.
+
 ## systemd user service
 
 The repository ships a user unit at

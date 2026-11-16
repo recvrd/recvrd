@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.1 — 2026-11-15
+
+### Fixed
+
+- Install `ytmc` with the home-manager module. Set `YTERMUSICD_URL` to the
+  configured bind address and port.
+
 ## 0.4.0 — 2026-11-15
 
 ### Changed

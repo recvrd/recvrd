@@ -20,9 +20,9 @@
         in
         pkgs.buildNpmPackage {
           pname = "ytermusicd-web";
-          version = "0.4.0";
+          version = "0.4.1";
           src = ./crates/ytermusicd-web;
-          npmDepsHash = "sha256-/dySJCoKCYLELXMHdpDWCgf+phIADUe6ZZz0c4fpQIY=";
+          npmDepsHash = "sha256-CLa5L/6EOo9hM5cantYmsKIwZydhMIyO/rAWv7UNr9M=";
           buildPhase = "npm run build";
           installPhase = "cp -r dist $out";
         };
@@ -35,7 +35,7 @@
         in
         pkgs.rustPlatform.buildRustPackage {
           pname = "ytermusicd";
-          version = "0.4.0";
+          version = "0.4.1";
           src = self;
 
           cargoLock = {
@@ -92,7 +92,7 @@
         in
         pkgs.rustPlatform.buildRustPackage {
           pname = "ytmc";
-          version = "0.4.0";
+          version = "0.4.1";
           src = self;
 
           cargoLock = {
@@ -219,7 +219,12 @@
           };
 
           config = lib.mkIf cfg.enable {
-            home.packages = [ cfg.package ];
+            home.packages = [
+              cfg.package
+              self.packages.${pkgs.stdenv.hostPlatform.system}.ytmc
+            ];
+            home.sessionVariables.YTERMUSICD_URL =
+              "http://${if cfg.bind == "0.0.0.0" then "127.0.0.1" else cfg.bind}:${toString cfg.port}";
             systemd.user.services.ytermusicd = {
               Unit = {
                 Description = "ytermusicd headless YouTube Music daemon";
