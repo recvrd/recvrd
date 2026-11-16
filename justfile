@@ -28,7 +28,7 @@ dev:
 
 # Run the terminal client against the default daemon URL.
 tui:
-    cargo run -p ytermusic-tui
+    cargo run -p ytmc
 
 # Install web UI dependencies.
 web-install:

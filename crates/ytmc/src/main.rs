@@ -31,7 +31,7 @@ use crate::event::{Command, DaemonEvent};
 /// Command-line options.
 #[derive(Debug, Parser)]
 #[command(
-    name = "ytermusic-tui",
+    name = "ytmc",
     version,
     about = "Terminal client for the ytermusicd daemon"
 )]
@@ -46,7 +46,7 @@ async fn main() {
     let cli = Cli::parse();
     if let Err(error) = run(cli).await {
         restore_terminal();
-        eprintln!("ytermusic-tui: {error}");
+        eprintln!("ytmc: {error}");
         std::process::exit(1);
     }
 }
@@ -155,13 +155,13 @@ mod tests {
 
     #[test]
     fn parses_the_default_url() {
-        let cli = Cli::try_parse_from(["ytermusic-tui"]).unwrap();
+        let cli = Cli::try_parse_from(["ytmc"]).unwrap();
         assert_eq!(cli.url, ytermusicd_client::DEFAULT_URL);
     }
 
     #[test]
     fn parses_a_url() {
-        let cli = Cli::try_parse_from(["ytermusic-tui", "--url", "http://localhost:9000"]).unwrap();
+        let cli = Cli::try_parse_from(["ytmc", "--url", "http://localhost:9000"]).unwrap();
         assert_eq!(cli.url, "http://localhost:9000");
     }
 }

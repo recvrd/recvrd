@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.0 — 2026-11-15
+
+### Changed
+
+- Rename the terminal client from `ytermusic-tui` to `ytmc`. The crate, binary,
+  Nix package, app and release archives use the new name. `ytc` collides with
+  an active YouTube TUI client.
+
 ## 0.3.0 — 2026-11-15
 
 ### Added

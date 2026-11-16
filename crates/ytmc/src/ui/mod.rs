@@ -179,7 +179,7 @@ fn render_header(frame: &mut Frame, area: Rect, app: &App) {
     };
     let mut spans = vec![
         Span::styled(
-            " ytermusic-tui ",
+            " ytmc ",
             Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
         ),
         Span::styled("· ", Style::default().fg(FG_MUTED)),
@@ -397,7 +397,7 @@ mod tests {
     fn renders_the_library_at_80_by_24() {
         let mut app = app();
         let text = render_to_text(&mut app, 80, 24);
-        assert!(text.contains("ytermusic-tui"));
+        assert!(text.contains("ytmc"));
         assert!(text.contains("Library"));
         assert!(text.contains("Playlist"));
         assert!(text.contains("Song"));
