@@ -30,7 +30,7 @@ SIGINT/SIGTERM. State is owned by the daemon, not by an individual client.
 | `ytermusicd-api` | Current (#11) | Shared DTOs, event types and generated TypeScript |
 | `crates/ytermusicd-web` | Current (#14–#17) | Svelte 5 web UI (embedded at build time) |
 | `crates/ytermusicd-client` | Current | HTTP and SSE client shared by the terminal client and MCP |
-| `crates/ytermusic-tui` | Current | Terminal client (`ytermusic-tui`) |
+| `crates/ytmc` | Current | Terminal client (`ytmc`) |
 | `crates/ytpapi2` | Current | YouTube Music API client |
 | `crates/player` | Current | Audio decoding/playback |
 | `crates/database` | Current | Local download database |
@@ -117,7 +117,7 @@ the web UI and MCP proxy.
 
 ## Terminal client
 
-`ytermusic-tui` is a thin client of the daemon. It uses `ytermusicd-api` DTOs
+`ytmc` is a thin client of the daemon. It uses `ytermusicd-api` DTOs
 and `ytermusicd-client` for REST and SSE. It does not read cookies, the database
 or the player. The daemon owns all state.
 

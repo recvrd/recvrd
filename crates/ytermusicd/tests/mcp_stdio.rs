@@ -16,7 +16,7 @@ const EXIT_TIMEOUT: Duration = Duration::from_secs(30);
 async fn mock_daemon() -> String {
     let status = Status {
         name: "ytermusicd".to_string(),
-        version: "0.3.0".to_string(),
+        version: "0.4.0".to_string(),
         status: "ok".to_string(),
         uptime_seconds: 1,
         auth: AuthStatus {

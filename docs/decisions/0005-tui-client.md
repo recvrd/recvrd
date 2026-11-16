@@ -17,14 +17,16 @@ client. `ytmc` is used for a converter app and a music-control plugin.
 
 ## Decision
 
-- Add `crates/ytermusic-tui` with the binary `ytermusic-tui`.
+- Add `crates/ytmc` with the binary `ytmc`.
 - The terminal client uses only the REST and SSE API. It does not read cookies,
   the database or the player.
 - Share the HTTP and SSE client with the MCP proxy in
   `crates/ytermusicd-client`.
 - Keep the legacy `ytermusic` binary unchanged. Remove it only after the new
   client reaches parity and a release ships.
-- Use `ytermusic-tui` as the name. Add a short alias only if users ask for one.
+- The user requested `ytc` or `ytmc`. `ytc` has a direct collision, so use
+  `ytmc`. v0.3.0 used `ytermusic-tui`; v0.4.0 renamed it. Add a short alias only
+  if users ask for one.
 
 ## Consequences
 

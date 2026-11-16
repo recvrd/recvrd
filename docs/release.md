@@ -1,6 +1,6 @@
 # Release checklist
 
-The release version is `0.3.0`. The tag is `v0.3.0`.
+The release version is `0.4.0`. The tag is `v0.4.0`.
 
 ## Before the tag
 
@@ -56,26 +56,26 @@ The release version is `0.3.0`. The tag is `v0.3.0`.
 ## Tag and publish
 
 ```sh
-git tag -a v0.3.0 -m "ytermusicd v0.3.0"
-git push origin v0.3.0
+git tag -a v0.4.0 -m "ytermusicd v0.4.0"
+git push origin v0.4.0
 ```
 
 Create a GitHub release from the tag. The release workflow builds:
 
-- `ytermusicd-v0.3.0-x86_64-unknown-linux-gnu.tar.gz`
-- `ytermusicd-v0.3.0-aarch64-apple-darwin.tar.gz`
-- `ytermusicd-v0.3.0-x86_64-apple-darwin.tar.gz`
-- `ytermusicd-v0.3.0-x86_64-pc-windows-msvc.zip`
+- `ytermusicd-v0.4.0-x86_64-unknown-linux-gnu.tar.gz`
+- `ytermusicd-v0.4.0-aarch64-apple-darwin.tar.gz`
+- `ytermusicd-v0.4.0-x86_64-apple-darwin.tar.gz`
+- `ytermusicd-v0.4.0-x86_64-pc-windows-msvc.zip`
 - a SHA-256 file for each archive
 
-Each archive contains the `ytermusicd` daemon and the `ytermusic-tui` terminal
+Each archive contains the `ytermusicd` daemon and the `ytmc` terminal
 client.
 
 ## After the tag
 
 1. Download one archive and run `sha256sum -c` or `shasum -a 256 -c`.
 2. Extract the archive and run `ytermusicd --version` and
-   `ytermusic-tui --version`.
+   `ytmc --version`.
 3. Run `ytermusicd serve` and open the web UI.
 4. Check that the archive contains the embedded web UI:
    `curl http://127.0.0.1:8080/ | grep 'id="app"'`.

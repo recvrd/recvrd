@@ -1,6 +1,6 @@
-# Terminal client (`ytermusic-tui`)
+# Terminal client (`ytmc`)
 
-`ytermusic-tui` is a terminal client for the daemon. It is a thin client: the
+`ytmc` is a terminal client for the daemon. It is a thin client: the
 daemon owns playback, queue, downloads and auth. The client uses the REST and
 SSE API, so it shows the same state as the web UI, MPRIS and the MCP proxy.
 
@@ -18,14 +18,14 @@ state with the daemon. See [legacy-tui.md](legacy-tui.md) for that client.
 ## Run the client
 
 ```sh
-nix run .#ytermusic-tui
+nix run .#ytmc
 ```
 
 From the repository:
 
 ```sh
 nix develop
-cargo run -p ytermusic-tui
+cargo run -p ytmc
 # or
 just tui
 ```
@@ -34,8 +34,8 @@ The default URL is `http://127.0.0.1:8080`. Use `--url` or
 `YTERMUSICD_URL` for another daemon:
 
 ```sh
-ytermusic-tui --url http://127.0.0.1:9000
-YTERMUSICD_URL=http://127.0.0.1:9000 ytermusic-tui
+ytmc --url http://127.0.0.1:9000
+YTERMUSICD_URL=http://127.0.0.1:9000 ytmc
 ```
 
 The client does not read `headers.txt`. It shows an auth banner when the daemon

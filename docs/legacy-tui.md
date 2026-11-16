@@ -4,7 +4,7 @@ The upstream TUI remains available as the `ytermusic` binary in
 `crates/ytermusic`. It is a legacy standalone client and is not the primary
 interface for `ytermusicd`.
 
-Use [ytermusic-tui](tui.md) for a terminal client that shares state with the
+Use [ytmc](tui.md) for a terminal client that shares state with the
 daemon and the web UI.
 
 The documentation below is preserved from the upstream project.

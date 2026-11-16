@@ -1,6 +1,6 @@
 # ytermusicd
 
-> **v0.3.0.** `ytermusicd` is a headless daemon fork of
+> **v0.4.0.** `ytermusicd` is a headless daemon fork of
 > [ytermusic](https://github.com/ccgauche/ytermusic), adding a web UI, terminal
 > client, MPRIS and MCP. The daemon, REST/SSE API, web UI, terminal client,
 > MPRIS, MCP, playlist editing and packaging work today.
@@ -16,7 +16,7 @@ daemon. Clients are thin:
 
 - **Web UI** — library, search, queue, now playing, cover art, vim-style keys
   and playlist editing.
-- **Terminal client** — `ytermusic-tui`, with library, search, queue, now playing,
+- **Terminal client** — `ytmc`, with library, search, queue, now playing,
   cover art, vim keys and mouse actions.
 - **MCP** — a stdio proxy exposing search/playback tools to assistants.
 - **MPRIS** — desktop media controls with cover art (`playerctl`, shell media
@@ -37,10 +37,10 @@ UI, terminal client and MCP proxy are clients.
 | Full REST + SSE API | ✅ |
 | Playlist create, rename, delete and track edits | ✅ |
 | Web UI (library, search, queue, now playing, vim keys) | ✅ |
-| Terminal client (`ytermusic-tui`, mouse and vim keys) | ✅ |
+| Terminal client (`ytmc`, mouse and vim keys) | ✅ |
 | systemd unit, Nix package/module | ✅ |
 | MCP proxy (19 tools) | ✅ |
-| v0.3.0 release | ✅ |
+| v0.4.0 release | ✅ |
 
 See the [roadmap](https://github.com/suorcd/ytermusicd/issues/25) for the
 ordered backlog.
@@ -84,9 +84,9 @@ development, use `just web` and the Vite proxy.
 Run the terminal client in another shell:
 
 ```sh
-cargo run -p ytermusic-tui
+cargo run -p ytmc
 # or
-nix run .#ytermusic-tui
+nix run .#ytmc
 ```
 
 The client uses the running daemon. See [docs/tui.md](docs/tui.md).
@@ -137,7 +137,7 @@ defaults. CLI flags and environment variables override the config file:
 | `--port` | `YTERMUSICD_PORT` |
 | `--headers` | `YTERMUSICD_HEADERS` |
 | `--config` | `YTERMUSICD_CONFIG` |
-| `--url` (`mcp` and `ytermusic-tui`) | `YTERMUSICD_URL` |
+| `--url` (`mcp` and `ytmc`) | `YTERMUSICD_URL` |
 
 `config.toml` parse errors, invalid values and malformed headers are reported
 with the file path; they are never silently replaced with defaults.
@@ -163,7 +163,7 @@ just test
 - [docs/deployment.md](docs/deployment.md) — systemd user service and environment
 - [docs/decisions](docs/decisions/) — architecture decision records
 - [0004 — upstream strategy](docs/decisions/0004-upstream-strategy.md) — fork-first with selective upstreaming
-- [0005 — terminal client](docs/decisions/0005-tui-client.md) — `ytermusic-tui` is a daemon client
+- [0005 — terminal client](docs/decisions/0005-tui-client.md) — `ytmc` is a daemon client
 
 ### Workspace layout
 
@@ -172,7 +172,7 @@ just test
 - `crates/ytermusicd-api` — shared DTOs and generated TypeScript bindings
 - `crates/ytermusicd-web` — Svelte 5 web UI (embedded in the daemon)
 - `crates/ytermusicd-client` — shared HTTP/SSE client for the daemon
-- `crates/ytermusic-tui` — terminal client (`ytermusic-tui`)
+- `crates/ytmc` — terminal client (`ytmc`)
 - `crates/ytermusic` — legacy TUI client
 - `crates/ytpapi2` — YouTube Music API client
 - `crates/player` — audio playback
@@ -251,12 +251,12 @@ To migrate:
 2. Copy downloaded files to `$XDG_CACHE_HOME/ytermusicd/downloads/`.
 3. Start the daemon and select a playlist in the web UI.
 
-The legacy `ytermusic` binary still works. The `ytermusic-tui` client uses the
+The legacy `ytermusic` binary still works. The `ytmc` client uses the
 daemon, so it does not need migration.
 
 ## Terminal client
 
-`ytermusic-tui` is a thin terminal client for the daemon. It shows the same
+`ytmc` is a thin terminal client for the daemon. It shows the same
 queue and playback state as the web UI. It supports vim keys, mouse actions,
 cover art and playlist edits. See [docs/tui.md](docs/tui.md) for keys, mouse
 actions and limits.

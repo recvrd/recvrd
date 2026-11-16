@@ -60,9 +60,9 @@ jobs:
           npm ci
           npm run build
 
-      - name: Build ytermusicd and ytermusic-tui
+      - name: Build ytermusicd and ytmc
         run: |
-          cargo build --release --target ${{ matrix.target }} -p ytermusicd -p ytermusic-tui
+          cargo build --release --target ${{ matrix.target }} -p ytermusicd -p ytmc
 
       - name: Package (Unix)
         if: runner.os != 'Windows'
@@ -72,7 +72,7 @@ jobs:
           name="ytermusicd-${GITHUB_REF_NAME}-${{ matrix.target }}"
           mkdir -p dist
           cp "target/${{ matrix.target }}/release/ytermusicd" dist/ytermusicd
-          cp "target/${{ matrix.target }}/release/ytermusic-tui" dist/ytermusic-tui
+          cp "target/${{ matrix.target }}/release/ytmc" dist/ytmc
           if [ -d crates/ytermusicd-web/dist ]; then
             cp -R crates/ytermusicd-web/dist dist/web
           fi
@@ -90,7 +90,7 @@ jobs:
           $name = "ytermusicd-$env:GITHUB_REF_NAME-${{ matrix.target }}"
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           Copy-Item "target/${{ matrix.target }}/release/ytermusicd.exe" "dist/ytermusicd.exe"
-          Copy-Item "target/${{ matrix.target }}/release/ytermusic-tui.exe" "dist/ytermusic-tui.exe"
+          Copy-Item "target/${{ matrix.target }}/release/ytmc.exe" "dist/ytmc.exe"
           if (Test-Path "crates/ytermusicd-web/dist") {
             Copy-Item -Recurse "crates/ytermusicd-web/dist" "dist/web"
           }

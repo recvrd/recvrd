@@ -20,9 +20,9 @@
         in
         pkgs.buildNpmPackage {
           pname = "ytermusicd-web";
-          version = "0.3.0";
+          version = "0.4.0";
           src = ./crates/ytermusicd-web;
-          npmDepsHash = "sha256-mFs71siNkYnTrTNXrA8Cx9wbHObUeRkAQLlKoPVz2f4=";
+          npmDepsHash = "sha256-/dySJCoKCYLELXMHdpDWCgf+phIADUe6ZZz0c4fpQIY=";
           buildPhase = "npm run build";
           installPhase = "cp -r dist $out";
         };
@@ -35,7 +35,7 @@
         in
         pkgs.rustPlatform.buildRustPackage {
           pname = "ytermusicd";
-          version = "0.3.0";
+          version = "0.4.0";
           src = self;
 
           cargoLock = {
@@ -84,15 +84,15 @@
           };
         };
 
-      ytermusicTuiFor =
+      ytmcFor =
         system:
         let
           pkgs = import nixpkgs { inherit system; };
           inherit (pkgs) lib;
         in
         pkgs.rustPlatform.buildRustPackage {
-          pname = "ytermusic-tui";
-          version = "0.3.0";
+          pname = "ytmc";
+          version = "0.4.0";
           src = self;
 
           cargoLock = {
@@ -102,13 +102,13 @@
             };
           };
 
-          cargoBuildFlags = [ "--package" "ytermusic-tui" ];
+          cargoBuildFlags = [ "--package" "ytmc" ];
           doCheck = false;
 
           meta = {
             description = "Terminal client for the ytermusicd daemon";
             license = lib.licenses.asl20;
-            mainProgram = "ytermusic-tui";
+            mainProgram = "ytmc";
           };
         };
 
@@ -246,7 +246,7 @@
       packages = forAllSystems (system: {
         default = ytermusicdFor system;
         ytermusicd = ytermusicdFor system;
-        ytermusic-tui = ytermusicTuiFor system;
+        ytmc = ytmcFor system;
       });
 
       apps = forAllSystems (system: {
@@ -254,9 +254,9 @@
           type = "app";
           program = "${self.packages.${system}.ytermusicd}/bin/ytermusicd";
         };
-        ytermusic-tui = {
+        ytmc = {
           type = "app";
-          program = "${self.packages.${system}.ytermusic-tui}/bin/ytermusic-tui";
+          program = "${self.packages.${system}.ytmc}/bin/ytmc";
         };
       });
 
