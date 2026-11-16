@@ -746,9 +746,13 @@ async fn events<S: AudioSink + Send + 'static>(
         for envelope in subscription.replay {
             last_sent = envelope.id;
             if let Some(event) = api_event(envelope.event) {
+                let payload = Event {
+                    id: envelope.id,
+                    event,
+                };
                 yield Ok::<SseEvent, Infallible>(SseEvent::default()
                     .id(envelope.id.to_string())
-                    .json_data(event)
+                    .json_data(payload)
                     .expect("event serializes"));
             }
         }
@@ -764,9 +768,13 @@ async fn events<S: AudioSink + Send + 'static>(
                     }
                     last_sent = envelope.id;
                     if let Some(event) = api_event(envelope.event) {
+                        let payload = Event {
+                            id: envelope.id,
+                            event,
+                        };
                         yield Ok::<SseEvent, Infallible>(SseEvent::default()
                             .id(envelope.id.to_string())
-                            .json_data(event)
+                            .json_data(payload)
                             .expect("event serializes"));
                     }
                 }
@@ -1343,6 +1351,15 @@ mod tests {
             .expect("at least one SSE event id")
     }
 
+    fn last_sse_payload(buffer: &str) -> serde_json::Value {
+        let data = buffer
+            .lines()
+            .filter_map(|line| line.strip_prefix("data:"))
+            .next_back()
+            .expect("at least one SSE data line");
+        serde_json::from_str(data.trim()).expect("SSE data is JSON")
+    }
+
     async fn start_server(state: AppState<MockSink>) -> (String, tokio::task::JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -1800,9 +1817,10 @@ mod tests {
 
         let mut stream = Box::pin(response.bytes_stream());
         let mut buffer = String::new();
-        read_until(&mut stream, &mut buffer, "event: snapshot").await;
-        assert!(buffer.contains("\"type\":\"snapshot\""));
-        assert!(buffer.contains("\"state\":\"stopped\""));
+        read_until(&mut stream, &mut buffer, "\n\n").await;
+        let snapshot = last_sse_payload(&buffer);
+        assert_eq!(snapshot["event"]["type"], "snapshot");
+        assert_eq!(snapshot["event"]["status"]["playback"]["state"], "stopped");
 
         client
             .post(format!("{base}/api/volume"))
@@ -1810,8 +1828,16 @@ mod tests {
             .send()
             .await
             .unwrap();
-        read_until(&mut stream, &mut buffer, "\"volume\":80").await;
-        assert!(buffer.contains("\"type\":\"playback\""));
+        read_until(
+            &mut stream,
+            &mut buffer,
+            "\"volume\":80,\"repeat\":\"off\",\"shuffle\":false}}}",
+        )
+        .await;
+        let live = last_sse_payload(&buffer);
+        assert_eq!(live["id"].as_u64(), Some(last_event_id(&buffer)));
+        assert_eq!(live["event"]["type"], "playback");
+        assert_eq!(live["event"]["playback"]["volume"], 80);
         server.abort();
     }
 
@@ -1827,7 +1853,7 @@ mod tests {
             .unwrap();
         let mut stream = Box::pin(response.bytes_stream());
         let mut buffer = String::new();
-        read_until(&mut stream, &mut buffer, "event: snapshot").await;
+        read_until(&mut stream, &mut buffer, "\n\n").await;
 
         client
             .post(format!("{base}/api/volume"))
@@ -1835,7 +1861,12 @@ mod tests {
             .send()
             .await
             .unwrap();
-        read_until(&mut stream, &mut buffer, "\"volume\":80").await;
+        read_until(
+            &mut stream,
+            &mut buffer,
+            "\"volume\":80,\"repeat\":\"off\",\"shuffle\":false}}}",
+        )
+        .await;
         let resume_from = last_event_id(&buffer);
         drop(stream);
 
@@ -1855,9 +1886,18 @@ mod tests {
             .unwrap();
         let mut stream = Box::pin(response.bytes_stream());
         let mut replay = String::new();
-        read_until(&mut stream, &mut replay, "\"volume\":60").await;
+        read_until(
+            &mut stream,
+            &mut replay,
+            "\"volume\":60,\"repeat\":\"off\",\"shuffle\":false}}}",
+        )
+        .await;
         assert!(!replay.contains("event: snapshot"));
         assert!(last_event_id(&replay) > resume_from);
+        let replayed = last_sse_payload(&replay);
+        assert_eq!(replayed["id"].as_u64(), Some(last_event_id(&replay)));
+        assert_eq!(replayed["event"]["type"], "playback");
+        assert_eq!(replayed["event"]["playback"]["volume"], 60);
         server.abort();
     }
 
@@ -1873,7 +1913,7 @@ mod tests {
             .unwrap();
         let mut stream = Box::pin(response.bytes_stream());
         let mut buffer = String::new();
-        read_until(&mut stream, &mut buffer, "event: snapshot").await;
+        read_until(&mut stream, &mut buffer, "\n\n").await;
 
         client
             .post(format!("{base}/api/volume"))
@@ -1881,7 +1921,12 @@ mod tests {
             .send()
             .await
             .unwrap();
-        read_until(&mut stream, &mut buffer, "\"volume\":80").await;
+        read_until(
+            &mut stream,
+            &mut buffer,
+            "\"volume\":80,\"repeat\":\"off\",\"shuffle\":false}}}",
+        )
+        .await;
         let resume_from = last_event_id(&buffer);
         drop(stream);
 
@@ -1899,7 +1944,12 @@ mod tests {
             .unwrap();
         let mut stream = Box::pin(response.bytes_stream());
         let mut replay = String::new();
-        read_until(&mut stream, &mut replay, "\"volume\":60").await;
+        read_until(
+            &mut stream,
+            &mut replay,
+            "\"volume\":60,\"repeat\":\"off\",\"shuffle\":false}}}",
+        )
+        .await;
         assert!(!replay.contains("event: snapshot"));
         server.abort();
     }
@@ -1916,7 +1966,7 @@ mod tests {
             .unwrap();
         let mut stream = Box::pin(response.bytes_stream());
         let mut buffer = String::new();
-        read_until(&mut stream, &mut buffer, "event: snapshot").await;
+        read_until(&mut stream, &mut buffer, "\n\n").await;
         assert_eq!(last_event_id(&buffer), 0);
         server.abort();
     }
