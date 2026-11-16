@@ -16,10 +16,14 @@ use ytermusicd_api::{
 use ytermusicd_client::DaemonClient;
 
 fn to_mcp(error: ytermusicd_client::DaemonError) -> McpError {
-    McpError::internal_error(
-        format!("daemon error ({}): {}", error.code, error.message),
-        None,
-    )
+    // Keep the daemon code in the error data, so a client can tell a bad
+    // argument from an upstream failure without parsing the message.
+    let data = serde_json::json!({ "code": error.code });
+    let message = format!("daemon error ({}): {}", error.code, error.message);
+    match error.code.as_str() {
+        "bad_request" | "not_found" => McpError::invalid_params(message, Some(data)),
+        _ => McpError::internal_error(message, Some(data)),
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -399,24 +403,28 @@ mod tests {
         Json as AxumJson, Router,
         extract::{Path, State},
         http::StatusCode,
+        response::{IntoResponse, Response},
         routing::{get, post},
     };
+    use rmcp::model::ErrorCode;
+    use serde_json::json;
     use std::sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     };
     use ytermusicd_api::{
-        AddPlaylistTracksRequest, AuthState, AuthStatus, DownloadStatus, MovePlaylistTrackRequest,
-        OkResponse, PlayPlaylistRequest, PlayTrackRequest, PlaybackSnapshot, PlaybackState,
-        Playlist, PlaylistPrivacy, QueueItem, QueueRequest, RemovePlaylistTracksRequest,
-        RepeatMode,
+        AddPlaylistTracksRequest, ApiError, AuthState, AuthStatus, DownloadStatus, ErrorEnvelope,
+        MovePlaylistTrackRequest, OkResponse, PlayPlaylistRequest, PlayTrackRequest,
+        PlaybackSnapshot, PlaybackState, Playlist, PlaylistPrivacy, QueueItem, QueueRequest,
+        RemovePlaylistTracksRequest, RepeatMode,
     };
-    use ytermusicd_client::encode;
+    use ytermusicd_client::{DaemonError, encode};
 
     #[derive(Clone, Default)]
     struct MockState {
         calls: Arc<Mutex<Vec<String>>>,
         fail: Arc<AtomicBool>,
+        missing: Arc<AtomicBool>,
     }
 
     fn track(id: &str) -> Track {
@@ -536,15 +544,24 @@ mod tests {
         }])
     }
 
-    async fn mock_playlist(
-        State(state): State<MockState>,
-        Path(id): Path<String>,
-    ) -> AxumJson<PlaylistDetail> {
+    async fn mock_playlist(State(state): State<MockState>, Path(id): Path<String>) -> Response {
         state
             .calls
             .lock()
             .unwrap()
             .push(format!("GET /api/playlists/{id}"));
+        if state.missing.load(Ordering::SeqCst) {
+            return (
+                StatusCode::NOT_FOUND,
+                AxumJson(ErrorEnvelope {
+                    error: ApiError {
+                        code: "not_found".to_string(),
+                        message: format!("playlist {id} not found"),
+                    },
+                }),
+            )
+                .into_response();
+        }
         AxumJson(PlaylistDetail {
             playlist: Playlist {
                 id: id.clone(),
@@ -553,6 +570,7 @@ mod tests {
             },
             tracks: vec![track("v1")],
         })
+        .into_response()
     }
 
     async fn mock_create_playlist(
@@ -959,6 +977,57 @@ mod tests {
         let server = McpServer::new(DaemonClient::new(base).unwrap());
         let error = expect_error(server.now_playing().await);
         assert!(error.message.contains("HTTP 502"));
+        handle.abort();
+    }
+
+    #[test]
+    fn to_mcp_maps_client_errors_to_invalid_params() {
+        for code in ["bad_request", "not_found"] {
+            let error = to_mcp(DaemonError {
+                code: code.to_string(),
+                message: "playlist p9 not found".to_string(),
+            });
+            assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
+            assert!(error.message.contains("playlist p9 not found"));
+            assert_eq!(error.data, Some(json!({ "code": code })));
+        }
+    }
+
+    #[test]
+    fn to_mcp_keeps_other_errors_internal() {
+        for code in [
+            "upstream_error",
+            "daemon_unavailable",
+            "http_error",
+            "internal_error",
+        ] {
+            let error = to_mcp(DaemonError {
+                code: code.to_string(),
+                message: "boom".to_string(),
+            });
+            assert_eq!(error.code, ErrorCode::INTERNAL_ERROR);
+            assert!(error.message.contains(code));
+            assert!(error.message.contains("boom"));
+            assert_eq!(error.data, Some(json!({ "code": code })));
+        }
+    }
+
+    #[tokio::test]
+    async fn unknown_playlist_maps_to_invalid_params() {
+        let state = MockState::default();
+        state.missing.store(true, Ordering::SeqCst);
+        let (base, handle) = mock_router(state).await;
+        let server = McpServer::new(DaemonClient::new(base).unwrap());
+        let error = expect_error(
+            server
+                .get_playlist(Parameters(PlaylistArgs {
+                    playlist_id: "p9".to_string(),
+                }))
+                .await,
+        );
+        assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
+        assert!(error.message.contains("playlist p9 not found"));
+        assert_eq!(error.data, Some(json!({ "code": "not_found" })));
         handle.abort();
     }
 
