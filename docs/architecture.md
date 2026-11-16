@@ -3,7 +3,7 @@
 ## Goals
 
 - A single long-running daemon owns playback, queue, downloads and auth state.
-- Clients (web UI, MCP proxy, MPRIS, future TUI) are thin and stateless.
+- Clients (web UI, terminal client, MCP proxy, MPRIS) are thin and stateless.
 - The HTTP/JSON/SSE API is the contract between the daemon and clients.
 - The daemon works headless: no terminal, window or interactive prompt required.
 - Media controls work through MPRIS; deployment works through systemd/Nix.
@@ -29,6 +29,8 @@ SIGINT/SIGTERM. State is owned by the daemon, not by an individual client.
 | `ytermusicd-core` | Current (#6/#7) | Auth, config, paths, queue/playback and event bus |
 | `ytermusicd-api` | Current (#11) | Shared DTOs, event types and generated TypeScript |
 | `crates/ytermusicd-web` | Current (#14–#17) | Svelte 5 web UI (embedded at build time) |
+| `crates/ytermusicd-client` | Current | HTTP and SSE client shared by the terminal client and MCP |
+| `crates/ytermusic-tui` | Current | Terminal client (`ytermusic-tui`) |
 | `crates/ytpapi2` | Current | YouTube Music API client |
 | `crates/player` | Current | Audio decoding/playback |
 | `crates/database` | Current | Local download database |
@@ -43,7 +45,7 @@ client ──REST──▶ daemon ──command──▶ core service ──▶ 
                     ▲                                  │
                     └──────── snapshot ◀───────────────┘
                                                        │
-web / MCP ◀────────────── SSE ─────────────────────────┘
+web / TUI / MCP ◀───────── SSE ─────────────────────────┘
                                                        │
                                                      MPRIS
 ```
@@ -113,6 +115,19 @@ the web UI and MCP proxy.
 - Errors use one JSON envelope. The API is loopback-only by default and does not
   enable wildcard CORS.
 
+## Terminal client
+
+`ytermusic-tui` is a thin client of the daemon. It uses `ytermusicd-api` DTOs
+and `ytermusicd-client` for REST and SSE. It does not read cookies, the database
+or the player. The daemon owns all state.
+
+The client shows the library, one playlist, the queue, search, the now-playing
+bar and cover art. It supports vim keys and mouse actions. It reconnects with
+backoff and sends `Last-Event-ID` to replay missed events. See [tui.md](tui.md).
+
+The MCP proxy uses the same `ytermusicd-client` layer. A new daemon endpoint
+needs one client method, and both clients can use it.
+
 ## Media controls (MPRIS)
 
 On Linux the daemon starts a `souvlaki` MPRIS client on a dedicated thread when
@@ -155,7 +170,8 @@ Initial decisions are recorded in [docs/decisions](decisions/):
 
 - the daemon owns playback/queue state;
 - the API is loopback-only by default;
-- the web UI uses Svelte + Vite + TypeScript by default.
+- the web UI uses Svelte + Vite + TypeScript by default;
+- the terminal client is a daemon client, not a standalone player.
 
 ## Open questions
 

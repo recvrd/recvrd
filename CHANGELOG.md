@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Add `ytermusic-tui`, a terminal client for the daemon. It shows the library,
+  playlists, queue, search, now playing and cover art. It supports vim keys and
+  mouse actions.
+- Add `ytermusicd-client` for the REST and SSE API. The MCP proxy and the
+  terminal client use this shared client.
+- Add a Nix package and app for `ytermusic-tui`.
+- Add a search palette with debounce, playlist editing, context menus and
+  confirmations to the terminal client.
+
 ## 0.2.0 — 2026-11-15
 
 ### Added
