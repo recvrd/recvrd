@@ -101,50 +101,56 @@ impl Media {
 fn connect(mpris: &mut MediaControls, sender: Sender<SoundAction>) -> Result<(), Error> {
     mpris.attach(move |e| match e {
         MediaControlEvent::Toggle | MediaControlEvent::Play | MediaControlEvent::Pause => {
-            sender.send(SoundAction::PlayPause).unwrap();
+            send_action(&sender, SoundAction::PlayPause);
         }
         MediaControlEvent::Next => {
-            sender.send(SoundAction::Next(1)).unwrap();
+            send_action(&sender, SoundAction::Next(1));
         }
         MediaControlEvent::Previous => {
-            sender.send(SoundAction::Previous(1)).unwrap();
+            send_action(&sender, SoundAction::Previous(1));
         }
         MediaControlEvent::Stop => {
-            sender.send(SoundAction::Cleanup).unwrap();
+            send_action(&sender, SoundAction::Cleanup);
         }
         MediaControlEvent::Seek(a) => match a {
             souvlaki::SeekDirection::Forward => {
-                sender.send(SoundAction::Forward).unwrap();
+                send_action(&sender, SoundAction::Forward);
             }
             souvlaki::SeekDirection::Backward => {
-                sender.send(SoundAction::Backward).unwrap();
+                send_action(&sender, SoundAction::Backward);
             }
         },
-        // TODO(functionnality): implement seek amount
-        MediaControlEvent::SeekBy(a, _b) => {
-            if a == SeekDirection::Forward {
-                sender.send(SoundAction::Forward).unwrap();
-            } else {
-                sender.send(SoundAction::Backward).unwrap();
-            }
+        MediaControlEvent::SeekBy(direction, amount) => {
+            send_action(
+                &sender,
+                SoundAction::SeekByAmount {
+                    amount,
+                    forward: direction == SeekDirection::Forward,
+                },
+            );
         }
-
         MediaControlEvent::SetPosition(a) => {
-            sender.send(SoundAction::SeekTo(a.0)).unwrap();
+            send_action(&sender, SoundAction::SeekTo(a.0));
         }
-        MediaControlEvent::OpenUri(a) => {
-            todo!("Implement URI opening {a:?}")
+        MediaControlEvent::OpenUri(uri) => {
+            info!("MPRIS OpenUri ignored: {uri}");
         }
-        MediaControlEvent::Raise => {
-            todo!("Implement raise")
-        }
+        // The legacy TUI has no window to raise, so ignore the event.
+        MediaControlEvent::Raise => {}
         MediaControlEvent::Quit => {
             shutdown();
         }
         MediaControlEvent::SetVolume(e) => {
-            sender.send(SoundAction::SetVolume(e as f32)).unwrap();
+            send_action(&sender, SoundAction::SetVolume(e as f32));
         }
     })
+}
+
+/// Send an action to the player. Log and continue when the receiver is gone.
+fn send_action(sender: &Sender<SoundAction>, action: SoundAction) {
+    if let Err(error) = sender.send(action) {
+        error!("MPRIS action send failed, receiver is gone: {error}");
+    }
 }
 
 #[cfg(not(target_os = "windows"))]

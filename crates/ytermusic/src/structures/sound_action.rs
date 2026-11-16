@@ -24,6 +24,11 @@ pub enum SoundAction {
     Minus,
     /// Seek to a specific time in the current song in seconds
     SeekTo(Duration),
+    /// Seek forward or backward by the given amount
+    SeekByAmount {
+        amount: Duration,
+        forward: bool,
+    },
     Previous(usize),
     Forward,
     Backward,
@@ -57,6 +62,10 @@ impl SoundAction {
         match self {
             Self::SetVolume(volume) => player.sink.set_volume((volume * 100.) as i32),
             Self::SeekTo(time) => player.sink.seek_to(time),
+            Self::SeekByAmount { amount, forward } => {
+                let target = Self::seek_target(player.sink.elapsed(), amount, forward);
+                player.sink.seek_to(target);
+            }
             Self::Backward => player.sink.seek_bw(),
             Self::Forward => player.sink.seek_fw(),
             Self::PlayPause => player.sink.toggle_playback(),
@@ -176,6 +185,15 @@ impl SoundAction {
             }
         }
     }
+
+    /// Target position for a relative seek. A backward seek stops at zero.
+    fn seek_target(current: Duration, amount: Duration, forward: bool) -> Duration {
+        if forward {
+            current + amount
+        } else {
+            current.saturating_sub(amount)
+        }
+    }
 }
 
 pub fn download_manager_handler(sender: Sender<SoundAction>) -> MessageHandler {
@@ -186,4 +204,33 @@ pub fn download_manager_handler(sender: Sender<SoundAction>) -> MessageHandler {
                 .unwrap();
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn seek_target_moves_forward() {
+        assert_eq!(
+            SoundAction::seek_target(Duration::from_secs(10), Duration::from_secs(5), true),
+            Duration::from_secs(15)
+        );
+    }
+
+    #[test]
+    fn seek_target_moves_backward() {
+        assert_eq!(
+            SoundAction::seek_target(Duration::from_secs(10), Duration::from_secs(5), false),
+            Duration::from_secs(5)
+        );
+    }
+
+    #[test]
+    fn seek_target_stops_at_zero() {
+        assert_eq!(
+            SoundAction::seek_target(Duration::from_secs(3), Duration::from_secs(5), false),
+            Duration::ZERO
+        );
+    }
 }
