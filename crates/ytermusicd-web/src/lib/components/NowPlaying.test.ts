@@ -50,6 +50,14 @@ describe('NowPlaying', () => {
     expect(cover?.getAttribute('src')).toBe('/api/tracks/v1/cover');
   });
 
+  it('opens the full player', async () => {
+    const { store } = makeStore();
+    render(NowPlaying, { props: { store } });
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Open full player' }));
+    expect(store.fullPlayerOpen).toBe(true);
+  });
+
   it('seeks and changes the volume', async () => {
     const { api, store } = makeStore();
     render(NowPlaying, { props: { store } });
