@@ -2,7 +2,8 @@ use clap::{Parser, Subcommand};
 use std::{path::PathBuf, process::ExitCode, sync::Arc, time::Duration};
 use tokio::sync::{Mutex as AsyncMutex, mpsc};
 use ytermusicd_core::{
-    AuthStatus, DaemonConfig, Downloader as ConfigDownloader, Paths, PlaybackService, resolve_auth,
+    AuthStatus, DaemonConfig, Downloader as ConfigDownloader, Paths, PlaybackService,
+    is_loopback_bind, resolve_auth,
 };
 
 mod artwork;
@@ -153,6 +154,15 @@ fn run_serve(
     let covers_dir = paths.covers_dir();
     let state_path = paths.state_file();
     log::info!("starting ytermusicd serve on {bind}:{port}");
+    if !is_loopback_bind(&bind) {
+        let warning = format!(
+            "WARNING: bind address {bind} is not loopback. The daemon API has no \
+             authentication, so any host that can reach {bind}:{port} can control playback \
+             and playlists. Bind 127.0.0.1 and use a reverse proxy for remote access."
+        );
+        log::warn!("{warning}");
+        eprintln!("{warning}");
+    }
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;

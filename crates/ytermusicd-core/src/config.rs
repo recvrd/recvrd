@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
+    net::IpAddr,
     path::{Path, PathBuf},
 };
 use thiserror::Error;
@@ -66,6 +67,20 @@ pub enum ConfigError {
     Invalid { path: PathBuf, message: String },
 }
 
+/// Check whether a bind address stays on loopback.
+///
+/// The daemon API has no authentication, so only a loopback bind keeps
+/// control of playback and playlists local. `localhost` counts as loopback.
+/// Any other value, including a value that is not an IP address, does not.
+pub fn is_loopback_bind(bind: &str) -> bool {
+    if bind == "localhost" {
+        return true;
+    }
+    bind.parse::<IpAddr>()
+        .map(|address| address.is_loopback())
+        .unwrap_or(false)
+}
+
 impl DaemonConfig {
     /// Load and validate a config file. Parse and validation errors are fatal.
     pub fn load(path: &Path) -> Result<Self, ConfigError> {
@@ -94,6 +109,14 @@ impl DaemonConfig {
     }
 
     fn validate(&self, path: &Path) -> Result<(), ConfigError> {
+        if let Some(bind) = &self.bind
+            && bind.parse::<IpAddr>().is_err()
+        {
+            return Err(ConfigError::Invalid {
+                path: path.to_path_buf(),
+                message: format!("bind must be a valid IP address, got {bind:?}"),
+            });
+        }
         if self.parallel_downloads == 0 {
             return Err(ConfigError::Invalid {
                 path: path.to_path_buf(),
@@ -194,5 +217,35 @@ cover_cache_mb = 25
 
         let error = DaemonConfig::load(&path).unwrap_err().to_string();
         assert!(error.contains("initial_volume"), "{error}");
+    }
+
+    #[test]
+    fn rejects_invalid_bind() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(&path, "bind = \"not-an-ip\"").unwrap();
+
+        let error = DaemonConfig::load(&path).unwrap_err().to_string();
+        assert!(error.contains("bind"), "{error}");
+    }
+
+    #[test]
+    fn accepts_ip_binds() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(&path, "bind = \"0.0.0.0\"").unwrap();
+
+        let config = DaemonConfig::load(&path).unwrap();
+        assert_eq!(config.bind.as_deref(), Some("0.0.0.0"));
+    }
+
+    #[test]
+    fn loopback_bind_check() {
+        assert!(is_loopback_bind("127.0.0.1"));
+        assert!(is_loopback_bind("::1"));
+        assert!(is_loopback_bind("localhost"));
+        assert!(!is_loopback_bind("0.0.0.0"));
+        assert!(!is_loopback_bind("192.168.1.2"));
+        assert!(!is_loopback_bind("not-an-ip"));
     }
 }

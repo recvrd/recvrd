@@ -15,7 +15,9 @@ UI and embeds it in the binary.
 ## Reverse proxy and TLS
 
 The daemon API trusts local clients. Bind it to `127.0.0.1` and use a reverse
-proxy for remote access. The proxy must add authentication and TLS.
+proxy for remote access. The proxy must add authentication and TLS. The daemon
+logs a warning at startup when the bind address is not loopback. Config
+validation rejects a bind value that is not an IP address.
 
 Caddy example:
 
