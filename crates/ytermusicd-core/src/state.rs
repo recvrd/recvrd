@@ -13,6 +13,10 @@ pub const STATE_VERSION: u32 = 1;
 pub struct PersistedState {
     pub version: u32,
     pub tracks: Vec<Track>,
+    /// The unshuffled queue order, when the saved queue was shuffled.
+    /// Empty in state files that predate this field.
+    #[serde(default)]
+    pub original_tracks: Vec<Track>,
     pub current: Option<usize>,
     pub repeat: RepeatMode,
     pub shuffle: bool,
@@ -25,6 +29,7 @@ impl Default for PersistedState {
         Self {
             version: STATE_VERSION,
             tracks: Vec::new(),
+            original_tracks: Vec::new(),
             current: None,
             repeat: RepeatMode::Off,
             shuffle: false,
@@ -120,6 +125,25 @@ impl PersistedState {
                 "position {} is invalid",
                 self.position_secs
             )));
+        }
+        if !self.original_tracks.is_empty() {
+            let mut saved: Vec<&str> = self
+                .tracks
+                .iter()
+                .map(|track| track.video_id.as_str())
+                .collect();
+            let mut original: Vec<&str> = self
+                .original_tracks
+                .iter()
+                .map(|track| track.video_id.as_str())
+                .collect();
+            saved.sort_unstable();
+            original.sort_unstable();
+            if saved != original {
+                return Err(StateError::Invalid(
+                    "original tracks do not match the saved tracks".to_string(),
+                ));
+            }
         }
         Ok(())
     }
@@ -245,5 +269,34 @@ mod tests {
         state.save(&path).unwrap();
         let error = PersistedState::load(&path).unwrap_err();
         assert!(error.to_string().contains("volume"));
+    }
+
+    #[test]
+    fn state_without_original_tracks_loads() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("state.toml");
+        fs::write(
+            &path,
+            "version = 1\ntracks = []\nrepeat = \"off\"\nshuffle = true\nvolume = 50\nposition_secs = 0.0\n",
+        )
+        .unwrap();
+        let state = PersistedState::load(&path).unwrap();
+        assert!(state.original_tracks.is_empty());
+        assert!(state.shuffle);
+    }
+
+    #[test]
+    fn mismatched_original_tracks_are_rejected() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        let state = PersistedState {
+            tracks: vec![track(0)],
+            original_tracks: vec![track(0), track(1)],
+            ..PersistedState::default()
+        };
+        state.save(&path).unwrap();
+        let error = PersistedState::load(&path).unwrap_err();
+        assert!(matches!(error, StateError::Invalid(_)));
+        assert!(error.to_string().contains("original tracks"));
     }
 }
