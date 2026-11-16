@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from '@testing-library/svelte';
 import { tick } from 'svelte';
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import App from '../App.svelte';
 import { AppStore } from '../lib/store.svelte';
 import { FakeEventSource, makeApi } from '../test/fixtures';
@@ -19,6 +19,10 @@ function setup() {
 }
 
 describe('App shell', () => {
+  beforeEach(() => {
+    window.history.replaceState(null, '', '/');
+  });
+
   it('loads the library and responds to global keys', async () => {
     const { store, sources } = setup();
     render(App, { props: { store } });
@@ -62,5 +66,19 @@ describe('App shell', () => {
     ).toBeInTheDocument();
     expect(await screen.findByText('Track v1')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Play all' })).toBeInTheDocument();
+  });
+
+  it('closes the full player with Escape', async () => {
+    const { store } = setup();
+    render(App, { props: { store } });
+
+    await screen.findByRole('heading', { level: 2, name: 'Playlist p1' });
+    store.openFullPlayer();
+    await tick();
+    expect(screen.getByRole('dialog', { name: 'Full player' })).toBeInTheDocument();
+
+    await fireEvent.keyDown(window, { key: 'Escape' });
+    await tick();
+    expect(screen.queryByRole('dialog', { name: 'Full player' })).not.toBeInTheDocument();
   });
 });

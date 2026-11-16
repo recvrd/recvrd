@@ -136,6 +136,14 @@
     <span class="percent">{store.volume}%</span>
     <button
       class="layout-toggle"
+      aria-label="Open full player"
+      title="Open full player"
+      onclick={() => store.openFullPlayer()}
+    >
+      full
+    </button>
+    <button
+      class="layout-toggle"
       aria-label="Switch player layout"
       title="Switch player layout"
       onclick={() => store.togglePlayerLayout()}

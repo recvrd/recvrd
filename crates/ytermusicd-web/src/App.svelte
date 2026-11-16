@@ -5,6 +5,7 @@
   import { Keymap } from './lib/keymap';
   import AuthBanner from './lib/components/AuthBanner.svelte';
   import ConnectionBanner from './lib/components/ConnectionBanner.svelte';
+  import FullPlayer from './lib/components/FullPlayer.svelte';
   import HelpOverlay from './lib/components/HelpOverlay.svelte';
   import LibraryView from './lib/components/LibraryView.svelte';
   import NowPlaying from './lib/components/NowPlaying.svelte';
@@ -55,7 +56,9 @@
     });
 
     const onKeydown = (event: KeyboardEvent) => {
-      keymap.handle(event, { overlayOpen: store.searchOpen || store.helpOpen });
+      keymap.handle(event, {
+        overlayOpen: store.searchOpen || store.helpOpen || store.fullPlayerOpen,
+      });
     };
     window.addEventListener('keydown', onKeydown);
 
@@ -138,6 +141,7 @@
   </div>
 
   <NowPlaying {store} />
+  <FullPlayer {store} />
   <SearchPalette {store} />
   <HelpOverlay open={store.helpOpen} onclose={() => (store.helpOpen = false)} />
   <ToastHost {store} />

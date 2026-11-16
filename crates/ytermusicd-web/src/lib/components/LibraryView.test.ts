@@ -7,6 +7,7 @@ import {
   makeApi,
   makePlaylist,
   makePlaylistDetail,
+  makeStatus,
   makeTrack,
 } from '../../test/fixtures';
 
@@ -29,6 +30,36 @@ function setupPlaylist() {
 }
 
 describe('LibraryView', () => {
+  it('shows the current track art on the dashboard and opens the full player', async () => {
+    const { store } = setupLibrary();
+    const track = makeTrack('v9', {
+      title: 'Dashboard Song',
+      artist: 'Dashboard Artist',
+      album: 'Dashboard Album',
+    });
+    store.status = makeStatus({
+      playback: {
+        state: 'playing',
+        current: track,
+        position_secs: 30,
+        volume: 50,
+        repeat: 'off',
+        shuffle: false,
+      },
+    });
+    const { container } = render(LibraryView, { props: { store } });
+
+    expect(
+      screen.getByRole('heading', { level: 2, name: 'Dashboard Song' }),
+    ).toBeInTheDocument();
+    expect(container.querySelector<HTMLImageElement>('.np-art img')?.getAttribute('src')).toBe(
+      '/api/tracks/v9/cover',
+    );
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Full player' }));
+    expect(store.fullPlayerOpen).toBe(true);
+  });
+
   it('creates a playlist from the library', async () => {
     const { api, store } = setupLibrary();
     const { container } = render(LibraryView, { props: { store } });

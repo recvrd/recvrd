@@ -92,6 +92,23 @@ describe('AppStore', () => {
     reloaded.dispose();
   });
 
+  it('opens and closes the full player', () => {
+    const { store } = setup();
+    expect(store.fullPlayerOpen).toBe(false);
+
+    store.openFullPlayer();
+    expect(store.fullPlayerOpen).toBe(true);
+
+    store.closeOverlays();
+    expect(store.fullPlayerOpen).toBe(false);
+
+    store.toggleFullPlayer();
+    expect(store.fullPlayerOpen).toBe(true);
+    store.closeFullPlayer();
+    expect(store.fullPlayerOpen).toBe(false);
+    store.dispose();
+  });
+
   it('applies snapshot, playback, queue and download events', async () => {
     const { store, sources } = setup();
     await store.init();

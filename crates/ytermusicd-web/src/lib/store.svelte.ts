@@ -118,6 +118,7 @@ export class AppStore {
   toasts = $state<Toast[]>([]);
   volume = $state(50);
   playerLayout = $state<PlayerLayout>('compact');
+  fullPlayerOpen = $state(false);
 
   private readonly events: EventStream;
   private readonly options: Required<Pick<StoreOptions, 'toastTtlMs' | 'searchDebounceMs'>> &
@@ -655,6 +656,18 @@ export class AppStore {
     this.helpOpen = !this.helpOpen;
   }
 
+  openFullPlayer(): void {
+    this.fullPlayerOpen = true;
+  }
+
+  closeFullPlayer(): void {
+    this.fullPlayerOpen = false;
+  }
+
+  toggleFullPlayer(): void {
+    this.fullPlayerOpen = !this.fullPlayerOpen;
+  }
+
   setPlayerLayout(layout: PlayerLayout): void {
     this.playerLayout = layout;
     try {
@@ -669,6 +682,10 @@ export class AppStore {
   }
 
   closeOverlays(): void {
+    if (this.fullPlayerOpen) {
+      this.fullPlayerOpen = false;
+      return;
+    }
     if (this.searchOpen) {
       this.searchOpen = false;
       return;

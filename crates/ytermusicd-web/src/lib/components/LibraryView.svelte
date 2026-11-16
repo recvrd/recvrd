@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { AppStore } from '../store.svelte';
+  import { coverUrl } from '../api';
   import TrackTable from './TrackTable.svelte';
 
   let { store }: { store: AppStore } = $props();
@@ -14,6 +15,8 @@
   const playlistView = $derived(store.view.kind === 'playlist' ? store.view : null);
   const tracks = $derived(playlistView ? (store.playlist?.tracks ?? []) : []);
   const name = $derived(store.playlist?.playlist.name ?? playlistView?.name ?? 'Playlist');
+  const currentTrack = $derived(store.currentTrack);
+  const isPlaying = $derived(store.status?.playback.state === 'playing');
 
   async function create(): Promise<void> {
     const value = newName.trim();
@@ -110,6 +113,39 @@
         <button class="refresh" onclick={() => store.loadPlaylists()}>Reload</button>
       </div>
     </header>
+
+    {#if currentTrack}
+      <section class="now-playing-panel" aria-label="Now playing">
+        <div class="np-art" aria-hidden="true">
+          <span>{currentTrack.title.slice(0, 1).toUpperCase()}</span>
+          <img
+            src={coverUrl(currentTrack.video_id)}
+            alt=""
+            loading="lazy"
+            onload={(event) => {
+              (event.currentTarget as HTMLImageElement).style.display = '';
+            }}
+            onerror={(event) => {
+              (event.currentTarget as HTMLImageElement).style.display = 'none';
+            }}
+          />
+        </div>
+        <div class="np-info">
+          <p class="eyebrow">Now playing</p>
+          <h2>{currentTrack.title}</h2>
+          <p class="muted">
+            {currentTrack.artist}
+            {#if currentTrack.album}<span> · {currentTrack.album}</span>{/if}
+          </p>
+        </div>
+        <div class="np-actions">
+          <button class="accent" onclick={() => store.togglePlayback()}>
+            {isPlaying ? 'Pause' : 'Play'}
+          </button>
+          <button onclick={() => store.openFullPlayer()}>Full player</button>
+        </div>
+      </section>
+    {/if}
 
     {#if store.playlistsLoading && store.playlists.length === 0}
       <div class="cards">
@@ -317,6 +353,89 @@
     font-size: 0.74rem;
   }
 
+  .now-playing-panel {
+    display: flex;
+    align-items: center;
+    gap: 0.9rem;
+    flex: none;
+    margin: 1rem 1.25rem 0;
+    padding: 0.8rem;
+    border: 1px dashed var(--accent);
+    border-radius: 8px;
+    background:
+      linear-gradient(
+        90deg,
+        color-mix(in srgb, var(--accent) 10%, transparent),
+        color-mix(in srgb, var(--bg-raised) 45%, transparent)
+      );
+  }
+
+  .np-art {
+    position: relative;
+    width: 5rem;
+    height: 5rem;
+    flex: none;
+    overflow: hidden;
+    border-radius: 6px;
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  }
+
+  .np-art span {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    color: var(--bg);
+    font-size: 1.8rem;
+    font-weight: 800;
+  }
+
+  .np-art img {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+
+  .np-info {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .np-info .eyebrow {
+    margin: 0 0 0.1rem;
+  }
+
+  .np-info h2 {
+    margin: 0;
+    overflow: hidden;
+    color: var(--accent);
+    font-size: 1.05rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .np-info p {
+    margin: 0.15rem 0 0;
+    overflow: hidden;
+    font-size: 0.78rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .np-actions {
+    display: flex;
+    flex: none;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+  }
+
+  .np-actions button {
+    padding: 0.2rem 0.6rem;
+    font-size: 0.76rem;
+  }
+
   .cards {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(17rem, 1fr));
@@ -471,6 +590,18 @@
   @media (max-width: 700px) {
     .playlist-header {
       flex-wrap: wrap;
+    }
+
+    .now-playing-panel {
+      flex-wrap: wrap;
+    }
+
+    .np-info {
+      flex-basis: calc(100% - 6rem);
+    }
+
+    .np-actions {
+      margin-left: auto;
     }
   }
 </style>
