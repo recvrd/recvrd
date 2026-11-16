@@ -2,17 +2,21 @@ use axum::{Json, Router, routing::get};
 use serde_json::{Value, json};
 use std::{process::Stdio, time::Duration};
 use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines},
+    process::{ChildStdin, ChildStdout},
     time::timeout,
 };
 use ytermusicd_api::{
     AuthState, AuthStatus, DownloadSummary, PlaybackSnapshot, PlaybackState, Status, Track,
 };
 
+const RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
+const EXIT_TIMEOUT: Duration = Duration::from_secs(30);
+
 async fn mock_daemon() -> String {
     let status = Status {
         name: "ytermusicd".to_string(),
-        version: "0.1.0".to_string(),
+        version: "0.3.0".to_string(),
         status: "ok".to_string(),
         uptime_seconds: 1,
         auth: AuthStatus {
@@ -52,6 +56,33 @@ async fn mock_daemon() -> String {
     format!("http://{address}")
 }
 
+async fn send(stdin: &mut ChildStdin, message: Value) {
+    stdin
+        .write_all(format!("{message}\n").as_bytes())
+        .await
+        .unwrap();
+    stdin.flush().await.unwrap();
+}
+
+async fn read_response(lines: &mut Lines<BufReader<ChildStdout>>, id: u64) -> Value {
+    loop {
+        let line = timeout(RESPONSE_TIMEOUT, lines.next_line())
+            .await
+            .expect("MCP response timeout")
+            .expect("MCP stdout read failed");
+        let Some(line) = line else {
+            panic!("MCP stdout closed before response {id}");
+        };
+        if line.trim().is_empty() {
+            continue;
+        }
+        let response: Value = serde_json::from_str(&line).expect("valid JSON response");
+        if response["id"] == id {
+            return response;
+        }
+    }
+}
+
 #[tokio::test]
 async fn mcp_stdio_lists_tools_and_exits_on_eof() {
     let base = mock_daemon().await;
@@ -59,7 +90,8 @@ async fn mcp_stdio_lists_tools_and_exits_on_eof() {
         .args(["mcp", "--url", &base])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
         .spawn()
         .expect("spawn ytermusicd mcp");
 
@@ -67,7 +99,8 @@ async fn mcp_stdio_lists_tools_and_exits_on_eof() {
     let stdout = child.stdout.take().unwrap();
     let mut lines = BufReader::new(stdout).lines();
 
-    let messages = [
+    send(
+        &mut stdin,
         json!({
             "jsonrpc": "2.0",
             "id": 1,
@@ -78,66 +111,30 @@ async fn mcp_stdio_lists_tools_and_exits_on_eof() {
                 "clientInfo": { "name": "test", "version": "0.0.0" }
             }
         }),
+    )
+    .await;
+    let initialize = read_response(&mut lines, 1).await;
+    assert_eq!(initialize["result"]["protocolVersion"], "2025-06-18");
+
+    send(
+        &mut stdin,
         json!({
             "jsonrpc": "2.0",
             "method": "notifications/initialized"
         }),
+    )
+    .await;
+    send(
+        &mut stdin,
         json!({
             "jsonrpc": "2.0",
             "id": 2,
             "method": "tools/list",
             "params": {}
         }),
-        json!({
-            "jsonrpc": "2.0",
-            "id": 3,
-            "method": "tools/call",
-            "params": { "name": "now_playing", "arguments": {} }
-        }),
-    ];
-
-    for message in messages {
-        stdin
-            .write_all(format!("{message}\n").as_bytes())
-            .await
-            .unwrap();
-        stdin.flush().await.unwrap();
-    }
-
-    let mut responses: Vec<Value> = Vec::new();
-    loop {
-        let line = timeout(Duration::from_secs(10), lines.next_line())
-            .await
-            .expect("MCP response timeout")
-            .unwrap();
-        let Some(line) = line else { break };
-        if line.trim().is_empty() {
-            continue;
-        }
-        let response: Value = serde_json::from_str(&line).expect("valid JSON response");
-        responses.push(response);
-        if responses.iter().any(|response| response["id"] == 3) {
-            break;
-        }
-    }
-
-    drop(stdin);
-    let status = timeout(Duration::from_secs(10), child.wait())
-        .await
-        .expect("MCP process did not exit")
-        .unwrap();
-    assert!(status.success(), "MCP process failed: {status}");
-
-    let initialize = responses
-        .iter()
-        .find(|response| response["id"] == 1)
-        .expect("initialize response");
-    assert_eq!(initialize["result"]["protocolVersion"], "2025-06-18");
-
-    let tools = responses
-        .iter()
-        .find(|response| response["id"] == 2)
-        .expect("tools/list response");
+    )
+    .await;
+    let tools = read_response(&mut lines, 2).await;
     let names: Vec<&str> = tools["result"]["tools"]
         .as_array()
         .expect("tools array")
@@ -149,10 +146,17 @@ async fn mcp_stdio_lists_tools_and_exits_on_eof() {
     assert!(names.contains(&"download_status"));
     assert!(names.contains(&"create_playlist"));
 
-    let call = responses
-        .iter()
-        .find(|response| response["id"] == 3)
-        .expect("tools/call response");
+    send(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": { "name": "now_playing", "arguments": {} }
+        }),
+    )
+    .await;
+    let call = read_response(&mut lines, 3).await;
     assert_eq!(
         call["result"]["structuredContent"]["playback"]["volume"],
         50
@@ -161,4 +165,11 @@ async fn mcp_stdio_lists_tools_and_exits_on_eof() {
         call["result"]["structuredContent"]["playback"]["current"]["video_id"],
         "v1"
     );
+
+    drop(stdin);
+    let status = timeout(EXIT_TIMEOUT, child.wait())
+        .await
+        .expect("MCP process did not exit")
+        .unwrap();
+    assert!(status.success(), "MCP process failed: {status}");
 }
