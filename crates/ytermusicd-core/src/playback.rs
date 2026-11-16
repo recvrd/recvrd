@@ -62,6 +62,8 @@ pub enum PlaybackError {
     NoCurrentTrack,
     #[error("queue index out of bounds")]
     IndexOutOfBounds,
+    #[error("invalid seek position")]
+    InvalidPosition,
 }
 
 /// Headless playback service. Owns the queue, playback state and event bus.
@@ -180,8 +182,13 @@ impl<S: AudioSink> PlaybackService<S> {
             PlaybackCommand::Previous => self.previous_track(),
             PlaybackCommand::Seek(position) => self.seek(position),
             PlaybackCommand::SeekBy(delta) => {
+                if !delta.is_finite() {
+                    return Err(PlaybackError::InvalidPosition);
+                }
                 let position = (self.current_position().as_secs_f64() + delta).max(0.0);
-                self.seek(Duration::from_secs_f64(position))
+                let position = Duration::try_from_secs_f64(position)
+                    .map_err(|_| PlaybackError::InvalidPosition)?;
+                self.seek(position)
             }
             PlaybackCommand::SetVolume(volume) => self.set_volume(volume),
             PlaybackCommand::SetShuffle(enabled) => {
@@ -231,7 +238,11 @@ impl<S: AudioSink> PlaybackService<S> {
             state.shuffle,
         );
         self.volume = state.volume.min(100);
-        self.position = Duration::from_secs_f64(state.position_secs.max(0.0));
+        // State validation checks finiteness only, so a hand-edited
+        // state file can hold a huge finite value that overflows a
+        // Duration. Fall back to zero instead of panicking.
+        self.position =
+            Duration::try_from_secs_f64(state.position_secs.max(0.0)).unwrap_or(Duration::ZERO);
         self.started_at = None;
         self.pending_start = false;
         self.status = PlaybackStatus::Stopped;
@@ -793,6 +804,37 @@ mod tests {
         assert_eq!(service.snapshot().volume, 70);
         service.handle_command(PlaybackCommand::Next).unwrap();
         assert_eq!(service.snapshot().current.unwrap().video_id, "video-1");
+    }
+
+    #[test]
+    fn seek_by_rejects_non_finite_deltas() {
+        let mut service = service();
+        service.play_playlist(tracks(1)).unwrap();
+        assert!(matches!(
+            service.handle_command(PlaybackCommand::SeekBy(f64::INFINITY)),
+            Err(PlaybackError::InvalidPosition)
+        ));
+        assert!(matches!(
+            service.handle_command(PlaybackCommand::SeekBy(f64::NAN)),
+            Err(PlaybackError::InvalidPosition)
+        ));
+        assert!(matches!(
+            service.handle_command(PlaybackCommand::SeekBy(1e300)),
+            Err(PlaybackError::InvalidPosition)
+        ));
+        service
+            .handle_command(PlaybackCommand::SeekBy(5.0))
+            .unwrap();
+    }
+
+    #[test]
+    fn restore_clamps_overflowing_position_to_zero() {
+        let mut service = service();
+        service.play_playlist(tracks(1)).unwrap();
+        let mut state = service.persisted_state();
+        state.position_secs = 1e300;
+        service.restore_state(&state).unwrap();
+        assert_eq!(service.snapshot().position_secs, 0.0);
     }
 
     #[test]
