@@ -1,7 +1,7 @@
 use std::{
     path::Path,
     string::FromUtf8Error,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 #[cfg(test)]
@@ -27,6 +27,13 @@ pub use json_extractor::YoutubeMusicVideoRef;
 pub type Result<T> = std::result::Result<T, YoutubeMusicError>;
 
 const YTM_DOMAIN: &str = "https://music.youtube.com";
+
+/// Bound on one YouTube API call. A stalled response must not hang
+/// the API handler that waits on it.
+const REQUEST_TIMEOUT_SECS: u64 = 30;
+
+/// Retries for a rate limit or server error on a browse call.
+const MAX_BROWSE_RETRIES: u32 = 2;
 
 #[cfg(test)]
 fn headers_path() -> PathBuf {
@@ -210,6 +217,7 @@ impl YoutubeMusicInstance {
         trace!("Creating new YoutubeMusicInstance");
         let rest_client = reqwest::ClientBuilder::default()
             .default_headers(headers.clone())
+            .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
             .build()
             .map_err(YoutubeMusicError::RequestError)?;
         trace!("Fetching YoutubeMusic homepage");
@@ -320,6 +328,31 @@ impl YoutubeMusicInstance {
         };
         Ok((playlist_json, continuation))
     }
+    /// Send a browse request, with a bounded retry for rate limits and
+    /// server errors. Browse calls only read state, so a retry is safe.
+    /// A transport error returns at once. The delay grows 500 ms, then 1 s.
+    async fn send_browse_with_retry(
+        &self,
+        build: impl Fn() -> reqwest::RequestBuilder,
+    ) -> Result<reqwest::Response> {
+        let mut attempt = 0;
+        loop {
+            let response = build()
+                .send()
+                .await
+                .map_err(YoutubeMusicError::RequestError)?;
+            let status = response.status();
+            if (status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error())
+                && attempt < MAX_BROWSE_RETRIES
+            {
+                attempt += 1;
+                tokio::time::sleep(Duration::from_millis(500 * u64::from(attempt))).await;
+                continue;
+            }
+            return Ok(response);
+        }
+    }
+
     async fn browse_continuation_raw(
         &self,
         Continuation {
@@ -340,22 +373,22 @@ impl YoutubeMusicInstance {
             ],
         )?;
         let body = json!({ "context": self.context() });
-        self.client
-            .post(url)
-            .header("Content-Type", "application/json")
-            .header(
-                "Authorization",
-                format!("SAPISIDHASH {}", self.compute_sapi_hash()),
-            )
-            .header("X-Origin", "https://music.youtube.com")
-            .header("Cookie", &self.cookies)
-            .body(body.to_string())
-            .send()
-            .await
-            .map_err(YoutubeMusicError::RequestError)?
-            .text()
-            .await
-            .map_err(YoutubeMusicError::RequestError)
+        self.send_browse_with_retry(|| {
+            self.client
+                .post(url.clone())
+                .header("Content-Type", "application/json")
+                .header(
+                    "Authorization",
+                    format!("SAPISIDHASH {}", self.compute_sapi_hash()),
+                )
+                .header("X-Origin", "https://music.youtube.com")
+                .header("Cookie", &self.cookies)
+                .body(body.to_string())
+        })
+        .await?
+        .text()
+        .await
+        .map_err(YoutubeMusicError::RequestError)
     }
     async fn browse_raw(
         &self,
@@ -369,22 +402,22 @@ impl YoutubeMusicInstance {
             &[("key", &self.innertube_api_key), ("prettyPrint", "false")],
         )?;
         let body = self.browse_body(endpoint_key, endpoint_param);
-        self.client
-            .post(url)
-            .header("Content-Type", "application/json")
-            .header(
-                "Authorization",
-                format!("SAPISIDHASH {}", self.compute_sapi_hash()),
-            )
-            .header("X-Origin", "https://music.youtube.com")
-            .header("Cookie", &self.cookies)
-            .body(body.to_string())
-            .send()
-            .await
-            .map_err(YoutubeMusicError::RequestError)?
-            .text()
-            .await
-            .map_err(YoutubeMusicError::RequestError)
+        self.send_browse_with_retry(|| {
+            self.client
+                .post(url.clone())
+                .header("Content-Type", "application/json")
+                .header(
+                    "Authorization",
+                    format!("SAPISIDHASH {}", self.compute_sapi_hash()),
+                )
+                .header("X-Origin", "https://music.youtube.com")
+                .header("Cookie", &self.cookies)
+                .body(body.to_string())
+        })
+        .await?
+        .text()
+        .await
+        .map_err(YoutubeMusicError::RequestError)
     }
     async fn browse(
         &self,
@@ -885,6 +918,8 @@ pub enum YoutubeMusicError {
 #[cfg(test)]
 mod edit_tests {
     use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
     fn normalizes_playlist_ids() {
@@ -1064,6 +1099,106 @@ mod edit_tests {
         assert_eq!(body["title"], "Mix");
         assert_eq!(body["privacyStatus"], "UNLISTED");
         assert_eq!(body["context"]["client"]["clientName"], "WEB_REMIX");
+    }
+
+    /// Serve a fixed sequence of statuses, one per connection, and
+    /// count the requests. Each connection closes after its reply.
+    async fn serve_statuses(
+        listener: tokio::net::TcpListener,
+        statuses: Vec<reqwest::StatusCode>,
+        hits: Arc<AtomicUsize>,
+    ) {
+        use tokio::io::AsyncWriteExt;
+        loop {
+            let Ok((mut socket, _)) = listener.accept().await else {
+                return;
+            };
+            let index = hits.fetch_add(1, Ordering::SeqCst);
+            let Some(status) = statuses.get(index) else {
+                return;
+            };
+            let _ = read_request(&mut socket).await;
+            let body = "{}";
+            let reply = format!(
+                "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                status.as_u16(),
+                status.canonical_reason().unwrap_or(""),
+                body.len(),
+                body
+            );
+            let _ = socket.write_all(reply.as_bytes()).await;
+        }
+    }
+
+    /// Drive one browse attempt against a local status sequence and
+    /// report the final status and the request count.
+    async fn browse_attempts(statuses: Vec<reqwest::StatusCode>) -> (reqwest::StatusCode, usize) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let hits = Arc::new(AtomicUsize::new(0));
+        let server = tokio::spawn(serve_statuses(listener, statuses, hits.clone()));
+        let instance = YoutubeMusicInstance::for_test(
+            format!("http://{address}"),
+            "test-key".to_string(),
+            "1.0".to_string(),
+            "SAPISID=x".to_string(),
+            None,
+        );
+        let response = instance
+            .send_browse_with_retry(|| {
+                instance
+                    .client
+                    .post(format!("http://{address}/youtubei/v1/browse"))
+                    .header("Content-Type", "application/json")
+                    .body("{}")
+            })
+            .await
+            .unwrap();
+        let status = response.status();
+        server.abort();
+        (status, hits.load(Ordering::SeqCst))
+    }
+
+    #[tokio::test]
+    async fn browse_retries_server_errors_then_succeeds() {
+        let (status, hits) = browse_attempts(vec![
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+            reqwest::StatusCode::OK,
+        ])
+        .await;
+        assert_eq!(status, reqwest::StatusCode::OK);
+        assert_eq!(hits, 3);
+    }
+
+    #[tokio::test]
+    async fn browse_retries_rate_limits() {
+        let (status, hits) = browse_attempts(vec![
+            reqwest::StatusCode::TOO_MANY_REQUESTS,
+            reqwest::StatusCode::OK,
+        ])
+        .await;
+        assert_eq!(status, reqwest::StatusCode::OK);
+        assert_eq!(hits, 2);
+    }
+
+    #[tokio::test]
+    async fn browse_gives_up_after_max_retries() {
+        let (status, hits) =
+            browse_attempts(vec![reqwest::StatusCode::INTERNAL_SERVER_ERROR; 3]).await;
+        assert_eq!(status, reqwest::StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(hits, 3);
+    }
+
+    #[tokio::test]
+    async fn browse_does_not_retry_success_or_client_errors() {
+        let (status, hits) = browse_attempts(vec![reqwest::StatusCode::OK]).await;
+        assert_eq!(status, reqwest::StatusCode::OK);
+        assert_eq!(hits, 1);
+
+        let (status, hits) = browse_attempts(vec![reqwest::StatusCode::BAD_REQUEST]).await;
+        assert_eq!(status, reqwest::StatusCode::BAD_REQUEST);
+        assert_eq!(hits, 1);
     }
 }
 
