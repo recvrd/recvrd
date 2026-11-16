@@ -2,7 +2,7 @@ use player::{Player, PlayerOptions};
 use std::{
     path::Path,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
         mpsc,
     },
@@ -31,6 +31,7 @@ enum AudioCommand {
 pub struct RodioSink {
     tx: mpsc::Sender<AudioCommand>,
     finished: Arc<AtomicBool>,
+    duration: Arc<Mutex<Option<Duration>>>,
 }
 
 impl RodioSink {
@@ -38,6 +39,8 @@ impl RodioSink {
         let (tx, rx) = mpsc::channel();
         let finished = Arc::new(AtomicBool::new(true));
         let thread_finished = finished.clone();
+        let duration = Arc::new(Mutex::new(None));
+        let thread_duration = duration.clone();
 
         thread::Builder::new()
             .name("ytermusicd-audio".to_string())
@@ -78,12 +81,15 @@ impl RodioSink {
                             };
                             match player.play(&path) {
                                 Ok(()) => {
+                                    *thread_duration.lock().unwrap() =
+                                        player.duration().map(Duration::from_secs_f64);
                                     thread_finished.store(false, Ordering::SeqCst);
                                     playing = true;
                                     let _ = reply.send(Ok(()));
                                 }
                                 Err(error) => {
                                     log::error!("failed to play {}: {error:?}", path.display());
+                                    *thread_duration.lock().unwrap() = None;
                                     thread_finished.store(true, Ordering::SeqCst);
                                     playing = false;
                                     let _ = reply.send(Err(format!("{error:?}")));
@@ -104,6 +110,7 @@ impl RodioSink {
                             if let Some(player) = player.as_mut() {
                                 player.stop();
                             }
+                            *thread_duration.lock().unwrap() = None;
                             thread_finished.store(true, Ordering::SeqCst);
                             playing = false;
                         }
@@ -140,7 +147,11 @@ impl RodioSink {
             })
             .ok();
 
-        Self { tx, finished }
+        Self {
+            tx,
+            finished,
+            duration,
+        }
     }
 
     fn send(&self, command: AudioCommand) -> Result<(), std::io::Error> {
@@ -202,6 +213,10 @@ impl AudioSink for RodioSink {
 
     fn set_volume(&mut self, volume: u8) -> Result<(), Self::Error> {
         self.send(AudioCommand::Volume(volume))
+    }
+
+    fn duration(&self) -> Option<Duration> {
+        *self.duration.lock().unwrap()
     }
 
     fn is_finished(&self) -> bool {

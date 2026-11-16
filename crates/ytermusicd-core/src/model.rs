@@ -330,6 +330,39 @@ impl Queue {
         self.current = index.filter(|index| *index < self.items.len());
     }
 
+    /// Fill in the current track's duration once the audio backend knows the
+    /// real length of the media file.
+    pub fn set_current_duration(&mut self, duration: impl Into<String>) -> bool {
+        let duration = duration.into();
+        let Some(index) = self.current else {
+            return false;
+        };
+        let Some(track_id) = self
+            .items
+            .get(index)
+            .map(|item| item.track.video_id.clone())
+        else {
+            return false;
+        };
+        let mut changed = false;
+        if let Some(item) = self.items.get_mut(index)
+            && item.track.duration != duration
+        {
+            item.track.duration = duration.clone();
+            changed = true;
+        }
+        if let Some(original) = &mut self.original
+            && let Some(item) = original
+                .iter_mut()
+                .find(|item| item.track.video_id == track_id)
+            && item.track.duration != duration
+        {
+            item.track.duration = duration;
+            changed = true;
+        }
+        changed
+    }
+
     /// Next index for an explicit next/previous command.
     pub fn next_index(&self) -> Option<usize> {
         if self.items.is_empty() {

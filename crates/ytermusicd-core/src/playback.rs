@@ -20,6 +20,10 @@ pub trait AudioSink {
     fn stop(&mut self) -> Result<(), Self::Error>;
     fn seek(&mut self, position: Duration) -> Result<(), Self::Error>;
     fn set_volume(&mut self, volume: u8) -> Result<(), Self::Error>;
+    /// Total length of the loaded media, when the sink knows it.
+    fn duration(&self) -> Option<Duration> {
+        None
+    }
     /// Whether the current track has finished. Real sinks should implement
     /// this; test sinks can leave the default.
     fn is_finished(&self) -> bool {
@@ -478,6 +482,9 @@ impl<S: AudioSink> PlaybackService<S> {
         self.sink
             .set_volume(self.volume)
             .map_err(|error| PlaybackError::Sink(error.to_string()))?;
+        if let Some(duration) = self.sink.duration() {
+            self.queue.set_current_duration(format_duration(duration));
+        }
         self.publish_all();
         Ok(())
     }
@@ -505,6 +512,18 @@ impl<S: AudioSink> PlaybackService<S> {
     }
 }
 
+fn format_duration(duration: Duration) -> String {
+    let total = duration.as_secs_f64().round() as u64;
+    let hours = total / 3600;
+    let minutes = (total % 3600) / 60;
+    let seconds = total % 60;
+    if hours > 0 {
+        format!("{hours}:{minutes:02}:{seconds:02}")
+    } else {
+        format!("{minutes}:{seconds:02}")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -518,6 +537,7 @@ mod tests {
         actions: Vec<&'static str>,
         volume: u8,
         finished: bool,
+        duration: Option<Duration>,
     }
 
     impl AudioSink for MockSink {
@@ -559,6 +579,10 @@ mod tests {
         fn is_finished(&self) -> bool {
             self.finished
         }
+
+        fn duration(&self) -> Option<Duration> {
+            self.duration
+        }
     }
 
     fn tracks(count: usize) -> Vec<Track> {
@@ -589,6 +613,27 @@ mod tests {
             service.events.snapshot().playback.status,
             PlaybackStatus::Playing
         );
+    }
+
+    #[test]
+    fn fills_missing_duration_from_the_sink() {
+        let mut service = service();
+        service.sink.duration = Some(Duration::from_secs(185));
+        let mut playlist = tracks(1);
+        playlist[0].duration.clear();
+        service.play_playlist(playlist).unwrap();
+        assert_eq!(service.snapshot().current.unwrap().duration, "3:05");
+        assert_eq!(service.queue_snapshot().items[0].track.duration, "3:05");
+        assert_eq!(
+            service.events.snapshot().playback.current.unwrap().duration,
+            "3:05"
+        );
+    }
+
+    #[test]
+    fn duration_format_includes_hours() {
+        assert_eq!(format_duration(Duration::from_secs(3723)), "1:02:03");
+        assert_eq!(format_duration(Duration::from_secs(59)), "0:59");
     }
 
     #[test]
