@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.5.0 — 2026-11-16
+
+### Added
+
+- Add a full-window player with large controls and album art. Open it from the
+  now-playing bar or the library dashboard.
+- Show the current track album art on the library dashboard.
+
+### Fixed
+
+- Send live SSE events in the API event envelope. The web UI now receives
+  playback, queue and download events.
+- Fill the track duration from the media file when playback starts. The seek
+  bar now shows the real duration and accepts seeks.
+
 ## 0.4.1 — 2026-11-15
 
 ### Fixed

@@ -1,6 +1,6 @@
 [package]
 name = "ytermusicd-client"
-version = "0.4.1"
+version = "0.5.0"
 edition = "2024"
 license = "Apache-2.0"
 description = "HTTP and SSE client for the ytermusicd daemon"
