@@ -1317,7 +1317,7 @@ mod tests {
         downloads: Arc<dyn DownloadControl>,
         artwork: Arc<ArtworkCache>,
     ) -> AppState<MockSink> {
-        let service = PlaybackService::new(MockSink, "/tmp/ytermusicd-test");
+        let service = PlaybackService::new(MockSink, "/tmp/ytermusicd-test", 50);
         let events = service.events();
         let playback = Arc::new(Mutex::new(service));
         AppState::new(

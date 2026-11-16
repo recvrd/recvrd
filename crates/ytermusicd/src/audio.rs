@@ -44,7 +44,7 @@ fn drain_player_errors(receiver: &flume::Receiver<PlayError>) -> Vec<PlayError> 
 }
 
 impl RodioSink {
-    pub fn spawn() -> Self {
+    pub fn spawn(initial_volume: u8) -> Self {
         let (tx, rx) = mpsc::channel();
         let finished = Arc::new(AtomicBool::new(true));
         let thread_finished = finished.clone();
@@ -55,7 +55,7 @@ impl RodioSink {
             .name("ytermusicd-audio".to_string())
             .spawn(move || {
                 let (error_tx, error_rx) = flume::unbounded();
-                let mut volume = 50u8;
+                let mut volume = initial_volume.min(100);
                 let mut player = match Player::new(error_tx.clone(), PlayerOptions::new(volume)) {
                     Ok(player) => Some(player),
                     Err(error) => {

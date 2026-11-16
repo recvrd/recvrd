@@ -182,10 +182,11 @@ fn run_serve(
             None => Arc::new(UnavailableMusicApi),
         };
 
-        let sink = RodioSink::spawn();
+        let sink = RodioSink::spawn(config.initial_volume);
         let playback = Arc::new(AsyncMutex::new(PlaybackService::new(
             sink,
             cache_dir.clone(),
+            config.initial_volume,
         )));
         {
             let mut service = playback.lock().await;
