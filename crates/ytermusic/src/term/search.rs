@@ -101,8 +101,7 @@ impl Screen for Search {
         let text = self.text.to_lowercase();
 
         let local = DATABASE
-            .read()
-            .unwrap()
+            .read_or_empty()
             .iter()
             .filter(|x| {
                 x.title.to_lowercase().contains(&text) || x.author.to_lowercase().contains(&text)
@@ -137,7 +136,7 @@ impl Screen for Search {
                             let id = video.video_id.clone();
                             item.push((
                                 format!(" {} ", to_bidi_string(&video.to_string())),
-                                if DATABASE.read().unwrap().iter().any(|x| x.video_id == id) {
+                                if DATABASE.read_or_empty().iter().any(|x| x.video_id == id) {
                                     Status::Local(video)
                                 } else {
                                     Status::Unknown(video)

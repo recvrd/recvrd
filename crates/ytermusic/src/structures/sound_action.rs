@@ -77,7 +77,7 @@ impl SoundAction {
                 player.music_status.insert(video, status);
             }
             Self::AddVideosToQueue(video) => {
-                let db = DATABASE.read().unwrap();
+                let db = DATABASE.read_or_empty();
                 for v in video {
                     Self::insert(
                         player,
@@ -108,8 +108,7 @@ impl SoundAction {
                     player,
                     video.video_id.clone(),
                     if DATABASE
-                        .read()
-                        .unwrap()
+                        .read_or_empty()
                         .iter()
                         .any(|e| e.video_id == video.video_id)
                     {
@@ -150,7 +149,9 @@ impl SoundAction {
                 }
 
                 // manage deleting physically
-                DATABASE.remove_video(&video);
+                if let Err(error) = DATABASE.remove_video(&video) {
+                    error!("could not remove video from database: {error}");
+                }
 
                 let cache_folder = CACHE_DIR.join("downloads");
                 let json_path = cache_folder.join(format!("{}.json", video.video_id));

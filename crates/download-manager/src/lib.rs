@@ -314,7 +314,9 @@ impl DownloadManager {
         let serialized = serde_json::to_string(song)
             .map_err(|error| DownloadError::IoError(std::io::Error::other(error)))?;
         std::fs::write(json, serialized)?;
-        self.database.append(song.clone());
+        self.database
+            .append(song.clone())
+            .map_err(|error| DownloadError::IoError(std::io::Error::other(error)))?;
         Ok(())
     }
 
