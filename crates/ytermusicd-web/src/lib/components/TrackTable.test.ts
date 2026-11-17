@@ -34,7 +34,7 @@ describe('TrackTable', () => {
     const covers = container.querySelectorAll<HTMLImageElement>('.row .cover img');
 
     expect(covers).toHaveLength(2);
-    expect(covers[0].getAttribute('src')).toBe('/api/tracks/v1/cover');
+    expect(covers[0].getAttribute('src')).toBe('/api/tracks/youtube/v1/cover');
     expect(covers[0]).toHaveAttribute('loading', 'lazy');
   });
 
@@ -101,7 +101,7 @@ describe('TrackTable', () => {
     const retry = screen.getByRole('button', { name: 'Retry download for Track v1' });
     expect(retry).toHaveTextContent('failed');
     await fireEvent.click(retry);
-    expect(actions.onretry).toHaveBeenCalledWith('v1');
+    expect(actions.onretry).toHaveBeenCalledWith(makeTrack('v1'));
     expect(container.querySelector('.row')).not.toBeNull();
   });
 

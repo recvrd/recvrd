@@ -1,5 +1,5 @@
 use crate::model::{PlaybackSnapshot, QueueSnapshot};
-use common_structs::MusicDownloadStatus;
+use common_structs::{MusicDownloadStatus, TrackKey};
 use std::{
     collections::VecDeque,
     sync::{
@@ -18,10 +18,10 @@ pub enum CoreEvent {
     Playback(PlaybackSnapshot),
     Queue(QueueSnapshot),
     TrackEnded {
-        video_id: String,
+        track_id: TrackKey,
     },
     DownloadStatus {
-        video_id: String,
+        track_id: TrackKey,
         status: MusicDownloadStatus,
     },
     Error {

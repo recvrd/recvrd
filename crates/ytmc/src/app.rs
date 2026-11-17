@@ -6,7 +6,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent,
 use ratatui::widgets::{ListState, TableState};
 use ytermusicd_api::{
     AuthState, DownloadStatus, PlaybackState, Playlist, PlaylistDetail, Queue, RepeatMode,
-    SearchResults, Status, Track,
+    SearchResults, Status, Track, TrackKey,
 };
 
 use crate::cover::CoverArt;
@@ -124,7 +124,7 @@ pub enum ContextAction {
     /// Clear the queue.
     ClearQueue,
     /// Retry a failed download.
-    RetryDownload(String),
+    RetryDownload(TrackKey),
 }
 
 /// A text input action.
@@ -311,8 +311,8 @@ pub struct App {
     pub toasts: Vec<Toast>,
     /// Cover art for the current track.
     pub cover: Option<CoverArt>,
-    /// Video id for the cover request.
-    pub cover_for: Option<String>,
+    /// Track key for the cover request.
+    pub cover_for: Option<TrackKey>,
     /// Pending `g` or `d` key.
     pub pending_key: Option<(char, Instant)>,
     /// Last click.
@@ -375,9 +375,9 @@ impl App {
             })
     }
 
-    /// Return the current video id.
-    pub fn current_video_id(&self) -> Option<String> {
-        self.current_track().map(|track| track.video_id)
+    /// Return the key of the current track.
+    pub fn current_track_key(&self) -> Option<TrackKey> {
+        self.current_track().map(|track| track.key())
     }
 
     /// Return the current playback position in seconds.
@@ -467,20 +467,20 @@ impl App {
                 commands
             }
             DaemonEvent::Playback(playback) => {
-                let previous = self.current_video_id();
+                let previous = self.current_track_key();
                 if let Some(status) = &mut self.status {
                     status.playback = playback;
                 }
-                if previous != self.current_video_id() {
+                if previous != self.current_track_key() {
                     self.cover = None;
                     self.cover_for = None;
                 }
                 self.ensure_cover()
             }
             DaemonEvent::Queue(queue) => self.apply_queue(queue),
-            DaemonEvent::Download { video_id, status } => {
+            DaemonEvent::Download { key, status } => {
                 for item in &mut self.queue.items {
-                    if item.track.video_id == video_id {
+                    if item.track.key() == key {
                         item.download = status.clone();
                         break;
                     }
@@ -563,8 +563,8 @@ impl App {
                 }
                 Vec::new()
             }
-            DaemonEvent::Cover { video_id, art } => {
-                if self.cover_for.as_deref() == Some(video_id.as_str()) {
+            DaemonEvent::Cover { key, art } => {
+                if self.cover_for.as_ref() == Some(&key) {
                     self.cover = art;
                     if self.cover.is_none() {
                         self.cover_for = None;
@@ -580,9 +580,9 @@ impl App {
     }
 
     fn apply_status(&mut self, status: Status) -> Vec<Command> {
-        let previous = self.current_video_id();
+        let previous = self.current_track_key();
         self.status = Some(status);
-        if previous != self.current_video_id() {
+        if previous != self.current_track_key() {
             self.cover = None;
             self.cover_for = None;
         }
@@ -591,14 +591,14 @@ impl App {
     }
 
     fn apply_queue(&mut self, queue: Queue) -> Vec<Command> {
-        let previous = self.current_video_id();
+        let previous = self.current_track_key();
         let len = queue.items.len();
         self.queue = queue;
         self.queue_selection = clamp_index(self.queue_selection, len);
         if let Some(status) = &mut self.status {
             status.queue_length = len;
         }
-        if previous != self.current_video_id() {
+        if previous != self.current_track_key() {
             self.cover = None;
             self.cover_for = None;
         }
@@ -634,11 +634,12 @@ impl App {
         let Some(track) = self.current_track() else {
             return Vec::new();
         };
-        if self.cover_for.as_deref() == Some(track.video_id.as_str()) {
+        let key = track.key();
+        if self.cover_for.as_ref() == Some(&key) {
             return Vec::new();
         }
-        self.cover_for = Some(track.video_id.clone());
-        vec![Command::LoadCover(track.video_id)]
+        self.cover_for = Some(key.clone());
+        vec![Command::LoadCover(key)]
     }
 
     fn refresh_library(&self) -> Vec<Command> {
@@ -1012,7 +1013,8 @@ impl App {
                         self.show_toast(ToastLevel::Info, format!("Added to {}.", playlist.name));
                         vec![Command::AddPlaylistTracks {
                             id: playlist.id,
-                            video_ids: vec![track.video_id],
+                            provider: track.provider,
+                            track_ids: vec![track.track_id],
                         }]
                     }
                     None => Vec::new(),
@@ -1140,7 +1142,7 @@ impl App {
             ContextAction::MoveQueueDown(index) => self.reorder_queue(index, index + 1),
             ContextAction::PlayQueueNext(index) => vec![Command::QueuePlayNext(index)],
             ContextAction::ClearQueue => self.clear_queue_confirmation(),
-            ContextAction::RetryDownload(video_id) => vec![Command::RetryDownload(video_id)],
+            ContextAction::RetryDownload(key) => vec![Command::RetryDownload(key)],
         }
     }
 
@@ -1375,7 +1377,7 @@ impl App {
                 if matches!(item.download, DownloadStatus::Failed { .. }) {
                     items.push(ContextItem {
                         label: "Retry download".to_string(),
-                        action: ContextAction::RetryDownload(item.track.video_id.clone()),
+                        action: ContextAction::RetryDownload(item.track.key()),
                     });
                 }
                 items.push(ContextItem {
@@ -1628,7 +1630,7 @@ impl App {
         self.queue
             .items
             .get(self.queue_selection)
-            .map(|item| vec![Command::RetryDownload(item.track.video_id.clone())])
+            .map(|item| vec![Command::RetryDownload(item.track.key())])
             .unwrap_or_default()
     }
 
@@ -1896,11 +1898,12 @@ mod tests {
     use super::*;
     use crossterm::event::KeyEvent;
     use ratatui::layout::Rect;
-    use ytermusicd_api::{AuthStatus, DownloadSummary, PlaybackSnapshot, QueueItem};
+    use ytermusicd_api::{AuthStatus, DownloadSummary, PlaybackSnapshot, ProviderId, QueueItem};
 
     fn track(id: &str) -> Track {
         Track {
-            video_id: id.to_string(),
+            provider: ProviderId::Youtube,
+            track_id: id.to_string(),
             title: format!("Track {id}"),
             artist: "Artist".to_string(),
             album: "Album".to_string(),
@@ -1929,6 +1932,7 @@ mod tests {
             },
             queue_length: 1,
             downloads: DownloadSummary::default(),
+            providers: vec![ProviderId::Youtube],
         }
     }
 
@@ -1985,7 +1989,7 @@ mod tests {
         assert!(
             commands
                 .iter()
-                .any(|command| matches!(command, Command::LoadCover(id) if id == "v1"))
+                .any(|command| matches!(command, Command::LoadCover(key) if key.id == "v1"))
         );
     }
 
@@ -1999,7 +2003,7 @@ mod tests {
         let mut playback = status().playback;
         playback.current = Some(track("v2"));
         let commands = app.handle_daemon_event(DaemonEvent::Playback(playback));
-        assert!(matches!(commands.first(), Some(Command::LoadCover(id)) if id == "v2"));
+        assert!(matches!(commands.first(), Some(Command::LoadCover(key)) if key.id == "v2"));
     }
 
     #[test]
@@ -2010,13 +2014,15 @@ mod tests {
             queue: queue(),
         });
         let commands = app.handle_daemon_event(DaemonEvent::Cover {
-            video_id: "v1".to_string(),
+            key: TrackKey::youtube("v1"),
             art: None,
         });
         assert!(commands.is_empty());
         let playback = status().playback;
         let commands = app.handle_daemon_event(DaemonEvent::Playback(playback));
-        assert!(matches!(commands.first(), Some(Command::LoadCover(id)) if id == "v1"));
+        assert!(
+            matches!(commands.first(), Some(Command::LoadCover(key)) if key == &TrackKey::youtube("v1"))
+        );
     }
 
     #[test]
@@ -2081,7 +2087,7 @@ mod tests {
         assert!(first.is_empty());
         let second = app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 2, 5));
         assert!(
-            matches!(second.first(), Some(Command::PlayTrack(track)) if track.video_id == "v2")
+            matches!(second.first(), Some(Command::PlayTrack(track)) if track.track_id == "v2")
         );
     }
 

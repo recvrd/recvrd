@@ -3,7 +3,7 @@ use std::{
     sync::atomic::Ordering,
 };
 
-use common_structs::MusicDownloadStatus;
+use common_structs::{MusicDownloadStatus, TrackKey};
 use flume::{Receiver, Sender, unbounded};
 use log::error;
 use player::{PlayError, Player, PlayerOptions};
@@ -24,7 +24,7 @@ pub struct PlayerState {
     pub list: Vec<YoutubeMusicVideoRef>,
     pub current: usize,
     pub rtcurrent: Option<YoutubeMusicVideoRef>,
-    pub music_status: HashMap<String, MusicDownloadStatus>,
+    pub music_status: HashMap<TrackKey, MusicDownloadStatus>,
     pub list_selector: ListSelector,
     pub controls: Media,
     pub sink: Player,
@@ -83,16 +83,14 @@ impl PlayerState {
     pub fn is_current_download_failed(&self) -> bool {
         self.current()
             .as_ref()
-            .map(|x| {
-                self.music_status.get(&x.video_id) == Some(&MusicDownloadStatus::DownloadFailed)
-            })
+            .map(|x| self.music_status.get(&x.key()) == Some(&MusicDownloadStatus::DownloadFailed))
             .unwrap_or(false)
     }
 
     pub fn is_current_downloaded(&self) -> bool {
         self.current()
             .as_ref()
-            .map(|x| self.music_status.get(&x.video_id) == Some(&MusicDownloadStatus::Downloaded))
+            .map(|x| self.music_status.get(&x.key()) == Some(&MusicDownloadStatus::Downloaded))
             .unwrap_or(false)
     }
 
@@ -120,7 +118,7 @@ impl PlayerState {
             while self
                 .current()
                 .map(|x| {
-                    self.music_status.get(&x.video_id) == Some(&MusicDownloadStatus::DownloadFailed)
+                    self.music_status.get(&x.key()) == Some(&MusicDownloadStatus::DownloadFailed)
                 })
                 .unwrap_or(false)
             {
@@ -130,7 +128,9 @@ impl PlayerState {
             if self.is_current_downloaded()
                 && let Some(video) = self.current().cloned()
             {
-                let k = CACHE_DIR.join(format!("downloads/{}.mp4", video.video_id));
+                let k = video
+                    .key()
+                    .download_file(&CACHE_DIR.join("downloads"), "mp4");
                 if let Err(e) = self.sink.play(k.as_path()) {
                     if matches!(e, PlayError::DecoderError(_)) {
                         // Cleaning the file
@@ -147,7 +147,9 @@ impl PlayerState {
                             &self.updater,
                             "invalid cleaning JSON",
                             std::fs::remove_file(
-                                CACHE_DIR.join(format!("downloads/{}.json", video.video_id)),
+                                video
+                                    .key()
+                                    .download_file(&CACHE_DIR.join("downloads"), "json"),
                             ),
                         );
                         self.current = 0;
@@ -173,7 +175,7 @@ impl PlayerState {
             .skip(self.current)
             .chain(self.list.iter().take(self.current).rev())
             .filter(|x| {
-                self.music_status.get(&x.video_id) == Some(&MusicDownloadStatus::NotDownloaded)
+                self.music_status.get(&x.key()) == Some(&MusicDownloadStatus::NotDownloaded)
             })
             .take(12)
             .cloned()

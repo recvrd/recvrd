@@ -11,7 +11,8 @@ use rmcp::{
 use serde::{Deserialize, Serialize};
 use ytermusicd_api::{
     CreatePlaylistRequest, DownloadSummary, OkResponse, Playlist, PlaylistDetail, PlaylistPrivacy,
-    Queue, QueueItem, RepeatMode, SearchResults, Status, Track, UpdatePlaylistRequest,
+    ProviderId, Queue, QueueItem, RepeatMode, SearchResults, Status, Track, TrackKey,
+    UpdatePlaylistRequest,
 };
 use ytermusicd_client::DaemonClient;
 
@@ -85,8 +86,11 @@ pub struct RenamePlaylistArgs {
 pub struct PlaylistTracksArgs {
     /// Playlist ID from list_playlists or search.
     pub playlist_id: String,
-    /// Video IDs to add.
-    pub video_ids: Vec<String>,
+    /// Provider of the tracks. Default: youtube.
+    #[serde(default)]
+    pub provider: ProviderId,
+    /// Track IDs to add.
+    pub track_ids: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -153,14 +157,21 @@ pub struct ReorderQueueArgs {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct RetryDownloadArgs {
-    /// Video ID of the failed download.
-    pub video_id: String,
+    /// Provider of the failed download. Default: youtube.
+    #[serde(default)]
+    pub provider: ProviderId,
+    /// Track ID of the failed download.
+    pub track_id: String,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct DownloadStatusArgs {
-    /// Optional video ID. Omit it to list all queue downloads.
-    pub video_id: Option<String>,
+    /// Optional provider. Omit it to list all queue downloads.
+    #[serde(default)]
+    pub provider: Option<ProviderId>,
+    /// Optional track ID. Omit it to list all queue downloads.
+    #[serde(default)]
+    pub track_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
@@ -257,7 +268,7 @@ impl McpServer {
         Parameters(args): Parameters<PlaylistTracksArgs>,
     ) -> Result<Json<Vec<Track>>, McpError> {
         self.client
-            .add_playlist_tracks(&args.playlist_id, args.video_ids)
+            .add_playlist_tracks(&args.playlist_id, args.provider, args.track_ids)
             .await
             .map(Json)
             .map_err(to_mcp)
@@ -465,13 +476,13 @@ impl McpServer {
     }
 
     /// Retry a failed download.
-    #[tool(description = "Retry a failed download by video ID")]
+    #[tool(description = "Retry a failed download by track ID")]
     async fn retry_download(
         &self,
         Parameters(args): Parameters<RetryDownloadArgs>,
     ) -> Result<Json<OkResponse>, McpError> {
         self.client
-            .retry_download(&args.video_id)
+            .retry_download(&TrackKey::new(args.provider, args.track_id))
             .await
             .map(|()| Json(OkResponse { ok: true }))
             .map_err(to_mcp)
@@ -486,17 +497,17 @@ impl McpServer {
         let (status, queue) = tokio::join!(self.client.status(), self.client.queue());
         let status = status.map_err(to_mcp)?;
         let queue = queue.map_err(to_mcp)?;
-        let tracks = match args.video_id {
-            Some(video_id) => {
-                let item = queue
-                    .items
-                    .into_iter()
-                    .find(|item| item.track.video_id == video_id);
+        let tracks = match args.track_id {
+            Some(track_id) => {
+                let key = TrackKey::new(args.provider.unwrap_or_default(), track_id);
+                let item = queue.items.into_iter().find(|item| {
+                    item.track.provider == key.provider && item.track.track_id == key.id
+                });
                 match item {
                     Some(item) => vec![item],
                     None => {
                         return Err(McpError::invalid_params(
-                            format!("no queued track with video id {video_id}"),
+                            format!("no queued track with track ID {key}"),
                             None,
                         ));
                     }
@@ -567,7 +578,8 @@ mod tests {
 
     fn track(id: &str) -> Track {
         Track {
-            video_id: id.to_string(),
+            provider: ProviderId::Youtube,
+            track_id: id.to_string(),
             title: format!("Track {id}"),
             artist: "Artist".to_string(),
             album: "Album".to_string(),
@@ -602,6 +614,7 @@ mod tests {
                 retrying: 0,
                 failed: 0,
             },
+            providers: vec![ProviderId::Youtube],
         }
     }
 
@@ -1020,11 +1033,12 @@ mod tests {
         let Json(added) = server
             .add_playlist_tracks(Parameters(PlaylistTracksArgs {
                 playlist_id: "p1".to_string(),
-                video_ids: vec!["v1".to_string()],
+                provider: ProviderId::Youtube,
+                track_ids: vec!["v1".to_string()],
             }))
             .await
             .unwrap();
-        assert_eq!(added[0].video_id, "v1");
+        assert_eq!(added[0].track_id, "v1");
 
         let Json(removed) = server
             .remove_playlist_tracks(Parameters(RemovePlaylistTracksArgs {
@@ -1066,7 +1080,7 @@ mod tests {
             }))
             .await
             .unwrap();
-        assert_eq!(found.tracks[0].video_id, "v1");
+        assert_eq!(found.tracks[0].track_id, "v1");
 
         let Json(playlists) = server.list_playlists().await.unwrap();
         assert_eq!(playlists[0].id, "p1");
@@ -1104,7 +1118,8 @@ mod tests {
 
         let Json(downloads) = server
             .download_status(Parameters(DownloadStatusArgs {
-                video_id: Some("v1".to_string()),
+                provider: Some(ProviderId::Youtube),
+                track_id: Some("v1".to_string()),
             }))
             .await
             .unwrap();
@@ -1218,7 +1233,8 @@ mod tests {
 
         let Json(retried) = server
             .retry_download(Parameters(RetryDownloadArgs {
-                video_id: "v1".to_string(),
+                provider: ProviderId::Youtube,
+                track_id: "v1".to_string(),
             }))
             .await
             .unwrap();

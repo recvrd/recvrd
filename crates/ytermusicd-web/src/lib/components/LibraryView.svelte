@@ -119,7 +119,7 @@
         <div class="np-art" aria-hidden="true">
           <span>{currentTrack.title.slice(0, 1).toUpperCase()}</span>
           <img
-            src={coverUrl(currentTrack.video_id)}
+            src={coverUrl(currentTrack)}
             alt=""
             loading="lazy"
             onload={(event) => {
@@ -267,7 +267,7 @@
           onselect={(index) => store.select(index)}
           onplay={(track) => store.playTrack(track)}
           onqueue={(track) => store.queueTrack(track)}
-          onretry={(videoId) => store.retryDownload(videoId)}
+          onretry={(track) => store.retryDownload(track)}
           onremove={requestRemove}
           onmoveup={(index) => move(index, -1)}
           onmovedown={(index) => move(index, 1)}

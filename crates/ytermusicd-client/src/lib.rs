@@ -12,9 +12,9 @@ use std::time::Duration;
 use ytermusicd_api::{
     AddPlaylistTracksRequest, CreatePlaylistRequest, ErrorEnvelope, Event,
     MovePlaylistTrackRequest, OkResponse, PlayNextRequest, PlayPlaylistRequest, PlayTrackRequest,
-    Playlist, PlaylistDetail, Queue, QueueRequest, RemovePlaylistTracksRequest, RemoveQueueRequest,
-    ReorderQueueRequest, RepeatRequest, RetryDownloadRequest, SearchResults, SeekRequest,
-    ShuffleRequest, Status, Track, UpdatePlaylistRequest, VolumeRequest,
+    Playlist, PlaylistDetail, ProviderId, Queue, QueueRequest, RemovePlaylistTracksRequest,
+    RemoveQueueRequest, ReorderQueueRequest, RepeatRequest, RetryDownloadRequest, SearchResults,
+    SeekRequest, ShuffleRequest, Status, Track, TrackKey, UpdatePlaylistRequest, VolumeRequest,
 };
 
 /// Default daemon URL.
@@ -242,11 +242,15 @@ impl DaemonClient {
     pub async fn add_playlist_tracks(
         &self,
         playlist_id: &str,
-        video_ids: Vec<String>,
+        provider: ProviderId,
+        track_ids: Vec<String>,
     ) -> Result<Vec<Track>, DaemonError> {
         self.post(
             &format!("/api/playlists/{}/tracks", encode(playlist_id)),
-            &AddPlaylistTracksRequest { video_ids },
+            &AddPlaylistTracksRequest {
+                provider,
+                track_ids,
+            },
         )
         .await
     }
@@ -374,26 +378,32 @@ impl DaemonClient {
     }
 
     /// Retry a failed download.
-    pub async fn retry_download(&self, video_id: &str) -> Result<(), DaemonError> {
+    pub async fn retry_download(&self, key: &TrackKey) -> Result<(), DaemonError> {
         self.post_empty(
             "/api/downloads/retry",
             &RetryDownloadRequest {
-                video_id: video_id.to_string(),
+                provider: key.provider,
+                track_id: key.id.clone(),
             },
         )
         .await
     }
 
-    /// Return the cover URL for a video.
-    pub fn cover_url(&self, video_id: &str) -> String {
-        format!("{}/api/tracks/{}/cover", self.base_url, encode(video_id))
+    /// Return the cover URL for a track.
+    pub fn cover_url(&self, key: &TrackKey) -> String {
+        format!(
+            "{}/api/tracks/{}/{}/cover",
+            self.base_url,
+            encode(key.provider.as_str()),
+            encode(&key.id)
+        )
     }
 
     /// Fetch cover art as JPEG bytes.
-    pub async fn cover(&self, video_id: &str) -> Result<Vec<u8>, DaemonError> {
+    pub async fn cover(&self, key: &TrackKey) -> Result<Vec<u8>, DaemonError> {
         let response = self
             .http
-            .get(self.cover_url(video_id))
+            .get(self.cover_url(key))
             .send()
             .await
             .map_err(|error| DaemonError::unavailable(&self.base_url, error))?;
@@ -571,7 +581,8 @@ mod tests {
 
     fn track(id: &str) -> Track {
         Track {
-            video_id: id.to_string(),
+            provider: ProviderId::Youtube,
+            track_id: id.to_string(),
             title: format!("Track {id}"),
             artist: "Artist".to_string(),
             album: "Album".to_string(),
@@ -600,6 +611,7 @@ mod tests {
             },
             queue_length: 1,
             downloads: DownloadSummary::default(),
+            providers: vec![ProviderId::Youtube],
         }
     }
 
@@ -671,7 +683,7 @@ mod tests {
             .calls
             .lock()
             .unwrap()
-            .push(format!("POST /api/downloads/retry {}", request.video_id));
+            .push(format!("POST /api/downloads/retry {}", request.track_id));
         StatusCode::ACCEPTED
     }
 
@@ -731,7 +743,10 @@ mod tests {
         let client = DaemonClient::new(base).unwrap();
         let queue = client.queue_remove(2).await.unwrap();
         assert_eq!(queue.items.len(), 1);
-        client.retry_download("v9").await.unwrap();
+        client
+            .retry_download(&TrackKey::youtube("v9"))
+            .await
+            .unwrap();
         let calls = state.calls.lock().unwrap();
         assert!(calls.contains(&"POST /api/queue/remove 2".to_string()));
         assert!(calls.contains(&"POST /api/downloads/retry v9".to_string()));

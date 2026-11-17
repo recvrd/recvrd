@@ -8,17 +8,18 @@ use std::{
 };
 
 use async_trait::async_trait;
+use common_structs::{ProviderId, TrackKey};
 
 /// Largest image the cache accepts.
 const MAX_COVER_BYTES: usize = 5 * 1024 * 1024;
 /// Smallest image the cache accepts. Smaller responses are placeholders.
 const MIN_COVER_BYTES: usize = 1024;
 
-/// Fetch the JPEG bytes for a video ID.
+/// Fetch the JPEG bytes for a track.
 #[async_trait]
 #[allow(clippy::double_must_use)]
 pub trait CoverFetcher: Send + Sync {
-    async fn fetch(&self, video_id: &str) -> Option<Vec<u8>>;
+    async fn fetch(&self, key: &TrackKey) -> Option<Vec<u8>>;
 }
 
 /// Fetch covers from the public YouTube thumbnail hosts.
@@ -45,7 +46,9 @@ impl Default for HttpFetcher {
 
 #[async_trait]
 impl CoverFetcher for HttpFetcher {
-    async fn fetch(&self, video_id: &str) -> Option<Vec<u8>> {
+    async fn fetch(&self, key: &TrackKey) -> Option<Vec<u8>> {
+        let ProviderId::Youtube = key.provider;
+        let video_id = &key.id;
         for name in ["maxresdefault", "hqdefault"] {
             let url = format!("https://i.ytimg.com/vi/{video_id}/{name}.jpg");
             let Ok(response) = self.client.get(url).send().await else {
@@ -80,7 +83,7 @@ pub struct ArtworkCache {
     dir: PathBuf,
     max_bytes: u64,
     fetcher: Arc<dyn CoverFetcher>,
-    gates: Arc<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
+    gates: Arc<Mutex<HashMap<TrackKey, Arc<tokio::sync::Mutex<()>>>>>,
 }
 
 impl ArtworkCache {
@@ -97,66 +100,59 @@ impl ArtworkCache {
         }
     }
 
-    /// Return true when the video ID is safe to use as a file name.
-    pub fn is_valid_video_id(video_id: &str) -> bool {
-        video_id.len() == 11
-            && video_id
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
-    }
-
-    /// Return the cache file for a valid video ID.
-    pub fn path(&self, video_id: &str) -> Option<PathBuf> {
-        Self::is_valid_video_id(video_id).then(|| self.dir.join(format!("{video_id}.jpg")))
+    /// Return the cache file for a valid track key:
+    /// `covers/<provider>/<id>.jpg`.
+    pub fn path(&self, key: &TrackKey) -> Option<PathBuf> {
+        key.validate().then(|| key.cover_file(&self.dir))
     }
 
     /// Return the cached file when it exists.
-    pub fn cached_path(&self, video_id: &str) -> Option<PathBuf> {
-        self.path(video_id).filter(|path| path.is_file())
+    pub fn cached_path(&self, key: &TrackKey) -> Option<PathBuf> {
+        self.path(key).filter(|path| path.is_file())
     }
 
     /// Return the cached file and fetch it when it is missing.
-    pub async fn ensure(&self, video_id: &str) -> Option<PathBuf> {
-        if let Some(path) = self.cached_path(video_id) {
+    pub async fn ensure(&self, key: &TrackKey) -> Option<PathBuf> {
+        if let Some(path) = self.cached_path(key) {
             return Some(path);
         }
-        let path = self.path(video_id)?;
-        let gate = self.gate(video_id);
+        let path = self.path(key)?;
+        let gate = self.gate(key);
         let _guard = gate.lock().await;
 
         if path.is_file() {
-            self.release(video_id);
+            self.release(key);
             return Some(path);
         }
 
-        let result = match self.fetcher.fetch(video_id).await {
+        let result = match self.fetcher.fetch(key).await {
             Some(bytes) => match write_atomic(&path, &bytes) {
                 Ok(()) => Some(path.clone()),
                 Err(error) => {
-                    log::warn!("could not cache cover for {video_id}: {error}");
+                    log::warn!("could not cache cover for {key}: {error}");
                     None
                 }
             },
             None => None,
         };
 
-        self.release(video_id);
+        self.release(key);
         if result.is_some() {
             self.evict(&path).await;
         }
         result
     }
 
-    fn gate(&self, video_id: &str) -> Arc<tokio::sync::Mutex<()>> {
+    fn gate(&self, key: &TrackKey) -> Arc<tokio::sync::Mutex<()>> {
         let mut gates = self.gates.lock().unwrap();
         gates
-            .entry(video_id.to_string())
+            .entry(key.clone())
             .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
             .clone()
     }
 
-    fn release(&self, video_id: &str) {
-        self.gates.lock().unwrap().remove(video_id);
+    fn release(&self, key: &TrackKey) {
+        self.gates.lock().unwrap().remove(key);
     }
 
     async fn evict(&self, keep: &Path) {
@@ -170,6 +166,32 @@ impl ArtworkCache {
     }
 }
 
+/// Collect cache files below a directory, one level into provider
+/// subdirectories, skipping temporary files.
+fn collect_files(dir: &Path, files: &mut Vec<(PathBuf, u64, std::time::SystemTime)>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.filter_map(Result::ok) {
+        let path = entry.path();
+        if path.extension().is_some_and(|extension| extension == "tmp") {
+            continue;
+        }
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        if metadata.is_dir() {
+            collect_files(&path, files);
+            continue;
+        }
+        if !metadata.is_file() {
+            continue;
+        }
+        let modified = metadata.modified().unwrap_or(std::time::UNIX_EPOCH);
+        files.push((path, metadata.len(), modified));
+    }
+}
+
 fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -180,24 +202,8 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 }
 
 fn evict_oldest(dir: &Path, max_bytes: u64, keep: &Path) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    let mut files: Vec<(PathBuf, u64, std::time::SystemTime)> = entries
-        .filter_map(Result::ok)
-        .filter_map(|entry| {
-            let path = entry.path();
-            if path.extension().is_some_and(|extension| extension == "tmp") {
-                return None;
-            }
-            let metadata = entry.metadata().ok()?;
-            if !metadata.is_file() {
-                return None;
-            }
-            let modified = metadata.modified().unwrap_or(std::time::UNIX_EPOCH);
-            Some((path, metadata.len(), modified))
-        })
-        .collect();
+    let mut files: Vec<(PathBuf, u64, std::time::SystemTime)> = Vec::new();
+    collect_files(dir, &mut files);
     let mut total: u64 = files.iter().map(|(_, size, _)| size).sum();
     if total <= max_bytes {
         return;
@@ -251,20 +257,39 @@ mod tests {
 
     #[async_trait]
     impl CoverFetcher for CountingFetcher {
-        async fn fetch(&self, _video_id: &str) -> Option<Vec<u8>> {
+        async fn fetch(&self, _key: &TrackKey) -> Option<Vec<u8>> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             (!self.fail).then(|| self.bytes.clone())
         }
     }
 
+    fn key(id: &str) -> TrackKey {
+        TrackKey::youtube(id)
+    }
+
     #[test]
-    fn validates_video_ids() {
-        assert!(ArtworkCache::is_valid_video_id(ID));
-        assert!(ArtworkCache::is_valid_video_id("abc_DEF-123"));
-        assert!(!ArtworkCache::is_valid_video_id("short"));
-        assert!(!ArtworkCache::is_valid_video_id("../abcdefghijk"));
-        assert!(!ArtworkCache::is_valid_video_id("abcdefghij."));
-        assert!(!ArtworkCache::is_valid_video_id(""));
+    fn validates_track_keys() {
+        assert!(key(ID).validate());
+        assert!(key("abc_DEF-123").validate());
+        assert!(!key("short").validate());
+        assert!(!key("../abcdefghijk").validate());
+        assert!(!key("abcdefghij.").validate());
+        assert!(!key("").validate());
+    }
+
+    #[test]
+    fn cover_paths_are_scoped_by_provider() {
+        let dir = tempdir().unwrap();
+        let cache = ArtworkCache::with_fetcher(
+            dir.path().to_path_buf(),
+            0,
+            Arc::new(CountingFetcher::with_bytes(vec![7; 16])),
+        );
+        assert_eq!(
+            cache.path(&key(ID)).unwrap(),
+            dir.path().join("youtube").join(format!("{ID}.jpg"))
+        );
+        assert!(cache.path(&key("short")).is_none());
     }
 
     #[tokio::test]
@@ -273,8 +298,8 @@ mod tests {
         let fetcher = Arc::new(CountingFetcher::with_bytes(vec![7; 16]));
         let cache = ArtworkCache::with_fetcher(dir.path().to_path_buf(), 0, fetcher.clone());
 
-        let first = cache.ensure(ID).await.unwrap();
-        let second = cache.ensure(ID).await.unwrap();
+        let first = cache.ensure(&key(ID)).await.unwrap();
+        let second = cache.ensure(&key(ID)).await.unwrap();
 
         assert_eq!(first, second);
         assert_eq!(fetcher.calls(), 1);
@@ -287,7 +312,9 @@ mod tests {
         let fetcher = Arc::new(CountingFetcher::with_bytes(vec![7; 16]));
         let cache = ArtworkCache::with_fetcher(dir.path().to_path_buf(), 0, fetcher.clone());
 
-        let (first, second) = tokio::join!(cache.ensure(ID), cache.ensure(ID));
+        let first_key = key(ID);
+        let second_key = key(ID);
+        let (first, second) = tokio::join!(cache.ensure(&first_key), cache.ensure(&second_key));
 
         assert_eq!(first, second);
         assert_eq!(fetcher.calls(), 1);
@@ -299,8 +326,8 @@ mod tests {
         let fetcher = Arc::new(CountingFetcher::failing());
         let cache = ArtworkCache::with_fetcher(dir.path().to_path_buf(), 0, fetcher.clone());
 
-        assert!(cache.ensure(ID).await.is_none());
-        assert!(cache.cached_path(ID).is_none());
+        assert!(cache.ensure(&key(ID)).await.is_none());
+        assert!(cache.cached_path(&key(ID)).is_none());
         assert_eq!(fetcher.calls(), 1);
     }
 
@@ -311,15 +338,12 @@ mod tests {
         let cache = ArtworkCache::with_fetcher(dir.path().to_path_buf(), 1000, fetcher);
 
         for id in ["abcdefghij1", "abcdefghij2", "abcdefghij3"] {
-            cache.ensure(id).await.unwrap();
+            cache.ensure(&key(id)).await.unwrap();
         }
 
-        let total: u64 = std::fs::read_dir(dir.path())
-            .unwrap()
-            .filter_map(Result::ok)
-            .filter_map(|entry| entry.metadata().ok())
-            .map(|metadata| metadata.len())
-            .sum();
+        let mut files = Vec::new();
+        collect_files(dir.path(), &mut files);
+        let total: u64 = files.iter().map(|(_, size, _)| size).sum();
         assert!(total <= 1000, "cache size was {total}");
     }
 }

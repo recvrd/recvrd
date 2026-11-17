@@ -33,7 +33,7 @@ describe('EventStream', () => {
     expect(states).toEqual(['connecting', 'online']);
 
     sources[0].emitNamed('snapshot', { type: 'library_changed' });
-    sources[0].emit({ type: 'track_ended', video_id: 'v1' });
+    sources[0].emit({ type: 'track_ended', provider: 'youtube', track_id: 'v1' });
     expect(events).toHaveLength(2);
 
     stream.close();

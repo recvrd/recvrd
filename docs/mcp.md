@@ -53,7 +53,7 @@ your-mcp-client --server "ytermusicd mcp"
 | `create_playlist` | `title`, `description`, `privacy` | New playlist |
 | `rename_playlist` | `playlist_id`, `title` | Updated playlist |
 | `delete_playlist` | `playlist_id` | `{ok: true}` |
-| `add_playlist_tracks` | `playlist_id`, `video_ids` | Updated track list |
+| `add_playlist_tracks` | `playlist_id`, `provider`, `track_ids` | Updated track list |
 | `remove_playlist_tracks` | `playlist_id`, `indices` | Updated track list |
 | `move_playlist_track` | `playlist_id`, `from`, `to` | Updated track list |
 | `play_playlist` | `playlist_id` | Updated status |
@@ -72,11 +72,11 @@ your-mcp-client --server "ytermusicd mcp"
 | `queue_reorder` | `from`, `to` | Updated queue |
 | `queue_play_next` | `index` | Updated queue |
 | `queue_clear` | none | Updated queue |
-| `retry_download` | `video_id` | `{ok: true}` |
-| `download_status` | `video_id` (optional) | Download summary and queue tracks |
+| `retry_download` | `provider`, `track_id` | `{ok: true}` |
+| `download_status` | `provider`, `track_id` (optional) | Download summary and queue tracks |
 
 `track` is the object from `search` or `get_playlist`:
-`video_id`, `title`, `artist`, `album` and `duration`.
+`provider`, `track_id`, `title`, `artist`, `album` and `duration`.
 
 Tool results include `structuredContent` with a JSON schema. The schema comes
 from the shared `ytermusicd-api` DTOs.

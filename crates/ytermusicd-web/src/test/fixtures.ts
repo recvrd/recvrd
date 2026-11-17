@@ -11,7 +11,8 @@ import type { EventSourceLike } from '../lib/sse';
 
 export function makeTrack(id: string, overrides: Partial<Track> = {}): Track {
   return {
-    video_id: id,
+    provider: 'youtube',
+    track_id: id,
     title: `Track ${id}`,
     artist: 'Artist',
     album: 'Album',
@@ -66,6 +67,7 @@ export function makeStatus(overrides: Partial<Status> = {}): Status {
     },
     queue_length: 0,
     downloads: { queued: 0, active: 0, completed: 0, retrying: 0, failed: 0 },
+    providers: ['youtube'],
     ...overrides,
   };
 }
@@ -115,8 +117,8 @@ export function makeApi(
       if (index >= 0) playlists.splice(index, 1);
       return { ok: true };
     }),
-    addPlaylistTracks: vi.fn(async (_id: string, videoIds: string[]) => {
-      const added = videoIds.map((videoId) => makeTrack(videoId));
+    addPlaylistTracks: vi.fn(async (_id: string, _provider: string, trackIds: string[]) => {
+      const added = trackIds.map((trackId) => makeTrack(trackId));
       tracks.push(...added);
       return tracks;
     }),

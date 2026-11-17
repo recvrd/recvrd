@@ -32,7 +32,7 @@ describe('queue helpers', () => {
   it('moves items and keeps the current index', () => {
     const input = queue();
     const moved = reorderQueue(input, 2, 0);
-    expect(moved.items.map((item) => item.track.video_id)).toEqual(['v2', 'v0', 'v1']);
+    expect(moved.items.map((item) => item.track.track_id)).toEqual(['v2', 'v0', 'v1']);
     expect(moved.current).toBe(1);
 
     const same = reorderQueue(input, 1, 1);
@@ -41,7 +41,7 @@ describe('queue helpers', () => {
 
   it('removes items and clamps the current index', () => {
     const removed = removeQueueItem(queue(), 0);
-    expect(removed.items.map((item) => item.track.video_id)).toEqual(['v1', 'v2']);
+    expect(removed.items.map((item) => item.track.track_id)).toEqual(['v1', 'v2']);
     expect(removed.current).toBe(0);
 
     const last = removeQueueItem(makeQueue([makeTrack('v0')]), 0);
@@ -148,7 +148,8 @@ describe('AppStore', () => {
 
     source.emit({
       type: 'download',
-      video_id: 'v1',
+      provider: 'youtube',
+      track_id: 'v1',
       status: downloadStatus('failed'),
     });
     expect(store.queue?.items[0].download.state).toBe('failed');
@@ -250,7 +251,7 @@ describe('AppStore', () => {
     });
 
     await store.reorderQueue(0, 1);
-    expect(store.queue?.items.map((item) => item.track.video_id)).toEqual([
+    expect(store.queue?.items.map((item) => item.track.track_id)).toEqual([
       'v0',
       'v1',
     ]);
@@ -287,9 +288,9 @@ describe('AppStore', () => {
     await store.init();
     await store.openPlaylist('p1');
 
-    expect(await store.addPlaylistTracks('p1', ['v3'])).toBe(true);
-    expect(api.addPlaylistTracks).toHaveBeenCalledWith('p1', ['v3']);
-    expect(store.playlist?.tracks.map((track) => track.video_id)).toContain('v3');
+    expect(await store.addPlaylistTracks('p1', 'youtube', ['v3'])).toBe(true);
+    expect(api.addPlaylistTracks).toHaveBeenCalledWith('p1', 'youtube', ['v3']);
+    expect(store.playlist?.tracks.map((track) => track.track_id)).toContain('v3');
 
     expect(await store.movePlaylistTrack('p1', 0, 1)).toBe(true);
     expect(api.movePlaylistTrack).toHaveBeenCalledWith('p1', 0, 1);
@@ -312,7 +313,7 @@ describe('AppStore', () => {
     expect(store.searchTargetName).toBe('Playlist p1');
 
     await store.addSearchSelection(makeTrack('v9'));
-    expect(api.addPlaylistTracks).toHaveBeenCalledWith('p1', ['v9']);
+    expect(api.addPlaylistTracks).toHaveBeenCalledWith('p1', 'youtube', ['v9']);
     expect(store.searchOpen).toBe(true);
     expect(api.playTrack).not.toHaveBeenCalled();
 
@@ -399,7 +400,7 @@ describe('AppStore', () => {
 
     store.queue = makeQueue([makeTrack('v1')]);
     store.openQueue();
-    expect(store.selectedTrack?.video_id).toBe('v1');
+    expect(store.selectedTrack?.track_id).toBe('v1');
     store.dispose();
   });
 });

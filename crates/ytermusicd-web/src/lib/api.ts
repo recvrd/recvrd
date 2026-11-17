@@ -5,6 +5,7 @@ import type { OkResponse } from '@api/OkResponse';
 import type { PlaybackSnapshot } from '@api/PlaybackSnapshot';
 import type { Playlist } from '@api/Playlist';
 import type { PlaylistDetail } from '@api/PlaylistDetail';
+import type { ProviderId } from '@api/ProviderId';
 import type { Queue } from '@api/Queue';
 import type { RepeatMode } from '@api/RepeatMode';
 import type { SearchResults } from '@api/SearchResults';
@@ -31,7 +32,7 @@ export interface YtermusicdApi {
   createPlaylist(request: CreatePlaylistRequest): Promise<Playlist>;
   updatePlaylist(id: string, request: UpdatePlaylistRequest): Promise<Playlist>;
   deletePlaylist(id: string): Promise<OkResponse>;
-  addPlaylistTracks(id: string, videoIds: string[]): Promise<Track[]>;
+  addPlaylistTracks(id: string, provider: ProviderId, trackIds: string[]): Promise<Track[]>;
   removePlaylistTracks(id: string, indices: number[]): Promise<Track[]>;
   movePlaylistTrack(id: string, from: number, to: number): Promise<Track[]>;
   search(query: string): Promise<SearchResults>;
@@ -51,7 +52,7 @@ export interface YtermusicdApi {
   seek(positionSecs: number): Promise<Status>;
   setShuffle(enabled: boolean): Promise<Status>;
   setRepeat(repeat: RepeatMode): Promise<Status>;
-  retryDownload(videoId: string): Promise<void>;
+  retryDownload(track: Track): Promise<void>;
 }
 
 export function describeError(error: unknown): string {
@@ -137,9 +138,10 @@ export function createApi(baseUrl = ''): YtermusicdApi {
       patch<Playlist>(`/api/playlists/${encodeURIComponent(id)}`, requestBody),
     deletePlaylist: (id) =>
       remove<OkResponse>(`/api/playlists/${encodeURIComponent(id)}`),
-    addPlaylistTracks: (id, videoIds) =>
+    addPlaylistTracks: (id, provider, trackIds) =>
       post<Track[]>(`/api/playlists/${encodeURIComponent(id)}/tracks`, {
-        video_ids: videoIds,
+        provider,
+        track_ids: trackIds,
       }),
     removePlaylistTracks: (id, indices) =>
       post<Track[]>(`/api/playlists/${encodeURIComponent(id)}/tracks/remove`, {
@@ -167,12 +169,16 @@ export function createApi(baseUrl = ''): YtermusicdApi {
     seek: (positionSecs) => post<Status>('/api/seek', { position_secs: positionSecs }),
     setShuffle: (enabled) => post<Status>('/api/shuffle', { enabled }),
     setRepeat: (repeat) => post<Status>('/api/repeat', { repeat }),
-    retryDownload: (videoId) => post<void>('/api/downloads/retry', { video_id: videoId }),
+    retryDownload: (track) =>
+      post<void>('/api/downloads/retry', {
+        provider: track.provider,
+        track_id: track.track_id,
+      }),
   };
 }
 
-export function coverUrl(videoId: string): string {
-  return `/api/tracks/${encodeURIComponent(videoId)}/cover`;
+export function coverUrl(track: Track): string {
+  return `/api/tracks/${encodeURIComponent(track.provider)}/${encodeURIComponent(track.track_id)}/cover`;
 }
 
 export function durationSeconds(duration: string): number {
@@ -210,4 +216,4 @@ export function downloadLabel(status: DownloadStatus): string {
   }
 }
 
-export type { PlaybackSnapshot, Playlist, PlaylistDetail, Queue, RepeatMode, SearchResults, Status, Track };
+export type { PlaybackSnapshot, Playlist, PlaylistDetail, ProviderId, Queue, RepeatMode, SearchResults, Status, Track };

@@ -112,7 +112,7 @@
               aria-label={`Retry download for ${item.track.title}`}
               onclick={(event) => {
                 event.stopPropagation();
-                store.retryDownload(item.track.video_id);
+                store.retryDownload(item.track);
               }}
             >
               {downloadLabel(item.download)} ↻

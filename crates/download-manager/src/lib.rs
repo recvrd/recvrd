@@ -11,7 +11,7 @@ use database::YTLocalDatabase;
 use tokio::{select, sync::Notify, task::JoinHandle};
 use ytpapi2::YoutubeMusicVideoRef;
 
-use common_structs::MusicDownloadStatus;
+use common_structs::{MusicDownloadStatus, TrackKey};
 
 pub use task::DownloadError;
 
@@ -28,20 +28,9 @@ fn is_complete_download(mp4: &Path, json: &Path) -> bool {
             .unwrap_or(false)
 }
 
-/// Check that a video ID is safe to use in a file name.
-/// A YouTube video ID has 11 characters from `[A-Za-z0-9_-]`.
-/// Any other value can escape the downloads directory when it is
-/// joined into a path, so the download manager rejects it.
-pub fn is_valid_video_id(video_id: &str) -> bool {
-    video_id.len() == 11
-        && video_id
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum DownloadManagerMessage {
-    VideoStatusUpdate(String, MusicDownloadStatus),
+    VideoStatusUpdate(TrackKey, MusicDownloadStatus),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,8 +59,8 @@ pub struct DownloadManager {
     retry_delay: Duration,
     handles: Mutex<Vec<JoinHandle<()>>>,
     download_list: Mutex<VecDeque<YoutubeMusicVideoRef>>,
-    in_download: Mutex<HashSet<String>>,
-    statuses: Mutex<HashMap<String, MusicDownloadStatus>>,
+    in_download: Mutex<HashSet<TrackKey>>,
+    statuses: Mutex<HashMap<TrackKey, MusicDownloadStatus>>,
     notify: Notify,
 }
 
@@ -113,8 +102,8 @@ impl DownloadManager {
         self
     }
 
-    pub fn status(&self, video_id: &str) -> Option<MusicDownloadStatus> {
-        self.statuses.lock().unwrap().get(video_id).copied()
+    pub fn status(&self, key: &TrackKey) -> Option<MusicDownloadStatus> {
+        self.statuses.lock().unwrap().get(key).copied()
     }
 
     pub fn active_downloads(&self) -> usize {
@@ -138,8 +127,8 @@ impl DownloadManager {
         summary
     }
 
-    pub fn remove_from_in_downloads(&self, video: &String) {
-        self.in_download.lock().unwrap().remove(video);
+    pub fn remove_from_in_downloads(&self, key: &TrackKey) {
+        self.in_download.lock().unwrap().remove(key);
     }
 
     fn take(&self) -> Option<YoutubeMusicVideoRef> {
@@ -216,55 +205,65 @@ impl DownloadManager {
         self.notify.notify_waiters();
     }
 
-    fn set_status(&self, video_id: &str, status: MusicDownloadStatus) {
-        self.statuses
-            .lock()
-            .unwrap()
-            .insert(video_id.to_string(), status);
+    fn set_status(&self, key: &TrackKey, status: MusicDownloadStatus) {
+        self.statuses.lock().unwrap().insert(key.clone(), status);
     }
 
     pub async fn start_download(&self, song: YoutubeMusicVideoRef, s: MessageHandler) -> bool {
-        if !is_valid_video_id(&song.video_id) {
-            log::error!("refused download with invalid video ID {}", song.video_id);
-            self.set_status(&song.video_id, MusicDownloadStatus::DownloadFailed);
+        let key = song.key();
+        if !key.validate() {
+            log::error!("refused download with invalid track ID {key}");
+            self.set_status(&key, MusicDownloadStatus::DownloadFailed);
             s(DownloadManagerMessage::VideoStatusUpdate(
-                song.video_id.clone(),
+                key,
                 MusicDownloadStatus::DownloadFailed,
             ));
             return false;
         }
         {
             let mut downloads = self.in_download.lock().unwrap();
-            if downloads.contains(&song.video_id) {
+            if downloads.contains(&key) {
                 return false;
             }
-            downloads.insert(song.video_id.clone());
+            downloads.insert(key.clone());
         }
 
         let _guard = InDownloadGuard {
             manager: self,
-            video_id: song.video_id.clone(),
+            key: key.clone(),
         };
         self.start_download_inner(song, s).await
     }
 
     async fn start_download_inner(&self, song: YoutubeMusicVideoRef, s: MessageHandler) -> bool {
+        let key = song.key();
         let id = song.video_id.clone();
-        self.set_status(&id, MusicDownloadStatus::Downloading(1));
+        self.set_status(&key, MusicDownloadStatus::Downloading(1));
         s(DownloadManagerMessage::VideoStatusUpdate(
-            id.clone(),
+            key.clone(),
             MusicDownloadStatus::Downloading(1),
         ));
 
         let downloads = self.cache_dir.join("downloads");
-        let mp4 = downloads.join(format!("{id}.mp4"));
-        let json = downloads.join(format!("{id}.json"));
-        let part = downloads.join(format!("{id}.part"));
+        let mp4 = key.download_file(&downloads, "mp4");
+        let json = key.download_file(&downloads, "json");
+        let part = key.download_file(&downloads, "part");
+        if let Some(parent) = mp4.parent()
+            && let Err(error) = std::fs::create_dir_all(parent)
+        {
+            log::error!("could not create the download directory: {error}");
+            self.set_status(&key, MusicDownloadStatus::DownloadFailed);
+            s(DownloadManagerMessage::VideoStatusUpdate(
+                key,
+                MusicDownloadStatus::DownloadFailed,
+            ));
+            return false;
+        }
 
         if is_complete_download(&mp4, &json) {
-            self.set_status(&id, MusicDownloadStatus::Downloaded);
+            self.set_status(&key, MusicDownloadStatus::Downloaded);
             s(DownloadManagerMessage::VideoStatusUpdate(
-                id,
+                key,
                 MusicDownloadStatus::Downloaded,
             ));
             return true;
@@ -277,13 +276,13 @@ impl DownloadManager {
         loop {
             let reporter = {
                 let manager = self;
-                let id = id.clone();
+                let key = key.clone();
                 let s = s.clone();
                 move |progress: usize| {
                     let status = MusicDownloadStatus::Downloading(progress.min(100));
-                    manager.set_status(&id, status);
+                    manager.set_status(&key, status);
                     s(DownloadManagerMessage::VideoStatusUpdate(
-                        id.clone(),
+                        key.clone(),
                         status,
                     ));
                 }
@@ -292,20 +291,20 @@ impl DownloadManager {
             match self.handle_download(&id, &part, &reporter).await {
                 Ok(()) => {
                     if let Err(error) = self.finalize(&song, &part, &mp4, &json) {
-                        log::error!("couldn't finalize download for {}: {error}", song.video_id);
+                        log::error!("couldn't finalize download for {key}: {error}");
                         let _ = std::fs::remove_file(&mp4);
                         let _ = std::fs::remove_file(&part);
-                        self.set_status(&id, MusicDownloadStatus::DownloadFailed);
+                        self.set_status(&key, MusicDownloadStatus::DownloadFailed);
                         s(DownloadManagerMessage::VideoStatusUpdate(
-                            id,
+                            key,
                             MusicDownloadStatus::DownloadFailed,
                         ));
                         return false;
                     }
 
-                    self.set_status(&id, MusicDownloadStatus::Downloaded);
+                    self.set_status(&key, MusicDownloadStatus::Downloaded);
                     s(DownloadManagerMessage::VideoStatusUpdate(
-                        id,
+                        key,
                         MusicDownloadStatus::Downloaded,
                     ));
                     return true;
@@ -314,19 +313,19 @@ impl DownloadManager {
                     let _ = std::fs::remove_file(&part);
                     if attempt < self.max_retries {
                         attempt += 1;
-                        self.set_status(&id, MusicDownloadStatus::Retrying(attempt));
+                        self.set_status(&key, MusicDownloadStatus::Retrying(attempt));
                         s(DownloadManagerMessage::VideoStatusUpdate(
-                            id.clone(),
+                            key.clone(),
                             MusicDownloadStatus::Retrying(attempt),
                         ));
                         tokio::time::sleep(self.retry_delay).await;
                     } else {
-                        self.set_status(&id, MusicDownloadStatus::DownloadFailed);
+                        self.set_status(&key, MusicDownloadStatus::DownloadFailed);
                         s(DownloadManagerMessage::VideoStatusUpdate(
-                            id.clone(),
+                            key.clone(),
                             MusicDownloadStatus::DownloadFailed,
                         ));
-                        log::error!("couldn't download {id}: {error}");
+                        log::error!("couldn't download {key}: {error}");
                         return false;
                     }
                 }
@@ -372,22 +371,19 @@ impl DownloadManager {
 
 struct InDownloadGuard<'a> {
     manager: &'a DownloadManager,
-    video_id: String,
+    key: TrackKey,
 }
 
 impl Drop for InDownloadGuard<'_> {
     fn drop(&mut self) {
-        self.manager
-            .in_download
-            .lock()
-            .unwrap()
-            .remove(&self.video_id);
+        self.manager.in_download.lock().unwrap().remove(&self.key);
     }
 }
 
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use common_structs::ProviderId;
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
@@ -416,8 +412,13 @@ mod tests {
             author: "Artist".to_string(),
             album: "Album".to_string(),
             duration: "3:00".to_string(),
+            provider: ProviderId::Youtube,
             set_video_id: None,
         }
+    }
+
+    fn scoped(downloads: &Path) -> PathBuf {
+        downloads.join("youtube")
     }
 
     fn manager(dir: &TempDir, script: PathBuf, max_retries: u32) -> (DownloadManager, PathBuf) {
@@ -462,11 +463,11 @@ mod tests {
         let (handler, messages) = collector();
 
         assert!(manager.start_download(song("dQw4w9WgXcQ"), handler).await);
-        assert!(downloads.join("dQw4w9WgXcQ.mp4").exists());
-        assert!(downloads.join("dQw4w9WgXcQ.json").exists());
-        assert!(!downloads.join("dQw4w9WgXcQ.part").exists());
+        assert!(scoped(&downloads).join("dQw4w9WgXcQ.mp4").exists());
+        assert!(scoped(&downloads).join("dQw4w9WgXcQ.json").exists());
+        assert!(!scoped(&downloads).join("dQw4w9WgXcQ.part").exists());
         assert_eq!(
-            manager.status("dQw4w9WgXcQ"),
+            manager.status(&TrackKey::youtube("dQw4w9WgXcQ")),
             Some(MusicDownloadStatus::Downloaded)
         );
         assert_eq!(manager.active_downloads(), 0);
@@ -492,11 +493,11 @@ mod tests {
         let (handler, _messages) = collector();
 
         assert!(!manager.start_download(song("dQw4w9WgXcQ"), handler).await);
-        assert!(!downloads.join("dQw4w9WgXcQ.mp4").exists());
-        assert!(!downloads.join("dQw4w9WgXcQ.json").exists());
-        assert!(!downloads.join("dQw4w9WgXcQ.part").exists());
+        assert!(!scoped(&downloads).join("dQw4w9WgXcQ.mp4").exists());
+        assert!(!scoped(&downloads).join("dQw4w9WgXcQ.json").exists());
+        assert!(!scoped(&downloads).join("dQw4w9WgXcQ.part").exists());
         assert_eq!(
-            manager.status("dQw4w9WgXcQ"),
+            manager.status(&TrackKey::youtube("dQw4w9WgXcQ")),
             Some(MusicDownloadStatus::DownloadFailed)
         );
         assert_eq!(manager.active_downloads(), 0);
@@ -517,9 +518,9 @@ mod tests {
         let (handler, messages) = collector();
 
         assert!(manager.start_download(song("dQw4w9WgXcQ"), handler).await);
-        assert!(downloads.join("dQw4w9WgXcQ.mp4").exists());
+        assert!(scoped(&downloads).join("dQw4w9WgXcQ.mp4").exists());
         assert_eq!(
-            manager.status("dQw4w9WgXcQ"),
+            manager.status(&TrackKey::youtube("dQw4w9WgXcQ")),
             Some(MusicDownloadStatus::Downloaded)
         );
         assert_eq!(manager.active_downloads(), 0);
@@ -538,17 +539,38 @@ mod tests {
         let body = format!("touch {}", marker.display());
         let path = script(dir.path(), &body);
         let (manager, downloads) = manager(&dir, path, 0);
-        fs::write(downloads.join("dQw4w9WgXcQ.json"), "{}").unwrap();
-        fs::write(downloads.join("dQw4w9WgXcQ.mp4"), "fake-audio").unwrap();
+        fs::create_dir_all(scoped(&downloads)).unwrap();
+        fs::write(scoped(&downloads).join("dQw4w9WgXcQ.json"), "{}").unwrap();
+        fs::write(scoped(&downloads).join("dQw4w9WgXcQ.mp4"), "fake-audio").unwrap();
         let (handler, _messages) = collector();
 
         assert!(manager.start_download(song("dQw4w9WgXcQ"), handler).await);
         assert!(!marker.exists());
         assert_eq!(
-            manager.status("dQw4w9WgXcQ"),
+            manager.status(&TrackKey::youtube("dQw4w9WgXcQ")),
             Some(MusicDownloadStatus::Downloaded)
         );
         assert_eq!(manager.active_downloads(), 0);
+    }
+
+    #[tokio::test]
+    async fn downloads_land_in_the_provider_directory() {
+        let _guard = serial().await;
+        let dir = tempdir().unwrap();
+        let path = script(dir.path(), &success_script(false));
+        let (manager, downloads) = manager(&dir, path, 0);
+        let (handler, _messages) = collector();
+
+        assert!(manager.start_download(song("dQw4w9WgXcQ"), handler).await);
+        // The provider subdirectory is created by the manager, and
+        // no file lands in the flat downloads directory.
+        assert!(scoped(&downloads).join("dQw4w9WgXcQ.mp4").exists());
+        assert!(scoped(&downloads).join("dQw4w9WgXcQ.json").exists());
+        assert!(!downloads.join("dQw4w9WgXcQ.mp4").exists());
+        assert_eq!(
+            manager.status(&TrackKey::youtube("dQw4w9WgXcQ")),
+            Some(MusicDownloadStatus::Downloaded)
+        );
     }
 
     #[tokio::test]
@@ -566,7 +588,7 @@ mod tests {
         assert!(!dir.path().join("evil.mp4").exists());
         assert!(!dir.path().join("evil.json").exists());
         assert_eq!(
-            manager.status("../../evil"),
+            manager.status(&TrackKey::youtube("../../evil")),
             Some(MusicDownloadStatus::DownloadFailed)
         );
         assert_eq!(manager.active_downloads(), 0);
@@ -578,14 +600,22 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = script(dir.path(), &success_script(false));
         let (manager, downloads) = manager(&dir, path, 0);
-        fs::write(downloads.join("dQw4w9WgXcQ.json"), "{}").unwrap();
+        fs::create_dir_all(scoped(&downloads)).unwrap();
+        fs::write(scoped(&downloads).join("dQw4w9WgXcQ.json"), "{}").unwrap();
         let (handler, _messages) = collector();
 
         assert!(manager.start_download(song("dQw4w9WgXcQ"), handler).await);
-        assert!(downloads.join("dQw4w9WgXcQ.mp4").exists());
-        assert!(downloads.join("dQw4w9WgXcQ.mp4").metadata().unwrap().len() > 0);
+        assert!(scoped(&downloads).join("dQw4w9WgXcQ.mp4").exists());
+        assert!(
+            scoped(&downloads)
+                .join("dQw4w9WgXcQ.mp4")
+                .metadata()
+                .unwrap()
+                .len()
+                > 0
+        );
         assert_eq!(
-            manager.status("dQw4w9WgXcQ"),
+            manager.status(&TrackKey::youtube("dQw4w9WgXcQ")),
             Some(MusicDownloadStatus::Downloaded)
         );
         assert_eq!(manager.active_downloads(), 0);
@@ -597,14 +627,22 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = script(dir.path(), &success_script(false));
         let (manager, downloads) = manager(&dir, path, 0);
-        fs::write(downloads.join("dQw4w9WgXcQ.json"), "{}").unwrap();
-        fs::write(downloads.join("dQw4w9WgXcQ.mp4"), "").unwrap();
+        fs::create_dir_all(scoped(&downloads)).unwrap();
+        fs::write(scoped(&downloads).join("dQw4w9WgXcQ.json"), "{}").unwrap();
+        fs::write(scoped(&downloads).join("dQw4w9WgXcQ.mp4"), "").unwrap();
         let (handler, _messages) = collector();
 
         assert!(manager.start_download(song("dQw4w9WgXcQ"), handler).await);
-        assert!(downloads.join("dQw4w9WgXcQ.mp4").metadata().unwrap().len() > 0);
+        assert!(
+            scoped(&downloads)
+                .join("dQw4w9WgXcQ.mp4")
+                .metadata()
+                .unwrap()
+                .len()
+                > 0
+        );
         assert_eq!(
-            manager.status("dQw4w9WgXcQ"),
+            manager.status(&TrackKey::youtube("dQw4w9WgXcQ")),
             Some(MusicDownloadStatus::Downloaded)
         );
         assert_eq!(manager.active_downloads(), 0);
@@ -657,7 +695,7 @@ mod tests {
         let (handler, _messages) = collector();
 
         let mut future = Box::pin(manager.start_download(song("dQw4w9WgXcQ"), handler));
-        let part = downloads.join("dQw4w9WgXcQ.part");
+        let part = scoped(&downloads).join("dQw4w9WgXcQ.part");
         // Poll the download until the child starts. The future must run
         // for the child to spawn.
         let mut waited = 0;

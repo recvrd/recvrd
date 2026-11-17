@@ -83,7 +83,7 @@ describe('SearchPalette', () => {
     await fireEvent.keyDown(input, { key: 'Enter' });
     await tick();
 
-    expect(api.addPlaylistTracks).toHaveBeenCalledWith('p1', ['v1']);
+    expect(api.addPlaylistTracks).toHaveBeenCalledWith('p1', 'youtube', ['v1']);
     expect(api.playTrack).not.toHaveBeenCalled();
     expect(store.searchOpen).toBe(true);
   });

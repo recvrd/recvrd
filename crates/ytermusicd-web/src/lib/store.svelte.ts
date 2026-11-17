@@ -7,6 +7,7 @@ import type { RepeatMode } from '@api/RepeatMode';
 import type { SearchResults } from '@api/SearchResults';
 import type { Status } from '@api/Status';
 import type { Track } from '@api/Track';
+import type { ProviderId } from '@api/ProviderId';
 import { ApiError, createApi, describeError, type YtermusicdApi } from './api';
 import { EventStream, type ConnectionState, type EventSourceLike } from './sse';
 
@@ -309,17 +310,17 @@ export class AppStore {
     }
   }
 
-  async addPlaylistTracks(id: string, videoIds: string[]): Promise<boolean> {
+  async addPlaylistTracks(id: string, provider: ProviderId, trackIds: string[]): Promise<boolean> {
     try {
-      const tracks = await this.api.addPlaylistTracks(id, videoIds);
+      const tracks = await this.api.addPlaylistTracks(id, provider, trackIds);
       if (this.playlist?.playlist.id === id) {
         this.playlist = { ...this.playlist, tracks };
       }
       this.notify(
         'success',
-        videoIds.length === 1
+        trackIds.length === 1
           ? 'Track added to the playlist.'
-          : `${videoIds.length} tracks added to the playlist.`,
+          : `${trackIds.length} tracks added to the playlist.`,
       );
       return true;
     } catch (error) {
@@ -583,9 +584,9 @@ export class AppStore {
     }
   }
 
-  async retryDownload(videoId: string): Promise<void> {
+  async retryDownload(track: Track): Promise<void> {
     try {
-      await this.api.retryDownload(videoId);
+      await this.api.retryDownload(track);
       this.notify('success', 'Download queued for retry.');
     } catch (error) {
       this.report(error);
@@ -616,7 +617,7 @@ export class AppStore {
 
   async addSearchSelection(track: Track): Promise<void> {
     if (this.searchMode === 'add-to-playlist' && this.searchPlaylistId) {
-      await this.addPlaylistTracks(this.searchPlaylistId, [track.video_id]);
+      await this.addPlaylistTracks(this.searchPlaylistId, track.provider, [track.track_id]);
       return;
     }
     this.closeSearch();
@@ -718,7 +719,7 @@ export class AppStore {
           this.queue = {
             ...this.queue,
             items: this.queue.items.map((item) =>
-              item.track.video_id === event.video_id
+              item.track.provider === event.provider && item.track.track_id === event.track_id
                 ? { ...item, download: event.status }
                 : item,
             ),
@@ -760,7 +761,9 @@ export class AppStore {
 
   downloadStatusFor(track: Track): DownloadStatus {
     return (
-      this.queue?.items.find((item) => item.track.video_id === track.video_id)?.download ?? {
+      this.queue?.items.find(
+        (item) => item.track.provider === track.provider && item.track.track_id === track.track_id,
+      )?.download ?? {
         state: 'not_downloaded',
       }
     );

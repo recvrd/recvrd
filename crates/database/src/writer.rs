@@ -3,7 +3,7 @@ use std::{io::Write, path::Path};
 use varuint::WriteVarint;
 use ytpapi2::YoutubeMusicVideoRef;
 
-use crate::{DatabaseError, YTLocalDatabase};
+use crate::{DatabaseError, YTLocalDatabase, reader::MAGIC, reader::VERSION};
 
 impl YTLocalDatabase {
     /// Write the whole library atomically. Records go into a buffer first,
@@ -13,6 +13,8 @@ impl YTLocalDatabase {
         let path = self.cache_dir.join("db.bin");
         let db = self.references.read().unwrap();
         let mut buffer = Vec::new();
+        buffer.extend_from_slice(MAGIC);
+        buffer.push(VERSION);
         for video in db.iter() {
             write_video(&mut buffer, video).map_err(|source| DatabaseError::Io {
                 path: path.clone(),
@@ -68,6 +70,7 @@ impl YTLocalDatabase {
                 return;
             }
         };
+        let mut sidecars = Vec::new();
         for entry in entries {
             let entry = match entry {
                 Ok(entry) => entry,
@@ -77,10 +80,23 @@ impl YTLocalDatabase {
                 }
             };
             let path = entry.path();
-            // Check if the file is a json file (+ sloppy check if there is any files or directory)
-            if path.extension().unwrap_or_default() != "json" {
-                continue;
+            if path.is_dir() {
+                // A provider subdirectory: collect its sidecars too.
+                let Ok(sub_entries) = std::fs::read_dir(&path) else {
+                    println!("[ERROR] Could not list the download folder ({path:?})");
+                    continue;
+                };
+                for sub_entry in sub_entries.flatten() {
+                    let sub_path = sub_entry.path();
+                    if sub_path.extension().unwrap_or_default() == "json" {
+                        sidecars.push(sub_path);
+                    }
+                }
+            } else if path.extension().unwrap_or_default() == "json" {
+                sidecars.push(path);
             }
+        }
+        for path in sidecars {
             // Read the file if not readable do not add it to the database
             let content = match std::fs::read_to_string(&path) {
                 Ok(content) => content,
@@ -105,8 +121,10 @@ impl YTLocalDatabase {
                     continue;
                 }
             };
-            // Check if the video file exists
-            let video_file = cache_folder.join(format!("{}.mp4", video.video_id));
+            // Check if the video file exists next to its sidecar, in
+            // the flat layout or in a provider subdirectory.
+            let video_dir = path.parent().unwrap_or(&cache_folder);
+            let video_file = video_dir.join(format!("{}.mp4", video.video_id));
             if !video_file.exists() {
                 quarantine_sidecar(&self.cache_dir, &path, "the video file does not exist");
                 continue;
@@ -185,7 +203,8 @@ pub fn write_video(buffer: &mut impl Write, video: &YoutubeMusicVideoRef) -> std
     write_str(buffer, &video.author)?;
     write_str(buffer, &video.album)?;
     write_str(buffer, &video.video_id)?;
-    write_str(buffer, &video.duration)
+    write_str(buffer, &video.duration)?;
+    write_str(buffer, video.provider.as_str())
 }
 
 /// Writes a string from the cursor
@@ -202,6 +221,7 @@ fn write_u32(cursor: &mut impl Write, value: u32) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use common_structs::ProviderId;
     use std::path::PathBuf;
     use tempfile::tempdir;
 
@@ -219,6 +239,7 @@ mod tests {
             album: "Album".to_string(),
             video_id: id.to_string(),
             duration: "3:00".to_string(),
+            provider: ProviderId::Youtube,
             set_video_id: None,
         }
     }

@@ -51,11 +51,11 @@ Every non-2xx response uses one envelope:
 | GET | `/api/playlists/{id}` | Playlist metadata and tracks |
 | PATCH | `/api/playlists/{id}` | Rename a playlist |
 | DELETE | `/api/playlists/{id}` | Delete a playlist |
-| POST | `/api/playlists/{id}/tracks` | Add tracks (`{video_ids}`) |
+| POST | `/api/playlists/{id}/tracks` | Add tracks (`{provider, track_ids}`) |
 | POST | `/api/playlists/{id}/tracks/remove` | Remove tracks (`{indices}`) |
 | POST | `/api/playlists/{id}/tracks/move` | Move a track (`{from,to}`) |
 | GET | `/api/search?q=...` | Track and playlist search |
-| GET | `/api/tracks/{video_id}/cover` | Cached cover art (JPEG) |
+| GET | `/api/tracks/{provider}/{track_id}/cover` | Cached cover art (JPEG) |
 | GET | `/api/queue` | Queue snapshot |
 | POST | `/api/queue` | Enqueue a track (alias: `/api/queue/add`) |
 | DELETE | `/api/queue` | Clear the queue |
@@ -72,7 +72,7 @@ Every non-2xx response uses one envelope:
 | POST | `/api/seek` | Seek to `position_secs` |
 | POST | `/api/shuffle` | Enable/disable shuffle |
 | POST | `/api/repeat` | Set repeat mode (`off`, `one`, `all`) |
-| POST | `/api/downloads/retry` | Retry a failed download (`{video_id}`) |
+| POST | `/api/downloads/retry` | Retry a failed download (`{provider, track_id}`) |
 | GET | `/api/events` | SSE snapshot and live events |
 
 Command endpoints return the updated `Status` or `Queue` so clients can render
@@ -110,7 +110,8 @@ curl http://127.0.0.1:8080/api/status
     "completed": 0,
     "retrying": 0,
     "failed": 0
-  }
+  },
+  "providers": ["youtube"]
 }
 ```
 
@@ -133,7 +134,8 @@ curl 'http://127.0.0.1:8080/api/search?q=civilization'
   },
   "tracks": [
     {
-      "video_id": "abc123",
+      "provider": "youtube",
+      "track_id": "abc123",
       "title": "Song",
       "artist": "Artist",
       "album": "Album",
@@ -149,7 +151,7 @@ rejected with 400. Upstream failures return 502 with an actionable message.
 ### Cover art
 
 ```sh
-curl -o cover.jpg http://127.0.0.1:8080/api/tracks/abcdefghijk/cover
+curl -o cover.jpg http://127.0.0.1:8080/api/tracks/youtube/abcdefghijk/cover
 ```
 
 The daemon returns a JPEG with `Cache-Control: public, max-age=604800,
@@ -157,8 +159,8 @@ immutable` and an `ETag`. A request with a matching `If-None-Match` header
 returns 304.
 
 The daemon fetches the image from YouTube and stores it in
-`$XDG_CACHE_HOME/ytermusicd/covers/<video_id>.jpg`. It tries
-`maxresdefault.jpg` first and falls back to `hqdefault.jpg`. An invalid video
+`$XDG_CACHE_HOME/ytermusicd/covers/youtube/<track_id>.jpg`. It tries
+`maxresdefault.jpg` first and falls back to `hqdefault.jpg`. An invalid track
 ID or a failed fetch returns 404 with the normal error envelope.
 
 Set `cover_cache_mb` in `config.toml` to limit the cache size. The default is
@@ -186,7 +188,7 @@ curl -X DELETE http://127.0.0.1:8080/api/playlists/VLPL123
 # Add tracks. The response is the updated track list.
 curl -X POST http://127.0.0.1:8080/api/playlists/VLPL123/tracks \
   -H 'content-type: application/json' \
-  -d '{"video_ids":["abcdefghijk"]}'
+  -d '{"provider":"youtube","track_ids":["abcdefghijk"]}'
 
 # Remove tracks by index. The response is the updated track list.
 curl -X POST http://127.0.0.1:8080/api/playlists/VLPL123/tracks/remove \
@@ -204,9 +206,10 @@ The daemon validates these values before it sends an upstream request:
 - The title has 1 to 150 characters. It cannot contain `<`, `>` or control
   characters.
 - The description has 5000 characters or fewer.
-- Each video ID has 11 characters from `A-Z`, `a-z`, `0-9`, `-` and `_`.
+- Each track ID has 11 characters from `A-Z`, `a-z`, `0-9`, `-` and `_`.
+- Playlist edits run through YouTube Music, so `provider` must be `youtube`.
 - One request adds or removes 100 tracks or fewer.
-- Indices and video IDs are unique in one request.
+- Indices and track IDs are unique in one request.
 
 An out-of-range track index or move position returns 400. An expired session
 returns 502 with a message that asks the user to sign in again.
@@ -226,13 +229,13 @@ curl -X POST http://127.0.0.1:8080/api/play/playlist \
 # Play one track now
 curl -X POST http://127.0.0.1:8080/api/play/track \
   -H 'content-type: application/json' \
-  -d '{"track":{"video_id":"abc123","title":"Song","artist":"Artist","album":"Album","duration":"3:24"}}'
+  -d '{"track":{"provider":"youtube","track_id":"abc123","title":"Song","artist":"Artist","album":"Album","duration":"3:24"}}'
 
 # Queue management
 curl http://127.0.0.1:8080/api/queue
 curl -X POST http://127.0.0.1:8080/api/queue \
   -H 'content-type: application/json' \
-  -d '{"track":{"video_id":"abc123","title":"Song","artist":"Artist","album":"Album","duration":"3:24"}}'
+  -d '{"track":{"provider":"youtube","track_id":"abc123","title":"Song","artist":"Artist","album":"Album","duration":"3:24"}}'
 curl -X POST http://127.0.0.1:8080/api/queue/play-next \
   -H 'content-type: application/json' -d '{"index":4}'
 curl -X POST http://127.0.0.1:8080/api/queue/reorder \
@@ -257,7 +260,7 @@ curl -X POST http://127.0.0.1:8080/api/repeat \
 
 # Retry a failed download
 curl -X POST http://127.0.0.1:8080/api/downloads/retry \
-  -H 'content-type: application/json' -d '{"video_id":"abc123"}'
+  -H 'content-type: application/json' -d '{"provider":"youtube","track_id":"abc123"}'
 ```
 
 Queue snapshots look like:
@@ -267,7 +270,8 @@ Queue snapshots look like:
   "items": [
     {
       "track": {
-        "video_id": "abc123",
+        "provider": "youtube",
+        "track_id": "abc123",
         "title": "Song",
         "artist": "Artist",
         "album": "Album",
@@ -291,7 +295,7 @@ audio for download. If the file is not cached yet, the track stays selected but
 playback waits for the `download` event with `state: "downloaded"`; it then
 starts automatically. Failed downloads emit an `error` event and expose the
 `failed` count in `/api/status`. `POST /api/downloads/retry` returns `202`
-for a track the daemon has seen, or `404` for an unknown video id.
+for a track the daemon has seen, or `404` for an unknown track ID.
 
 ## SSE: `GET /api/events`
 
@@ -322,8 +326,8 @@ Event kinds (`EventKind` in the bindings):
 | `snapshot` | Full `Status` and `Queue` on connect |
 | `playback` | Playback snapshot (state, position, volume, modes) |
 | `queue` | Full queue snapshot |
-| `download` | `video_id` and download status |
-| `track_ended` | `video_id` of the finished track |
+| `download` | `provider`, `track_id` and download status |
+| `track_ended` | `provider` and `track_id` of the finished track |
 | `error` | Shared `ApiError` envelope |
 | `library_changed` | Library needs refreshing |
 

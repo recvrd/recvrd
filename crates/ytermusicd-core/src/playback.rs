@@ -3,6 +3,7 @@ use crate::{
     model::{PlaybackSnapshot, PlaybackStatus, Queue, RepeatMode, Track},
     state::{PersistedState, STATE_VERSION, StateError},
 };
+use common_structs::TrackKey;
 use std::{
     path::{Path, PathBuf},
     time::{Duration, Instant},
@@ -409,7 +410,7 @@ impl<S: AudioSink> PlaybackService<S> {
     pub fn on_track_finished(&mut self) -> Result<(), PlaybackError> {
         if let Some(track) = self.queue.current_track() {
             self.events.publish(CoreEvent::TrackEnded {
-                video_id: track.video_id.clone(),
+                track_id: track.key(),
             });
         }
         if self.queue.repeat() == RepeatMode::One {
@@ -419,14 +420,14 @@ impl<S: AudioSink> PlaybackService<S> {
         }
     }
 
-    pub fn on_download_failed(&mut self, video_id: &str) {
+    pub fn on_download_failed(&mut self, key: &TrackKey) {
         self.events.publish(CoreEvent::Error {
-            message: format!("download failed for {video_id}"),
+            message: format!("download failed for {key}"),
         });
         if self
             .queue
             .current_track()
-            .is_some_and(|track| track.video_id == video_id)
+            .is_some_and(|track| track.key() == *key)
         {
             self.pending_start = false;
             let _ = self.next_track();
@@ -435,12 +436,12 @@ impl<S: AudioSink> PlaybackService<S> {
 
     pub fn set_download_status(
         &mut self,
-        video_id: &str,
+        key: &TrackKey,
         status: common_structs::MusicDownloadStatus,
     ) {
-        self.queue.set_download_status(video_id, status);
+        self.queue.set_download_status(key, status);
         self.events.publish(CoreEvent::DownloadStatus {
-            video_id: video_id.to_string(),
+            track_id: key.clone(),
             status,
         });
         if status == common_structs::MusicDownloadStatus::Downloaded
@@ -448,7 +449,7 @@ impl<S: AudioSink> PlaybackService<S> {
             && self
                 .queue
                 .current_track()
-                .is_some_and(|track| track.video_id == video_id)
+                .is_some_and(|track| track.key() == *key)
         {
             self.pending_start = false;
             let _ = self.start_current();
@@ -463,10 +464,9 @@ impl<S: AudioSink> PlaybackService<S> {
             return Ok(());
         };
 
-        let path = self
-            .cache_dir
-            .join("downloads")
-            .join(format!("{}.mp4", track.video_id));
+        let path = track
+            .key()
+            .download_file(&self.cache_dir.join("downloads"), "mp4");
         if self.wait_for_downloads && !path.exists() {
             self.pending_start = true;
             self.status = PlaybackStatus::Stopped;
@@ -558,7 +558,7 @@ mod tests {
 
         fn play(&mut self, track: &Track, path: &Path) -> Result<(), Self::Error> {
             self.plays
-                .push((track.video_id.clone(), path.to_path_buf()));
+                .push((track.track_id.clone(), path.to_path_buf()));
             self.actions.push("play");
             Ok(())
         }
@@ -601,7 +601,8 @@ mod tests {
     fn tracks(count: usize) -> Vec<Track> {
         (0..count)
             .map(|index| Track {
-                video_id: format!("video-{index}"),
+                provider: common_structs::ProviderId::Youtube,
+                track_id: format!("video-{index}"),
                 title: format!("Track {index}"),
                 author: "Artist".to_string(),
                 album: "Album".to_string(),
@@ -620,7 +621,7 @@ mod tests {
         service.play_playlist(tracks(2)).unwrap();
         let snapshot = service.snapshot();
         assert_eq!(snapshot.status, PlaybackStatus::Playing);
-        assert_eq!(snapshot.current.unwrap().video_id, "video-0");
+        assert_eq!(snapshot.current.unwrap().track_id, "video-0");
         assert_eq!(service.queue_snapshot().current, Some(0));
         assert_eq!(
             service.events.snapshot().playback.status,
@@ -666,11 +667,11 @@ mod tests {
         let mut service = service();
         service.play_playlist(tracks(2)).unwrap();
         service.next_track().unwrap();
-        assert_eq!(service.snapshot().current.unwrap().video_id, "video-1");
+        assert_eq!(service.snapshot().current.unwrap().track_id, "video-1");
         service.next_track().unwrap();
         assert_eq!(service.snapshot().status, PlaybackStatus::Stopped);
         service.previous_track().unwrap();
-        assert_eq!(service.snapshot().current.unwrap().video_id, "video-0");
+        assert_eq!(service.snapshot().current.unwrap().track_id, "video-0");
     }
 
     #[test]
@@ -680,7 +681,7 @@ mod tests {
         service.set_repeat(RepeatMode::All);
         service.next_track().unwrap();
         service.next_track().unwrap();
-        assert_eq!(service.snapshot().current.unwrap().video_id, "video-0");
+        assert_eq!(service.snapshot().current.unwrap().track_id, "video-0");
     }
 
     #[test]
@@ -689,7 +690,7 @@ mod tests {
         service.play_playlist(tracks(2)).unwrap();
         service.set_repeat(RepeatMode::One);
         service.on_track_finished().unwrap();
-        assert_eq!(service.snapshot().current.unwrap().video_id, "video-0");
+        assert_eq!(service.snapshot().current.unwrap().track_id, "video-0");
         assert_eq!(service.sink.plays.len(), 2);
     }
 
@@ -698,7 +699,7 @@ mod tests {
         let mut service = service();
         service.play_playlist(tracks(2)).unwrap();
         service.on_track_finished().unwrap();
-        assert_eq!(service.snapshot().current.unwrap().video_id, "video-1");
+        assert_eq!(service.snapshot().current.unwrap().track_id, "video-1");
     }
 
     #[test]
@@ -706,20 +707,20 @@ mod tests {
         let mut service = service();
         service.play_playlist(tracks(6)).unwrap();
         service.play_index(2).unwrap();
-        let current = service.snapshot().current.unwrap().video_id;
+        let current = service.snapshot().current.unwrap().track_id;
         let original: Vec<_> = service
             .queue_snapshot()
             .items
             .iter()
-            .map(|item| item.track.video_id.clone())
+            .map(|item| item.track.track_id.clone())
             .collect();
         service.set_shuffle_with_seed(true, 42);
-        assert_eq!(service.snapshot().current.unwrap().video_id, current);
+        assert_eq!(service.snapshot().current.unwrap().track_id, current);
         let shuffled: Vec<_> = service
             .queue_snapshot()
             .items
             .iter()
-            .map(|item| item.track.video_id.clone())
+            .map(|item| item.track.track_id.clone())
             .collect();
         assert_ne!(original, shuffled);
         service.set_shuffle(false);
@@ -727,7 +728,7 @@ mod tests {
             .queue_snapshot()
             .items
             .iter()
-            .map(|item| item.track.video_id.clone())
+            .map(|item| item.track.track_id.clone())
             .collect();
         assert_eq!(original, restored);
     }
@@ -742,14 +743,14 @@ mod tests {
             .queue_snapshot()
             .items
             .iter()
-            .map(|item| item.track.video_id.clone())
+            .map(|item| item.track.track_id.clone())
             .collect();
         first.set_shuffle_with_seed(true, 42);
         let shuffled: Vec<_> = first
             .queue_snapshot()
             .items
             .iter()
-            .map(|item| item.track.video_id.clone())
+            .map(|item| item.track.track_id.clone())
             .collect();
         assert_ne!(original, shuffled);
         first.save_state(&path).unwrap();
@@ -760,7 +761,7 @@ mod tests {
             .queue_snapshot()
             .items
             .iter()
-            .map(|item| item.track.video_id.clone())
+            .map(|item| item.track.track_id.clone())
             .collect();
         assert_eq!(loaded, shuffled);
         restored.set_shuffle(false);
@@ -768,7 +769,7 @@ mod tests {
             .queue_snapshot()
             .items
             .iter()
-            .map(|item| item.track.video_id.clone())
+            .map(|item| item.track.track_id.clone())
             .collect();
         assert_eq!(unshuffled, original);
     }
@@ -777,8 +778,8 @@ mod tests {
     fn download_failure_skips_current() {
         let mut service = service();
         service.play_playlist(tracks(2)).unwrap();
-        service.on_download_failed("video-0");
-        assert_eq!(service.snapshot().current.unwrap().video_id, "video-1");
+        service.on_download_failed(&TrackKey::youtube("video-0"));
+        assert_eq!(service.snapshot().current.unwrap().track_id, "video-1");
     }
 
     #[test]
@@ -786,7 +787,7 @@ mod tests {
         let mut service = service();
         service.play_playlist(tracks(2)).unwrap();
         service.remove(0).unwrap();
-        assert_eq!(service.snapshot().current.unwrap().video_id, "video-1");
+        assert_eq!(service.snapshot().current.unwrap().track_id, "video-1");
         service.remove(0).unwrap();
         assert_eq!(service.snapshot().status, PlaybackStatus::Stopped);
     }
@@ -816,7 +817,10 @@ mod tests {
         let mut service = service();
         service.play_playlist(tracks(1)).unwrap();
         let (_, mut events) = service.events().subscribe();
-        service.set_download_status("video-0", MusicDownloadStatus::Downloaded);
+        service.set_download_status(
+            &TrackKey::youtube("video-0"),
+            MusicDownloadStatus::Downloaded,
+        );
         let event = events.try_recv().unwrap();
         assert!(matches!(event.event, CoreEvent::DownloadStatus { .. }));
         assert_eq!(
@@ -841,7 +845,7 @@ mod tests {
         service.play_playlist(tracks(2)).unwrap();
         service.sink.finished = true;
         service.tick().unwrap();
-        assert_eq!(service.snapshot().current.unwrap().video_id, "video-1");
+        assert_eq!(service.snapshot().current.unwrap().track_id, "video-1");
     }
 
     #[test]
@@ -850,7 +854,7 @@ mod tests {
         service
             .handle_command(PlaybackCommand::PlayPlaylist(tracks(2)))
             .unwrap();
-        assert_eq!(service.snapshot().current.unwrap().video_id, "video-0");
+        assert_eq!(service.snapshot().current.unwrap().track_id, "video-0");
         service.handle_command(PlaybackCommand::Pause).unwrap();
         assert_eq!(service.snapshot().status, PlaybackStatus::Paused);
         service
@@ -858,7 +862,7 @@ mod tests {
             .unwrap();
         assert_eq!(service.snapshot().volume, 70);
         service.handle_command(PlaybackCommand::Next).unwrap();
-        assert_eq!(service.snapshot().current.unwrap().video_id, "video-1");
+        assert_eq!(service.snapshot().current.unwrap().track_id, "video-1");
     }
 
     #[test]
@@ -951,12 +955,15 @@ mod tests {
         service.play_playlist(tracks(1)).unwrap();
 
         assert_eq!(service.snapshot().status, PlaybackStatus::Stopped);
-        assert_eq!(service.snapshot().current.unwrap().video_id, "video-0");
+        assert_eq!(service.snapshot().current.unwrap().track_id, "video-0");
         assert!(service.sink.plays.is_empty());
 
-        std::fs::create_dir_all(dir.path().join("downloads")).unwrap();
-        std::fs::write(dir.path().join("downloads/video-0.mp4"), b"audio").unwrap();
-        service.set_download_status("video-0", MusicDownloadStatus::Downloaded);
+        std::fs::create_dir_all(dir.path().join("downloads/youtube")).unwrap();
+        std::fs::write(dir.path().join("downloads/youtube/video-0.mp4"), b"audio").unwrap();
+        service.set_download_status(
+            &TrackKey::youtube("video-0"),
+            MusicDownloadStatus::Downloaded,
+        );
 
         assert_eq!(service.snapshot().status, PlaybackStatus::Playing);
         assert_eq!(service.sink.plays.len(), 1);

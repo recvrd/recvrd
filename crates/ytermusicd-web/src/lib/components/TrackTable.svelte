@@ -26,7 +26,7 @@
     onselect: (index: number) => void;
     onplay: (track: Track) => void;
     onqueue: (track: Track) => void;
-    onretry: (videoId: string) => void;
+    onretry: (track: Track) => void;
     onremove?: (index: number) => void;
     onmoveup?: (index: number) => void;
     onmovedown?: (index: number) => void;
@@ -77,7 +77,7 @@
       {
         label: 'Retry download',
         disabled: downloadStatus(menu.track).state !== 'failed',
-        action: () => onretry(menu!.track.video_id),
+        action: () => onretry(menu!.track),
       },
     ];
     if (onmoveup) {
@@ -147,7 +147,7 @@
       {#each visible as track, offset (start + offset)}
         {@const index = start + offset}
         {@const download = downloadStatus(track)}
-        {@const playing = currentTrack?.video_id === track.video_id}
+        {@const playing = currentTrack?.track_id === track.track_id}
         <div
           class="row"
           class:selected={index === selection}
@@ -170,7 +170,7 @@
           </span>
           <span class="cover">
             <img
-              src={coverUrl(track.video_id)}
+              src={coverUrl(track)}
               alt=""
               loading="lazy"
               onload={(event) => {
@@ -193,7 +193,7 @@
                 aria-label={`Retry download for ${track.title}`}
                 onclick={(event) => {
                   event.stopPropagation();
-                  onretry(track.video_id);
+                  onretry(track);
                 }}
               >
                 {downloadLabel(download)} ↻
