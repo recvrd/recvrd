@@ -2,7 +2,7 @@ mod task;
 
 use std::{
     collections::{HashMap, HashSet, VecDeque},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -16,6 +16,17 @@ use common_structs::MusicDownloadStatus;
 pub use task::DownloadError;
 
 pub type MessageHandler = Arc<dyn Fn(DownloadManagerMessage) + Send + Sync + 'static>;
+
+/// Check that a previous download is complete. The metadata sidecar
+/// and a non-empty audio file must both exist. A sidecar alone is not
+/// enough, since the audio file can be deleted on its own.
+fn is_complete_download(mp4: &Path, json: &Path) -> bool {
+    json.exists()
+        && mp4
+            .metadata()
+            .map(|metadata| metadata.len() > 0)
+            .unwrap_or(false)
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum DownloadManagerMessage {
@@ -230,7 +241,7 @@ impl DownloadManager {
         let json = downloads.join(format!("{id}.json"));
         let part = downloads.join(format!("{id}.part"));
 
-        if json.exists() {
+        if is_complete_download(&mp4, &json) {
             self.set_status(&id, MusicDownloadStatus::Downloaded);
             s(DownloadManagerMessage::VideoStatusUpdate(
                 id,
@@ -500,10 +511,43 @@ mod tests {
         let path = script(dir.path(), &body);
         let (manager, downloads) = manager(&dir, path, 0);
         fs::write(downloads.join("v1.json"), "{}").unwrap();
+        fs::write(downloads.join("v1.mp4"), "fake-audio").unwrap();
         let (handler, _messages) = collector();
 
         assert!(manager.start_download(song("v1"), handler).await);
         assert!(!marker.exists());
+        assert_eq!(manager.status("v1"), Some(MusicDownloadStatus::Downloaded));
+        assert_eq!(manager.active_downloads(), 0);
+    }
+
+    #[tokio::test]
+    async fn missing_audio_is_redownloaded_despite_sidecar() {
+        let _guard = serial().await;
+        let dir = tempdir().unwrap();
+        let path = script(dir.path(), &success_script(false));
+        let (manager, downloads) = manager(&dir, path, 0);
+        fs::write(downloads.join("v1.json"), "{}").unwrap();
+        let (handler, _messages) = collector();
+
+        assert!(manager.start_download(song("v1"), handler).await);
+        assert!(downloads.join("v1.mp4").exists());
+        assert!(downloads.join("v1.mp4").metadata().unwrap().len() > 0);
+        assert_eq!(manager.status("v1"), Some(MusicDownloadStatus::Downloaded));
+        assert_eq!(manager.active_downloads(), 0);
+    }
+
+    #[tokio::test]
+    async fn empty_audio_is_redownloaded_despite_sidecar() {
+        let _guard = serial().await;
+        let dir = tempdir().unwrap();
+        let path = script(dir.path(), &success_script(false));
+        let (manager, downloads) = manager(&dir, path, 0);
+        fs::write(downloads.join("v1.json"), "{}").unwrap();
+        fs::write(downloads.join("v1.mp4"), "").unwrap();
+        let (handler, _messages) = collector();
+
+        assert!(manager.start_download(song("v1"), handler).await);
+        assert!(downloads.join("v1.mp4").metadata().unwrap().len() > 0);
         assert_eq!(manager.status("v1"), Some(MusicDownloadStatus::Downloaded));
         assert_eq!(manager.active_downloads(), 0);
     }
