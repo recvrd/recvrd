@@ -627,4 +627,66 @@ mod tests {
 
         assert_eq!(manager.active_downloads(), 0);
     }
+
+    /// A dead child holds no file handles and writes nothing, so a zombie
+    /// counts as stopped.
+    fn process_running(pid: u32) -> bool {
+        let Ok(stat) = fs::read_to_string(format!("/proc/{pid}/stat")) else {
+            return false;
+        };
+        let Some(after_comm) = stat.rsplit_once(") ") else {
+            return false;
+        };
+        !after_comm.1.starts_with('Z')
+    }
+
+    #[tokio::test]
+    async fn cancellation_kills_the_child_process() {
+        let _guard = serial().await;
+        let dir = tempdir().unwrap();
+        let pid_file = dir.path().join("yt-dlp.pid");
+        // Record the child pid, then write to the part file in a loop so
+        // a surviving child is visible as a growing file. The loop is
+        // bounded so a failing run cannot leak a writer forever.
+        let body = format!(
+            "echo $$ > {pid}\nout=\"\"\nwhile [ $# -gt 0 ]; do case \"$1\" in -o) out=\"$2\"; shift 2;; *) shift;; esac; done\ni=0\nwhile [ $i -lt 600 ]; do echo \"chunk $i\" >> \"$out\"; i=$((i+1)); sleep 0.1; done",
+            pid = pid_file.display()
+        );
+        let path = script(dir.path(), &body);
+        let (manager, downloads) = manager(&dir, path, 0);
+        let (handler, _messages) = collector();
+
+        let mut future = Box::pin(manager.start_download(song("dQw4w9WgXcQ"), handler));
+        let part = downloads.join("dQw4w9WgXcQ.part");
+        // Poll the download until the child starts. The future must run
+        // for the child to spawn.
+        let mut waited = 0;
+        while !part.exists() && waited < 100 {
+            tokio::select! {
+                _ = &mut future => panic!("download unexpectedly completed"),
+                _ = tokio::time::sleep(Duration::from_millis(50)) => {}
+            }
+            waited += 1;
+        }
+        assert!(part.exists(), "fake yt-dlp never started");
+        let pid: u32 = fs::read_to_string(&pid_file)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        drop(future);
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while process_running(pid) {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "yt-dlp child {pid} still runs after cancel"
+            );
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+
+        let size = fs::metadata(&part).unwrap().len();
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert_eq!(fs::metadata(&part).unwrap().len(), size);
+    }
 }
