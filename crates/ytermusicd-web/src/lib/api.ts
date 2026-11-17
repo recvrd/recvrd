@@ -10,6 +10,7 @@ import type { ProviderId } from '@api/ProviderId';
 import type { ProviderInfo } from '@api/ProviderInfo';
 import type { Queue } from '@api/Queue';
 import type { RepeatMode } from '@api/RepeatMode';
+import type { RssFeed } from '@api/RssFeed';
 import type { SearchResults } from '@api/SearchResults';
 import type { Status } from '@api/Status';
 import type { Track } from '@api/Track';
@@ -56,6 +57,11 @@ export interface YtermusicdApi {
   setShuffle(enabled: boolean): Promise<Status>;
   setRepeat(repeat: RepeatMode): Promise<Status>;
   retryDownload(track: Track): Promise<void>;
+  rssFeeds(): Promise<RssFeed[]>;
+  addRssFeed(url: string): Promise<RssFeed>;
+  removeRssFeed(id: string): Promise<OkResponse>;
+  refreshRssFeed(id: string): Promise<RssFeed>;
+  refreshRssFeeds(): Promise<RssFeed[]>;
 }
 
 export function describeError(error: unknown, providerName?: string): string {
@@ -166,6 +172,12 @@ export function createApi(baseUrl = ''): YtermusicdApi {
       request<SearchResults>(
         `/api/search?provider=${encodeURIComponent(provider)}&q=${encodeURIComponent(query)}`,
       ),
+    rssFeeds: () => request<RssFeed[]>('/api/rss/feeds'),
+    addRssFeed: (url) => post<RssFeed>('/api/rss/feeds', { url }),
+    removeRssFeed: (id) => remove<OkResponse>(`/api/rss/feeds/${encodeURIComponent(id)}`),
+    refreshRssFeed: (id) =>
+      post<RssFeed>(`/api/rss/feeds/${encodeURIComponent(id)}/refresh`, {}),
+    refreshRssFeeds: () => post<RssFeed[]>('/api/rss/feeds/refresh', {}),
     queue: () => request<Queue>('/api/queue'),
     playPlaylist: (playlistId, provider: ProviderId = 'youtube') =>
       post<Status>('/api/play/playlist', { playlist_id: playlistId, provider }),
@@ -230,4 +242,4 @@ export function downloadLabel(status: DownloadStatus): string {
   }
 }
 
-export type { PlaybackSnapshot, Playlist, PlaylistDetail, ProviderCapabilities, ProviderId, ProviderInfo, Queue, RepeatMode, SearchResults, Status, Track };
+export type { PlaybackSnapshot, Playlist, PlaylistDetail, ProviderCapabilities, ProviderId, ProviderInfo, Queue, RepeatMode, RssFeed, SearchResults, Status, Track };

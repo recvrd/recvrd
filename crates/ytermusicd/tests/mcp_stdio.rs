@@ -145,13 +145,16 @@ async fn mcp_stdio_lists_tools_and_exits_on_eof() {
         .iter()
         .map(|tool| tool["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names.len(), 28);
+    assert_eq!(names.len(), 33);
     assert!(names.contains(&"search"));
     assert!(names.contains(&"download_status"));
     assert!(names.contains(&"create_playlist"));
     assert!(names.contains(&"seek"));
     assert!(names.contains(&"queue_clear"));
     assert!(names.contains(&"list_providers"));
+    assert!(names.contains(&"rss_list_feeds"));
+    assert!(names.contains(&"rss_add_feed"));
+    assert!(names.contains(&"rss_refresh_feeds"));
 
     send(
         &mut stdin,

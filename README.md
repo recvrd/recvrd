@@ -41,7 +41,7 @@ UI, terminal client and MCP proxy are clients.
 | Web UI (library, search, queue, now playing, vim keys) | ✅ |
 | Terminal client (`ytmc`, mouse and vim keys) | ✅ |
 | systemd unit, Nix package/module | ✅ |
-| MCP proxy (27 tools) | ✅ |
+| MCP proxy (33 tools) | ✅ |
 | v0.5.0 release | ✅ |
 
 See the [roadmap](https://github.com/suorcd/ytermusicd/issues/25) for the
@@ -156,7 +156,7 @@ just test
 - [docs/api.md](docs/api.md) — REST/SSE reference, curl examples and reconnect semantics
 - [docs/web.md](docs/web.md) — web UI development, keymap and failure states
 - [docs/tui.md](docs/tui.md) — terminal client, keys, mouse and limits
-- [docs/mcp.md](docs/mcp.md) — MCP client setup and the 27 tools
+- [docs/mcp.md](docs/mcp.md) — MCP client setup and the 33 tools
 - [docs/release.md](docs/release.md) — release checklist and smoke tests
 - [CHANGELOG.md](CHANGELOG.md) — release notes
 - [CONTRIBUTING.md](CONTRIBUTING.md) — contribution rules
@@ -178,6 +178,7 @@ just test
 - `crates/ytermusic` — legacy TUI client
 - `crates/ytpapi2` — YouTube Music API client
 - `crates/provider-youtube` — YouTube Music provider: API client, cover fetcher and downloads
+- `crates/provider-rss` — RSS provider: feed parser, store, fetcher and downloader
 - `crates/player` — audio playback
 - `crates/database` — local download database
 - `crates/download-manager` — download queue
@@ -202,13 +203,15 @@ The daemon serves the web UI at `/` and the API under `/api`.
 
 ## MCP
 
-`ytermusicd mcp` is a stdio proxy to the daemon. It exposes 27 tools:
+`ytermusicd mcp` is a stdio proxy to the daemon. It exposes 33 tools:
 `search`, `list_playlists`, `get_playlist`, `create_playlist`,
 `rename_playlist`, `delete_playlist`, `add_playlist_tracks`,
 `remove_playlist_tracks`, `move_playlist_track`, `play_playlist`, `play_track`,
 `queue_add`, `queue_remove`, `queue_reorder`, `queue_play_next`,
 `queue_clear`, `retry_download`, `now_playing`, `pause`, `resume`, `next`,
-`previous`, `volume`, `seek`, `shuffle`, `repeat` and `download_status`.
+`previous`, `volume`, `seek`, `shuffle`, `repeat`, `download_status`,
+`rss_list_feeds`, `rss_add_feed`, `rss_remove_feed`, `rss_refresh_feed` and
+`rss_refresh_feeds`.
 
 ```sh
 ytermusicd mcp

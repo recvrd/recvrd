@@ -10,12 +10,12 @@ use std::fmt;
 use std::pin::Pin;
 use std::time::Duration;
 use ytermusicd_api::{
-    AddPlaylistTracksRequest, CreatePlaylistRequest, ErrorEnvelope, Event,
+    AddPlaylistTracksRequest, AddRssFeedRequest, CreatePlaylistRequest, ErrorEnvelope, Event,
     MovePlaylistTrackRequest, OkResponse, PlayNextRequest, PlayPlaylistRequest, PlayTrackRequest,
     Playlist, PlaylistDetail, ProviderId, ProviderInfo, Queue, QueueRequest,
     RemovePlaylistTracksRequest, RemoveQueueRequest, ReorderQueueRequest, RepeatRequest,
-    RetryDownloadRequest, SearchResults, SeekRequest, ShuffleRequest, Status, Track, TrackKey,
-    UpdatePlaylistRequest, VolumeRequest,
+    RetryDownloadRequest, RssFeed, SearchResults, SeekRequest, ShuffleRequest, Status, Track,
+    TrackKey, UpdatePlaylistRequest, VolumeRequest,
 };
 
 /// Default daemon URL.
@@ -415,6 +415,43 @@ impl DaemonClient {
                 provider: key.provider,
                 track_id: key.id.clone(),
             },
+        )
+        .await
+    }
+
+    /// List the RSS feeds the daemon follows.
+    pub async fn rss_feeds(&self) -> Result<Vec<RssFeed>, DaemonError> {
+        self.get("/api/rss/feeds").await
+    }
+
+    /// Add an RSS feed URL. The daemon fetches it at once.
+    pub async fn add_rss_feed(&self, url: &str) -> Result<RssFeed, DaemonError> {
+        self.post(
+            "/api/rss/feeds",
+            &AddRssFeedRequest {
+                url: url.to_string(),
+            },
+        )
+        .await
+    }
+
+    /// Remove an RSS feed and drop its episodes from the index.
+    pub async fn remove_rss_feed(&self, feed_id: &str) -> Result<OkResponse, DaemonError> {
+        self.delete(&format!("/api/rss/feeds/{}", encode(feed_id)))
+            .await
+    }
+
+    /// Refresh every RSS feed. A feed that fails keeps its old episodes.
+    pub async fn refresh_rss_feeds(&self) -> Result<Vec<RssFeed>, DaemonError> {
+        self.post("/api/rss/feeds/refresh", &serde_json::json!({}))
+            .await
+    }
+
+    /// Refresh one RSS feed by its ID.
+    pub async fn refresh_rss_feed(&self, feed_id: &str) -> Result<RssFeed, DaemonError> {
+        self.post(
+            &format!("/api/rss/feeds/{}/refresh", encode(feed_id)),
+            &serde_json::json!({}),
         )
         .await
     }

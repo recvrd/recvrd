@@ -6,7 +6,7 @@ use axum::{
         IntoResponse, Response,
         sse::{Event as SseEvent, KeepAlive, Sse},
     },
-    routing::{get, post},
+    routing::{delete, get, post},
 };
 use common_structs::{ProviderId, TrackKey};
 use serde::Deserialize;
@@ -24,14 +24,14 @@ use tokio::{
     sync::{Mutex, mpsc::UnboundedSender},
 };
 use ytermusicd_api::{
-    AddPlaylistTracksRequest, ApiError, AuthState, AuthStatus as ApiAuthStatus,
+    AddPlaylistTracksRequest, AddRssFeedRequest, ApiError, AuthState, AuthStatus as ApiAuthStatus,
     CreatePlaylistRequest, DownloadStatus, DownloadSummary, ErrorEnvelope, Event, EventKind,
     MovePlaylistTrackRequest, MusicApi, OkResponse, PlayNextRequest, PlayPlaylistRequest,
     PlayTrackRequest, PlaybackSnapshot as ApiPlaybackSnapshot, PlaybackState, Playlist,
     PlaylistDetail, PlaylistEditError, ProviderInfo, Queue as ApiQueue, QueueItem as ApiQueueItem,
     QueueRequest, RemovePlaylistTracksRequest, RemoveQueueRequest, ReorderQueueRequest,
-    RepeatMode as ApiRepeatMode, RepeatRequest, RetryDownloadRequest, SearchResults, SeekRequest,
-    ShuffleRequest, Status, Track, UpdatePlaylistRequest, VolumeRequest,
+    RepeatMode as ApiRepeatMode, RepeatRequest, RetryDownloadRequest, RssFeed, SearchResults,
+    SeekRequest, ShuffleRequest, Status, Track, UpdatePlaylistRequest, VolumeRequest,
 };
 use ytermusicd_core::{
     AudioSink, AuthState as CoreAuthState, AuthStatus, CoreEvent, EventBus, PlaybackCommand,
@@ -40,6 +40,7 @@ use ytermusicd_core::{
 };
 
 use crate::{artwork::ArtworkCache, downloads::DownloadControl};
+use provider_rss::RssProvider;
 
 pub struct AppState<S: AudioSink + Send + 'static> {
     started_at: Instant,
@@ -49,6 +50,7 @@ pub struct AppState<S: AudioSink + Send + 'static> {
     events: EventBus,
     downloads: Arc<dyn DownloadControl>,
     artwork: Arc<ArtworkCache>,
+    rss: Arc<RssProvider>,
 }
 
 impl<S: AudioSink + Send + 'static> Clone for AppState<S> {
@@ -61,6 +63,7 @@ impl<S: AudioSink + Send + 'static> Clone for AppState<S> {
             events: self.events.clone(),
             downloads: self.downloads.clone(),
             artwork: self.artwork.clone(),
+            rss: self.rss.clone(),
         }
     }
 }
@@ -73,6 +76,7 @@ impl<S: AudioSink + Send + 'static> AppState<S> {
         events: EventBus,
         downloads: Arc<dyn DownloadControl>,
         artwork: Arc<ArtworkCache>,
+        rss: Arc<RssProvider>,
     ) -> Self {
         Self {
             started_at: Instant::now(),
@@ -82,6 +86,7 @@ impl<S: AudioSink + Send + 'static> AppState<S> {
             events,
             downloads,
             artwork,
+            rss,
         }
     }
 }
@@ -173,6 +178,10 @@ pub fn router<S: AudioSink + Send + 'static>(state: AppState<S>) -> Router {
         .route("/api/shuffle", post(shuffle))
         .route("/api/repeat", post(repeat))
         .route("/api/downloads/retry", post(retry_download))
+        .route("/api/rss/feeds", get(list_rss_feeds).post(add_rss_feed))
+        .route("/api/rss/feeds/refresh", post(refresh_rss_feeds))
+        .route("/api/rss/feeds/{id}", delete(remove_rss_feed))
+        .route("/api/rss/feeds/{id}/refresh", post(refresh_rss_feed))
         .route("/api/events", get(events))
         .fallback(crate::web::static_handler)
         .with_state(state)
@@ -209,9 +218,98 @@ async fn providers<S: AudioSink + Send + 'static>(
     Json(
         ProviderId::all()
             .iter()
-            .map(|provider| ProviderInfo::new(*provider, api_auth(&state.auth)))
+            .map(|provider| {
+                let auth = match provider {
+                    // RSS needs no auth. It fetches public feeds.
+                    ProviderId::Rss => ApiAuthStatus {
+                        state: AuthState::Ok,
+                        source: None,
+                        message: None,
+                    },
+                    ProviderId::Youtube => api_auth(&state.auth),
+                };
+                ProviderInfo::new(*provider, auth)
+            })
             .collect(),
     )
+}
+
+/// List the RSS feeds the daemon follows.
+async fn list_rss_feeds<S: AudioSink + Send + 'static>(
+    State(state): State<AppState<S>>,
+) -> Json<Vec<RssFeed>> {
+    Json(state.rss.feeds())
+}
+
+/// Add an RSS feed URL. The daemon fetches it at once and returns
+/// the feed with its episode count.
+async fn add_rss_feed<S: AudioSink + Send + 'static>(
+    State(state): State<AppState<S>>,
+    Json(request): Json<AddRssFeedRequest>,
+) -> Result<(StatusCode, Json<RssFeed>), ApiFailure> {
+    let url = request.url.trim();
+    if url.is_empty() {
+        return Err(ApiFailure::bad_request("feed URL must not be empty"));
+    }
+    state
+        .rss
+        .add_feed(url)
+        .await
+        .map(|feed| (StatusCode::CREATED, Json(feed)))
+        .map_err(rss_failure)
+}
+
+/// Map an RSS provider error to an API failure. A bad feed URL is
+/// the caller's fault; a fetch or parse failure is upstream.
+fn rss_failure(error: String) -> ApiFailure {
+    if error.starts_with("invalid feed URL")
+        || error.starts_with("feed URL")
+        || error == "feed did not change"
+    {
+        ApiFailure::bad_request(error)
+    } else {
+        ApiFailure::upstream(error)
+    }
+}
+
+/// Remove an RSS feed and drop its episodes from the index.
+async fn remove_rss_feed<S: AudioSink + Send + 'static>(
+    State(state): State<AppState<S>>,
+    AxumPath(id): AxumPath<String>,
+) -> Result<Json<OkResponse>, ApiFailure> {
+    if !state.rss.remove_feed(&id) {
+        return Err(ApiFailure::not_found(format!("feed {id} not found")));
+    }
+    Ok(Json(OkResponse { ok: true }))
+}
+
+/// Refresh every RSS feed. A feed that fails keeps its old episodes.
+async fn refresh_rss_feeds<S: AudioSink + Send + 'static>(
+    State(state): State<AppState<S>>,
+) -> Json<Vec<RssFeed>> {
+    let mut refreshed = Vec::new();
+    for (_id, result) in state.rss.refresh_all().await {
+        if let Ok(feed) = result {
+            refreshed.push(feed);
+        }
+    }
+    Json(refreshed)
+}
+
+/// Refresh one RSS feed by its ID.
+async fn refresh_rss_feed<S: AudioSink + Send + 'static>(
+    State(state): State<AppState<S>>,
+    AxumPath(id): AxumPath<String>,
+) -> Result<Json<RssFeed>, ApiFailure> {
+    if !state.rss.has_feed(&id) {
+        return Err(ApiFailure::not_found(format!("feed {id} not found")));
+    }
+    state
+        .rss
+        .refresh_feed(&id)
+        .await
+        .map(Json)
+        .map_err(ApiFailure::upstream)
 }
 
 async fn playlist<S: AudioSink + Send + 'static>(
@@ -883,6 +981,7 @@ pub async fn serve<S: AudioSink + Send + 'static>(
     artwork: Arc<ArtworkCache>,
     commands: UnboundedSender<PlaybackCommand>,
     dbus: bool,
+    rss: Arc<RssProvider>,
 ) -> io::Result<()> {
     let addr: SocketAddr = format!("{bind}:{port}").parse().map_err(|error| {
         io::Error::new(
@@ -905,7 +1004,7 @@ pub async fn serve<S: AudioSink + Send + 'static>(
     let local_addr = listener.local_addr()?;
     println!("ytermusicd listening on http://{local_addr}");
 
-    let state = AppState::new(auth, music, playback, events, downloads, artwork);
+    let state = AppState::new(auth, music, playback, events, downloads, artwork, rss);
     axum::serve(listener, router(state))
         .with_graceful_shutdown(shutdown_signal())
         .await
@@ -1408,6 +1507,13 @@ mod tests {
         let service = PlaybackService::new(MockSink, "/tmp/ytermusicd-test", 50);
         let events = service.events();
         let playback = Arc::new(Mutex::new(service));
+        // A fresh store per test state, so feed tests never share
+        // state with each other.
+        static RSS_COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let id = RSS_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let rss = Arc::new(RssProvider::new(
+            std::env::temp_dir().join(format!("ytermusicd-test-rss-{id}.json")),
+        ));
         AppState::new(
             AuthStatus::ok("/tmp/headers.txt"),
             music,
@@ -1415,6 +1521,7 @@ mod tests {
             events,
             downloads,
             artwork,
+            rss,
         )
     }
 
@@ -1476,7 +1583,7 @@ mod tests {
             .unwrap();
         assert_eq!(status["auth"]["state"], "ok");
         assert_eq!(status["playback"]["state"], "stopped");
-        assert_eq!(status["providers"], serde_json::json!(["youtube"]));
+        assert_eq!(status["providers"], serde_json::json!(["youtube", "rss"]));
         assert_eq!(status["default_provider"], "youtube");
 
         let playlists: serde_json::Value = client
@@ -1525,7 +1632,7 @@ mod tests {
             .await
             .unwrap();
         let list = providers.as_array().unwrap();
-        assert_eq!(list.len(), 1);
+        assert_eq!(list.len(), 2);
         assert_eq!(list[0]["id"], "youtube");
         assert_eq!(list[0]["name"], "YouTube Music");
         assert_eq!(list[0]["default"], true);
@@ -1534,6 +1641,120 @@ mod tests {
         assert_eq!(list[0]["capabilities"]["downloads"], true);
         assert_eq!(list[0]["auth"]["state"], "ok");
         assert_eq!(list[0]["auth"]["source"], "/tmp/headers.txt");
+        // RSS needs no auth and supports no playlist edits.
+        assert_eq!(list[1]["id"], "rss");
+        assert_eq!(list[1]["name"], "RSS");
+        assert_eq!(list[1]["default"], false);
+        assert_eq!(list[1]["capabilities"]["search"], true);
+        assert_eq!(list[1]["capabilities"]["playlist_edit"], false);
+        assert_eq!(list[1]["capabilities"]["playlist_create"], false);
+        assert_eq!(list[1]["capabilities"]["downloads"], true);
+        assert_eq!(list[1]["auth"]["state"], "ok");
+        assert!(list[1]["auth"]["source"].is_null());
+        server.abort();
+    }
+
+    /// Serve the RSS fixture over HTTP for feed route tests.
+    async fn start_feed_server() -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let body = include_str!("../../provider-rss/fixtures/rss.xml").to_string();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    return;
+                };
+                let mut buffer = [0u8; 4096];
+                let _ = stream.read(&mut buffer).await;
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(response.as_bytes()).await;
+            }
+        });
+        format!("http://{addr}/feed.xml")
+    }
+
+    #[tokio::test]
+    async fn rss_feed_routes_add_list_refresh_and_remove() {
+        let (base, server) = start_server(test_state()).await;
+        let client = reqwest::Client::new();
+
+        let empty: serde_json::Value = client
+            .get(format!("{base}/api/rss/feeds"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(empty.as_array().unwrap().len(), 0);
+
+        let bad = client
+            .post(format!("{base}/api/rss/feeds"))
+            .json(&serde_json::json!({ "url": "ftp://example.com/feed.xml" }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(bad.status().as_u16(), 400);
+
+        let url = start_feed_server().await;
+        let added: serde_json::Value = client
+            .post(format!("{base}/api/rss/feeds"))
+            .json(&serde_json::json!({ "url": url }))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(added["title"], "Test Tones");
+        assert_eq!(added["episode_count"], 2);
+        let id = added["id"].as_str().unwrap().to_string();
+
+        let feeds: serde_json::Value = client
+            .get(format!("{base}/api/rss/feeds"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(feeds.as_array().unwrap().len(), 1);
+
+        let refreshed: serde_json::Value = client
+            .post(format!("{base}/api/rss/feeds/{id}/refresh"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(refreshed["episode_count"], 2);
+
+        let removed = client
+            .delete(format!("{base}/api/rss/feeds/{id}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(removed.status().as_u16(), 200);
+
+        let missing = client
+            .delete(format!("{base}/api/rss/feeds/{id}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(missing.status().as_u16(), 404);
+
+        let missing_refresh = client
+            .post(format!("{base}/api/rss/feeds/{id}/refresh"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(missing_refresh.status().as_u16(), 404);
         server.abort();
     }
 

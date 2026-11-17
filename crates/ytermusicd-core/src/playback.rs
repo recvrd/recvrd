@@ -466,7 +466,14 @@ impl<S: AudioSink> PlaybackService<S> {
 
         let path = track
             .key()
-            .download_file(&self.cache_dir.join("downloads"), "mp4");
+            .existing_audio_file(&self.cache_dir.join("downloads"))
+            // No downloaded file yet. Fall back to the YouTube path,
+            // so the sink reports the same error as before.
+            .unwrap_or_else(|| {
+                track
+                    .key()
+                    .download_file(&self.cache_dir.join("downloads"), "mp4")
+            });
         if self.wait_for_downloads && !path.exists() {
             self.pending_start = true;
             self.status = PlaybackStatus::Stopped;

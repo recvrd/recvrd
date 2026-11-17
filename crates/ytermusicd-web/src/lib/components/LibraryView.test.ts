@@ -1,12 +1,14 @@
 import { fireEvent, render, screen } from '@testing-library/svelte';
 import { tick } from 'svelte';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import LibraryView from './LibraryView.svelte';
 import { AppStore } from '../store.svelte';
 import {
   makeApi,
   makePlaylist,
   makePlaylistDetail,
+  makeProviderInfo,
+  makeRssFeed,
   makeStatus,
   makeTrack,
 } from '../../test/fixtures';
@@ -16,6 +18,39 @@ function setupLibrary() {
   const store = new AppStore(api);
   store.view = { kind: 'library' };
   store.playlists = [makePlaylist('p1')];
+  return { api, store };
+}
+
+function setupRssLibrary() {
+  const api = makeApi();
+  const store = new AppStore(api);
+  // Keep one feed card across reloads: the mock playlist list
+  // ignores the provider, so scope it to the feed here.
+  api.playlists = vi.fn(async () => [
+    makePlaylist('0123456789abcdef', { name: 'Test Tones' }),
+  ]);
+  store.providers = [
+    makeProviderInfo(),
+    makeProviderInfo({
+      id: 'rss',
+      name: 'RSS',
+      default: false,
+      capabilities: {
+        search: true,
+        library: true,
+        playlists: true,
+        playlist_create: false,
+        playlist_edit: false,
+        downloads: true,
+        covers: true,
+      },
+      auth: { state: 'ok', source: null, message: null },
+    }),
+  ];
+  store.activeProvider = 'rss';
+  store.view = { kind: 'library' };
+  store.playlists = [makePlaylist('0123456789abcdef', { name: 'Test Tones' })];
+  store.rssFeeds = [makeRssFeed()];
   return { api, store };
 }
 
@@ -76,6 +111,34 @@ describe('LibraryView', () => {
       privacy: 'private',
     });
     expect(api.playlists).toHaveBeenCalled();
+  });
+
+  it('adds a feed from the RSS library', async () => {
+    const { api, store } = setupRssLibrary();
+    const { container } = render(LibraryView, { props: { store } });
+
+    expect(screen.getByRole('button', { name: 'Add feed' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Refresh feeds' })).toBeInTheDocument();
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Add feed' }));
+    await fireEvent.input(screen.getByLabelText('Feed URL'), {
+      target: { value: 'https://example.com/other.xml' },
+    });
+    await fireEvent.submit(container.querySelector('form')!);
+
+    expect(api.addRssFeed).toHaveBeenCalledWith('https://example.com/other.xml');
+  });
+
+  it('refreshes and removes a feed from its card', async () => {
+    const { api, store } = setupRssLibrary();
+    render(LibraryView, { props: { store } });
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    expect(api.refreshRssFeed).toHaveBeenCalledWith('0123456789abcdef');
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+    await fireEvent.click(screen.getByRole('button', { name: 'Remove?' }));
+    expect(api.removeRssFeed).toHaveBeenCalledWith('0123456789abcdef');
   });
 
   it('renames and deletes a playlist with confirmation', async () => {

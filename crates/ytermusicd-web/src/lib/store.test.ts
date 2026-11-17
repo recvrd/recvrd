@@ -115,6 +115,59 @@ describe('AppStore', () => {
     store.dispose();
   });
 
+  it('loads RSS feeds when the RSS provider is active', async () => {
+    const { api, store } = setup();
+    api.providers = vi.fn(async () => [
+      makeProviderInfo(),
+      makeProviderInfo({
+        id: 'rss',
+        name: 'RSS',
+        default: false,
+        capabilities: {
+          search: true,
+          library: true,
+          playlists: true,
+          playlist_create: false,
+          playlist_edit: false,
+          downloads: true,
+          covers: true,
+        },
+        auth: { state: 'ok', source: null, message: null },
+      }),
+    ]);
+    await store.init();
+    await store.setProvider('rss');
+    expect(store.isRssProvider).toBe(true);
+    expect(store.canCreatePlaylist).toBe(false);
+    expect(api.rssFeeds).toHaveBeenCalled();
+    expect(store.rssFeeds).toHaveLength(1);
+    expect(store.rssFeeds[0].title).toBe('Test Tones');
+    store.dispose();
+  });
+
+  it('adds, refreshes and removes RSS feeds', async () => {
+    const { api, store } = setup();
+    await store.init();
+    await store.loadRssFeeds();
+    expect(store.rssFeeds).toHaveLength(1);
+
+    expect(await store.addRssFeed('https://example.com/other.xml')).toBe(true);
+    expect(store.rssFeeds).toHaveLength(2);
+    expect(api.addRssFeed).toHaveBeenCalledWith('https://example.com/other.xml');
+
+    const refreshed = await store.refreshRssFeed('0123456789abcdef');
+    expect(refreshed).toBe(true);
+    expect(api.refreshRssFeed).toHaveBeenCalledWith('0123456789abcdef');
+
+    expect(await store.refreshRssFeeds()).toBe(true);
+    expect(api.refreshRssFeeds).toHaveBeenCalled();
+
+    expect(await store.removeRssFeed('0123456789abcdef')).toBe(true);
+    expect(store.rssFeeds).toHaveLength(1);
+    expect(api.removeRssFeed).toHaveBeenCalledWith('0123456789abcdef');
+    store.dispose();
+  });
+
   it('toggles and persists the player layout', () => {
     const { store } = setup();
     expect(store.playerLayout).toBe('compact');

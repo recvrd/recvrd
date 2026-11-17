@@ -103,6 +103,13 @@ impl Paths {
         self.state_dir.join("state.json")
     }
 
+    /// The RSS provider store: feed URLs, ETags and the episode
+    /// index. Lives in the data directory, not the cache, because
+    /// feed URLs are user data.
+    pub fn rss_feeds_file(&self) -> PathBuf {
+        self.data_dir.join("rss-feeds.json")
+    }
+
     pub fn log_file(&self) -> PathBuf {
         self.state_dir.join("ytermusicd.log")
     }
@@ -140,6 +147,10 @@ mod tests {
         assert_eq!(paths.covers_dir(), PathBuf::from("/cache/covers"));
         assert_eq!(paths.database_file(), PathBuf::from("/cache/db.bin"));
         assert_eq!(paths.state_file(), PathBuf::from("/state/state.json"));
+        assert_eq!(
+            paths.rss_feeds_file(),
+            PathBuf::from("/data/rss-feeds.json")
+        );
         assert_eq!(
             Paths::account_id_file_near(Path::new("/config/headers.txt")),
             PathBuf::from("/config/account_id.txt")

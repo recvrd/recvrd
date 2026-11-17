@@ -32,7 +32,9 @@ pub struct ProviderCapabilities {
 
 impl ProviderCapabilities {
     /// The capabilities of one provider. YouTube Music supports
-    /// every action today. A provider that lacks an action must
+    /// every action today. RSS feeds support search, library,
+    /// playlists, downloads and covers, but not playlist edits:
+    /// feeds are read-only. A provider that lacks an action must
     /// set its flag to false, so clients can hide the action.
     pub fn for_provider(provider: ProviderId) -> Self {
         match provider {
@@ -42,6 +44,15 @@ impl ProviderCapabilities {
                 playlists: true,
                 playlist_create: true,
                 playlist_edit: true,
+                downloads: true,
+                covers: true,
+            },
+            ProviderId::Rss => Self {
+                search: true,
+                library: true,
+                playlists: true,
+                playlist_create: false,
+                playlist_edit: false,
                 downloads: true,
                 covers: true,
             },
@@ -117,6 +128,32 @@ pub struct Playlist {
 pub struct PlaylistDetail {
     pub playlist: Playlist,
     pub tracks: Vec<Track>,
+}
+
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RssFeed {
+    /// The feed ID: the first 16 characters of the SHA-256 hash
+    /// of the feed URL.
+    pub id: String,
+    /// The feed URL, as added by the user.
+    pub url: String,
+    /// The feed title, from the feed itself.
+    pub title: String,
+    /// The number of episodes in the feed.
+    pub episode_count: usize,
+    /// Unix time of the last fetch, in seconds. Empty when the
+    /// feed was never fetched.
+    pub last_fetched: Option<u64>,
+}
+
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct AddRssFeedRequest {
+    /// The URL of an RSS 2.0 or Atom feed.
+    pub url: String,
 }
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]

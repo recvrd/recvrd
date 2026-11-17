@@ -11,6 +11,9 @@
   let renameName = $state('');
   let confirmDelete = $state(false);
   let removal = $state<{ index: number; title: string } | null>(null);
+  let addingFeed = $state(false);
+  let feedUrl = $state('');
+  let removingFeed = $state<string | null>(null);
 
   const playlistView = $derived(store.view.kind === 'playlist' ? store.view : null);
   const tracks = $derived(playlistView ? (store.playlist?.tracks ?? []) : []);
@@ -66,6 +69,21 @@
     if (target < 0 || target >= tracks.length) return;
     void store.movePlaylistTrack(playlistView.id, index, target);
   }
+
+  async function addFeed(): Promise<void> {
+    const url = feedUrl.trim();
+    if (!url) return;
+    if (await store.addRssFeed(url)) {
+      feedUrl = '';
+      addingFeed = false;
+    }
+  }
+
+  async function removeFeed(id: string): Promise<void> {
+    if (await store.removeRssFeed(id)) {
+      removingFeed = null;
+    }
+  }
 </script>
 
 {#if store.view.kind === 'library'}
@@ -82,6 +100,37 @@
         </p>
       </div>
       <div class="hero-actions">
+        {#if store.isRssProvider}
+          {#if addingFeed}
+            <form
+              class="inline-form"
+              onsubmit={(event) => {
+                event.preventDefault();
+                void addFeed();
+              }}
+            >
+              <input
+                bind:value={feedUrl}
+                placeholder="Feed URL"
+                aria-label="Feed URL"
+                inputmode="url"
+              />
+              <button type="submit" class="accent" disabled={!feedUrl.trim()}>Add</button>
+              <button
+                type="button"
+                onclick={() => {
+                  addingFeed = false;
+                  feedUrl = '';
+                }}
+              >
+                Cancel
+              </button>
+            </form>
+          {:else}
+            <button class="accent" onclick={() => (addingFeed = true)}>Add feed</button>
+          {/if}
+          <button class="refresh" onclick={() => store.refreshRssFeeds()}>Refresh feeds</button>
+        {/if}
         {#if creating}
           <form
             class="inline-form"
@@ -155,7 +204,11 @@
       </div>
     {:else if store.filteredPlaylists.length === 0}
       <div class="empty-state">
-        <p>No playlists found.</p>
+        {#if store.isRssProvider}
+          <p>No feeds yet. Add a feed URL above to see its episodes.</p>
+        {:else}
+          <p>No playlists found.</p>
+        {/if}
         {#if store.filter}
           <button onclick={() => store.setFilter('')}>Clear filter</button>
         {/if}
@@ -178,6 +231,19 @@
               <button class="accent" onclick={() => store.playPlaylist(playlist.id)}>
                 Play
               </button>
+              {#if store.isRssProvider}
+                <button onclick={() => store.refreshRssFeed(playlist.id)}>Refresh</button>
+                {#if removingFeed === playlist.id}
+                  <button class="danger" onclick={() => removeFeed(playlist.id)}>
+                    Remove?
+                  </button>
+                  <button onclick={() => (removingFeed = null)}>Cancel</button>
+                {:else}
+                  <button class="danger" onclick={() => (removingFeed = playlist.id)}>
+                    Remove
+                  </button>
+                {/if}
+              {/if}
             </div>
           </article>
         {/each}
@@ -509,6 +575,7 @@
   .actions {
     display: flex;
     gap: 0.35rem;
+    flex-wrap: wrap;
     grid-column: 2;
   }
 

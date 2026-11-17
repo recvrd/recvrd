@@ -59,6 +59,11 @@ playlist* button and the playlist edit actions appear only when the active
 provider reports the matching capability. The auth banner shows the auth
 state of the active provider.
 
+With the RSS provider active, the library shows *Add feed* and *Refresh
+feeds* in the header, and each feed card has *Refresh* and *Remove*
+actions. A feed is a playlist: open it to see its episodes, and play or
+queue them like any other track.
+
 The now-playing bar has two layouts:
 
 - **compact** shows the track on the left, the transport above the seek bar,

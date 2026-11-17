@@ -47,6 +47,13 @@ pub trait TrackDownloader: Send + Sync {
         output: &Path,
         progress: &(dyn Fn(usize) + Send + Sync),
     ) -> Result<(), DownloadError>;
+
+    /// The audio file extension for a track, without the dot.
+    /// YouTube tracks use `mp4`. A provider with other formats
+    /// returns the extension of the track it will download.
+    fn audio_extension(&self, _track: &Track) -> String {
+        "mp4".to_string()
+    }
 }
 
 pub type MessageHandler = Arc<dyn Fn(DownloadManagerMessage) + Send + Sync + 'static>;
@@ -54,9 +61,9 @@ pub type MessageHandler = Arc<dyn Fn(DownloadManagerMessage) + Send + Sync + 'st
 /// Check that a previous download is complete. The metadata sidecar
 /// and a non-empty audio file must both exist. A sidecar alone is not
 /// enough, since the audio file can be deleted on its own.
-fn is_complete_download(mp4: &Path, json: &Path) -> bool {
+fn is_complete_download(audio: &Path, json: &Path) -> bool {
     json.exists()
-        && mp4
+        && audio
             .metadata()
             .map(|metadata| metadata.len() > 0)
             .unwrap_or(false)
@@ -264,10 +271,11 @@ impl DownloadManager {
         ));
 
         let downloads = self.cache_dir.join("downloads");
-        let mp4 = key.download_file(&downloads, "mp4");
+        let extension = self.downloader.audio_extension(&song);
+        let audio = key.download_file(&downloads, &extension);
         let json = key.download_file(&downloads, "json");
         let part = key.download_file(&downloads, "part");
-        if let Some(parent) = mp4.parent()
+        if let Some(parent) = audio.parent()
             && let Err(error) = std::fs::create_dir_all(parent)
         {
             log::error!("could not create the download directory: {error}");
@@ -279,7 +287,7 @@ impl DownloadManager {
             return false;
         }
 
-        if is_complete_download(&mp4, &json) {
+        if is_complete_download(&audio, &json) {
             self.set_status(&key, MusicDownloadStatus::Downloaded);
             s(DownloadManagerMessage::VideoStatusUpdate(
                 key,
@@ -288,7 +296,7 @@ impl DownloadManager {
             return true;
         }
 
-        let _ = std::fs::remove_file(&mp4);
+        let _ = std::fs::remove_file(&audio);
         let _ = std::fs::remove_file(&part);
 
         let mut attempt = 0;
@@ -309,9 +317,9 @@ impl DownloadManager {
 
             match self.handle_download(&song, &part, &reporter).await {
                 Ok(()) => {
-                    if let Err(error) = self.finalize(&song, &part, &mp4, &json) {
+                    if let Err(error) = self.finalize(&song, &part, &audio, &json) {
                         log::error!("couldn't finalize download for {key}: {error}");
-                        let _ = std::fs::remove_file(&mp4);
+                        let _ = std::fs::remove_file(&audio);
                         let _ = std::fs::remove_file(&part);
                         self.set_status(&key, MusicDownloadStatus::DownloadFailed);
                         s(DownloadManagerMessage::VideoStatusUpdate(
@@ -365,10 +373,21 @@ impl DownloadManager {
         &self,
         song: &Track,
         part: &std::path::Path,
-        mp4: &std::path::Path,
+        audio: &std::path::Path,
         json: &std::path::Path,
     ) -> Result<(), DownloadError> {
-        std::fs::rename(part, mp4)?;
+        std::fs::rename(part, audio)?;
+        // Drop audio files with other extensions for this track. An
+        // enclosure can change format between fetches, and a stale
+        // file would play instead of the new one.
+        if let Some(dir) = audio.parent() {
+            for other in common_structs::AUDIO_EXTENSIONS {
+                let stale = dir.join(format!("{}.{other}", song.key().id));
+                if stale != audio {
+                    let _ = std::fs::remove_file(&stale);
+                }
+            }
+        }
         let serialized = serde_json::to_string(song)
             .map_err(|error| DownloadError::IoError(std::io::Error::other(error)))?;
         std::fs::write(json, serialized)?;
@@ -459,6 +478,7 @@ mod tests {
     /// tests cannot use it.
     struct FakeDownloader {
         script: PathBuf,
+        extension: &'static str,
     }
 
     fn parse_progress(line: &str) -> Option<usize> {
@@ -514,6 +534,10 @@ mod tests {
             progress(100);
             Ok(())
         }
+
+        fn audio_extension(&self, _track: &Track) -> String {
+            self.extension.to_string()
+        }
     }
 
     fn manager(dir: &TempDir, script: PathBuf, max_retries: u32) -> (DownloadManager, PathBuf) {
@@ -522,9 +546,17 @@ mod tests {
         fs::create_dir_all(&downloads).unwrap();
         let database: &'static YTLocalDatabase =
             Box::leak(Box::new(YTLocalDatabase::new(cache.clone())));
-        let manager = DownloadManager::new(cache, database, 1, Arc::new(FakeDownloader { script }))
-            .with_max_retries(max_retries)
-            .with_retry_delay(Duration::ZERO);
+        let manager = DownloadManager::new(
+            cache,
+            database,
+            1,
+            Arc::new(FakeDownloader {
+                script,
+                extension: "mp4",
+            }),
+        )
+        .with_max_retries(max_retries)
+        .with_retry_delay(Duration::ZERO);
         (manager, downloads)
     }
 
@@ -665,6 +697,48 @@ mod tests {
             manager.status(&TrackKey::youtube("dQw4w9WgXcQ")),
             Some(MusicDownloadStatus::Downloaded)
         );
+    }
+
+    #[tokio::test]
+    async fn download_uses_the_backend_audio_extension() {
+        let _guard = serial().await;
+        let dir = tempdir().unwrap();
+        let path = script(dir.path(), &success_script(false));
+        let cache = dir.path().join("cache");
+        let downloads = cache.join("downloads");
+        fs::create_dir_all(&downloads).unwrap();
+        let database: &'static YTLocalDatabase =
+            Box::leak(Box::new(YTLocalDatabase::new(cache.clone())));
+        let manager = DownloadManager::new(
+            cache,
+            database,
+            1,
+            Arc::new(FakeDownloader {
+                script: path,
+                extension: "mp3",
+            }),
+        )
+        .with_max_retries(0)
+        .with_retry_delay(Duration::ZERO);
+        let (handler, _messages) = collector();
+
+        let track = Track {
+            provider: ProviderId::Rss,
+            track_id: "0123456789abcdef0123456789abcdef".to_string(),
+            title: "Song".to_string(),
+            author: "Artist".to_string(),
+            album: "Album".to_string(),
+            duration: "3:00".to_string(),
+        };
+        assert!(manager.start_download(track, handler).await);
+        let scoped = downloads.join("rss");
+        assert!(scoped.join("0123456789abcdef0123456789abcdef.mp3").exists());
+        assert!(
+            scoped
+                .join("0123456789abcdef0123456789abcdef.json")
+                .exists()
+        );
+        assert!(!scoped.join("0123456789abcdef0123456789abcdef.mp4").exists());
     }
 
     #[tokio::test]

@@ -4,6 +4,7 @@ import type { Playlist } from '@api/Playlist';
 import type { PlaylistDetail } from '@api/PlaylistDetail';
 import type { ProviderInfo } from '@api/ProviderInfo';
 import type { Queue } from '@api/Queue';
+import type { RssFeed } from '@api/RssFeed';
 import type { SearchResults } from '@api/SearchResults';
 import type { Status } from '@api/Status';
 import type { Track } from '@api/Track';
@@ -100,6 +101,17 @@ export function makeSearchResults(
   return { tracks, playlists };
 }
 
+export function makeRssFeed(overrides: Partial<RssFeed> = {}): RssFeed {
+  return {
+    id: '0123456789abcdef',
+    url: 'https://example.com/feed.xml',
+    title: 'Test Tones',
+    episode_count: 2,
+    last_fetched: 100n,
+    ...overrides,
+  };
+}
+
 export function makeApi(
   overrides: Partial<YtermusicdApi> = {},
   initialQueue: Queue = makeQueue(),
@@ -109,6 +121,7 @@ export function makeApi(
   let queue = initialQueue;
   const playlists = [makePlaylist('p1'), makePlaylist('p2')];
   const tracks = [makeTrack('v1'), makeTrack('v2')];
+  const feeds = [makeRssFeed()];
 
   const api: YtermusicdApi = {
     status: vi.fn(async () => status),
@@ -253,6 +266,22 @@ export function makeApi(
       return status;
     }),
     retryDownload: vi.fn(async () => undefined),
+    rssFeeds: vi.fn(async () => feeds),
+    addRssFeed: vi.fn(async (url: string) => {
+      const feed = makeRssFeed({ id: `feed-${feeds.length}`, url, title: 'New Feed' });
+      feeds.push(feed);
+      return feed;
+    }),
+    removeRssFeed: vi.fn(async (id: string) => {
+      const index = feeds.findIndex((feed) => feed.id === id);
+      if (index >= 0) feeds.splice(index, 1);
+      return { ok: true };
+    }),
+    refreshRssFeed: vi.fn(async (id: string) => {
+      const feed = feeds.find((entry) => entry.id === id) ?? makeRssFeed({ id });
+      return { ...feed };
+    }),
+    refreshRssFeeds: vi.fn(async () => feeds),
     ...overrides,
   };
 

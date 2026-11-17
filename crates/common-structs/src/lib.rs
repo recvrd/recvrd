@@ -4,4 +4,4 @@ mod provider;
 
 pub use app_status::AppStatus;
 pub use music_download_status::MusicDownloadStatus;
-pub use provider::{ProviderId, TrackKey, UnknownProvider};
+pub use provider::{AUDIO_EXTENSIONS, ProviderId, TrackKey, UnknownProvider};

@@ -1,9 +1,10 @@
 [workspace]
 resolver = "3"
-members = ["crates/common-structs","crates/database", "crates/download-manager","crates/player", "crates/provider-youtube", "crates/ytermusic", "crates/ytmc", "crates/ytermusicd", "crates/ytermusicd-api", "crates/ytermusicd-client", "crates/ytermusicd-core", "crates/ytpapi2"]
+members = ["crates/common-structs","crates/database", "crates/download-manager","crates/player", "crates/provider-rss", "crates/provider-youtube", "crates/ytermusic", "crates/ytmc", "crates/ytermusicd", "crates/ytermusicd-api", "crates/ytermusicd-client", "crates/ytermusicd-core", "crates/ytpapi2"]
 
 [workspace.dependencies]
 player = { path = "crates/player" }
+provider-rss = { path = "crates/provider-rss" }
 provider-youtube = { path = "crates/provider-youtube" }
 ytpapi2 = { path = "crates/ytpapi2" }
 database = { path = "crates/database" }
