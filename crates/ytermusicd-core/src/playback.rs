@@ -81,7 +81,7 @@ pub struct PlaybackService<S: AudioSink> {
 }
 
 impl<S: AudioSink> PlaybackService<S> {
-    pub fn new(sink: S, cache_dir: impl Into<PathBuf>) -> Self {
+    pub fn new(sink: S, cache_dir: impl Into<PathBuf>, initial_volume: u8) -> Self {
         let queue = Queue::new();
         let events = EventBus::new(Snapshot {
             playback: PlaybackSnapshot::default(),
@@ -92,7 +92,7 @@ impl<S: AudioSink> PlaybackService<S> {
             status: PlaybackStatus::Stopped,
             position: Duration::ZERO,
             started_at: None,
-            volume: 50,
+            volume: initial_volume.min(100),
             sink,
             cache_dir: cache_dir.into(),
             events,
@@ -611,7 +611,7 @@ mod tests {
     }
 
     fn service() -> PlaybackService<MockSink> {
-        PlaybackService::new(MockSink::default(), "/tmp/ytermusicd-test")
+        PlaybackService::new(MockSink::default(), "/tmp/ytermusicd-test", 50)
     }
 
     #[test]
@@ -800,6 +800,18 @@ mod tests {
     }
 
     #[test]
+    fn new_uses_initial_volume() {
+        let service = PlaybackService::new(MockSink::default(), "/tmp/ytermusicd-test", 75);
+        assert_eq!(service.snapshot().volume, 75);
+    }
+
+    #[test]
+    fn new_clamps_initial_volume() {
+        let service = PlaybackService::new(MockSink::default(), "/tmp/ytermusicd-test", 150);
+        assert_eq!(service.snapshot().volume, 100);
+    }
+
+    #[test]
     fn download_status_is_published() {
         let mut service = service();
         service.play_playlist(tracks(1)).unwrap();
@@ -934,7 +946,7 @@ mod tests {
     #[test]
     fn wait_for_downloads_starts_when_file_is_ready() {
         let dir = tempfile::tempdir().unwrap();
-        let mut service = PlaybackService::new(MockSink::default(), dir.path());
+        let mut service = PlaybackService::new(MockSink::default(), dir.path(), 50);
         service.set_wait_for_downloads(true);
         service.play_playlist(tracks(1)).unwrap();
 
