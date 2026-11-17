@@ -58,7 +58,11 @@ fn render_library(
     state: &mut TableState,
     hitmap: &mut HitMap,
 ) {
-    let block = block(format!(" Library · {} playlists ", app.playlists.len()));
+    let block = block(format!(
+        " Library · {} · {} playlists ",
+        app.provider_name(),
+        app.playlists.len()
+    ));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if inner.height == 0 || inner.width == 0 {

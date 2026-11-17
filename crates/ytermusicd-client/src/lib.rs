@@ -12,9 +12,10 @@ use std::time::Duration;
 use ytermusicd_api::{
     AddPlaylistTracksRequest, CreatePlaylistRequest, ErrorEnvelope, Event,
     MovePlaylistTrackRequest, OkResponse, PlayNextRequest, PlayPlaylistRequest, PlayTrackRequest,
-    Playlist, PlaylistDetail, ProviderId, Queue, QueueRequest, RemovePlaylistTracksRequest,
-    RemoveQueueRequest, ReorderQueueRequest, RepeatRequest, RetryDownloadRequest, SearchResults,
-    SeekRequest, ShuffleRequest, Status, Track, TrackKey, UpdatePlaylistRequest, VolumeRequest,
+    Playlist, PlaylistDetail, ProviderId, ProviderInfo, Queue, QueueRequest,
+    RemovePlaylistTracksRequest, RemoveQueueRequest, ReorderQueueRequest, RepeatRequest,
+    RetryDownloadRequest, SearchResults, SeekRequest, ShuffleRequest, Status, Track, TrackKey,
+    UpdatePlaylistRequest, VolumeRequest,
 };
 
 /// Default daemon URL.
@@ -203,15 +204,30 @@ impl DaemonClient {
         self.get("/api/status").await
     }
 
-    /// Return all library playlists.
-    pub async fn playlists(&self) -> Result<Vec<Playlist>, DaemonError> {
-        self.get("/api/playlists").await
+    /// Return every provider the daemon knows, with its capabilities
+    /// and its auth state.
+    pub async fn providers(&self) -> Result<Vec<ProviderInfo>, DaemonError> {
+        self.get("/api/providers").await
+    }
+
+    /// Return all library playlists for one provider.
+    pub async fn playlists(&self, provider: ProviderId) -> Result<Vec<Playlist>, DaemonError> {
+        self.get(&format!("/api/playlists?provider={}", provider.as_str()))
+            .await
     }
 
     /// Return one playlist and its tracks.
-    pub async fn playlist(&self, playlist_id: &str) -> Result<PlaylistDetail, DaemonError> {
-        self.get(&format!("/api/playlists/{}", encode(playlist_id)))
-            .await
+    pub async fn playlist(
+        &self,
+        provider: ProviderId,
+        playlist_id: &str,
+    ) -> Result<PlaylistDetail, DaemonError> {
+        self.get(&format!(
+            "/api/playlists/{}?provider={}",
+            encode(playlist_id),
+            provider.as_str()
+        ))
+        .await
     }
 
     /// Create a playlist.
@@ -282,9 +298,18 @@ impl DaemonClient {
         .await
     }
 
-    /// Search tracks and playlists.
-    pub async fn search(&self, query: &str) -> Result<SearchResults, DaemonError> {
-        self.get(&format!("/api/search?q={}", encode(query))).await
+    /// Search tracks and playlists for one provider.
+    pub async fn search(
+        &self,
+        provider: ProviderId,
+        query: &str,
+    ) -> Result<SearchResults, DaemonError> {
+        self.get(&format!(
+            "/api/search?provider={}&q={}",
+            provider.as_str(),
+            encode(query)
+        ))
+        .await
     }
 
     /// Return the queue snapshot.
@@ -293,11 +318,16 @@ impl DaemonClient {
     }
 
     /// Replace the queue with a playlist and start playback.
-    pub async fn play_playlist(&self, playlist_id: &str) -> Result<Status, DaemonError> {
+    pub async fn play_playlist(
+        &self,
+        provider: ProviderId,
+        playlist_id: &str,
+    ) -> Result<Status, DaemonError> {
         self.post(
             "/api/play/playlist",
             &PlayPlaylistRequest {
                 playlist_id: playlist_id.to_string(),
+                provider,
             },
         )
         .await
@@ -612,6 +642,7 @@ mod tests {
             queue_length: 1,
             downloads: DownloadSummary::default(),
             providers: vec![ProviderId::Youtube],
+            default_provider: ProviderId::Youtube,
         }
     }
 
@@ -630,6 +661,9 @@ mod tests {
     async fn mock_router(state: MockState) -> (String, tokio::task::JoinHandle<()>) {
         let router = Router::new()
             .route("/api/status", get(mock_status))
+            .route("/api/providers", get(mock_providers))
+            .route("/api/playlists", get(mock_playlists))
+            .route("/api/search", get(mock_search))
             .route("/api/queue/remove", post(mock_queue_remove))
             .route("/api/downloads/retry", post(mock_retry))
             .route("/api/events", get(mock_events))
@@ -640,6 +674,59 @@ mod tests {
             axum::serve(listener, router).await.unwrap();
         });
         (format!("http://{addr}"), handle)
+    }
+
+    async fn mock_providers(State(state): State<MockState>) -> Response {
+        state
+            .calls
+            .lock()
+            .unwrap()
+            .push("GET /api/providers".to_string());
+        axum::Json(vec![ProviderInfo::new(
+            ProviderId::Youtube,
+            AuthStatus {
+                state: AuthState::Ok,
+                source: None,
+                message: None,
+            },
+        )])
+        .into_response()
+    }
+
+    async fn mock_playlists(
+        State(state): State<MockState>,
+        axum::extract::Query(query): axum::extract::Query<
+            std::collections::HashMap<String, String>,
+        >,
+    ) -> Response {
+        state.calls.lock().unwrap().push(format!(
+            "GET /api/playlists?provider={}",
+            query.get("provider").map(String::as_str).unwrap_or("")
+        ));
+        axum::Json(vec![Playlist {
+            id: "p1".to_string(),
+            name: "Playlist One".to_string(),
+            subtitle: "Artist".to_string(),
+        }])
+        .into_response()
+    }
+
+    async fn mock_search(
+        State(state): State<MockState>,
+        axum::extract::Query(query): axum::extract::Query<
+            std::collections::HashMap<String, String>,
+        >,
+    ) -> Response {
+        state.calls.lock().unwrap().push(format!(
+            "GET /api/search?provider={}&q={}",
+            query.get("provider").map(String::as_str).unwrap_or(""),
+            query.get("q").map(String::as_str).unwrap_or("")
+        ));
+        axum::Json(SearchResults {
+            tracks: vec![track("v3")],
+            playlists: vec![],
+        })
+        .into_response()
     }
 
     async fn mock_status(State(state): State<MockState>) -> Response {
@@ -705,6 +792,27 @@ mod tests {
             .header(CONTENT_TYPE, "text/event-stream")
             .body(Body::from(body))
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn provider_calls_send_the_provider() {
+        let state = MockState::default();
+        let (base, handle) = mock_router(state.clone()).await;
+        let client = DaemonClient::new(base).unwrap();
+        let providers = client.providers().await.unwrap();
+        assert_eq!(providers.len(), 1);
+        assert_eq!(providers[0].id, ProviderId::Youtube);
+        assert_eq!(providers[0].name, "YouTube Music");
+        assert!(providers[0].default);
+        let playlists = client.playlists(ProviderId::Youtube).await.unwrap();
+        assert_eq!(playlists[0].id, "p1");
+        let results = client.search(ProviderId::Youtube, "test").await.unwrap();
+        assert_eq!(results.tracks[0].track_id, "v3");
+        let calls = state.calls.lock().unwrap();
+        assert!(calls.contains(&"GET /api/providers".to_string()));
+        assert!(calls.contains(&"GET /api/playlists?provider=youtube".to_string()));
+        assert!(calls.contains(&"GET /api/search?provider=youtube&q=test".to_string()));
+        handle.abort();
     }
 
     #[tokio::test]

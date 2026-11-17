@@ -11,7 +11,7 @@ use rmcp::{
 use serde::{Deserialize, Serialize};
 use ytermusicd_api::{
     CreatePlaylistRequest, DownloadSummary, OkResponse, Playlist, PlaylistDetail, PlaylistPrivacy,
-    ProviderId, Queue, QueueItem, RepeatMode, SearchResults, Status, Track, TrackKey,
+    ProviderId, ProviderInfo, Queue, QueueItem, RepeatMode, SearchResults, Status, Track, TrackKey,
     UpdatePlaylistRequest,
 };
 use ytermusicd_client::DaemonClient;
@@ -54,12 +54,25 @@ impl McpServer {
 pub struct SearchArgs {
     /// Text to search for.
     pub query: String,
+    /// Provider to search. Default: youtube.
+    #[serde(default)]
+    pub provider: ProviderId,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct PlaylistArgs {
     /// Playlist ID from list_playlists or search.
     pub playlist_id: String,
+    /// Provider the playlist belongs to. Default: youtube.
+    #[serde(default)]
+    pub provider: ProviderId,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ListPlaylistsArgs {
+    /// Provider to list. Default: youtube.
+    #[serde(default)]
+    pub provider: ProviderId,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -182,23 +195,37 @@ pub struct DownloadStatusOutput {
 
 #[tool_router]
 impl McpServer {
+    /// List every provider the daemon knows, with its capabilities
+    /// and its auth state.
+    #[tool(description = "List the providers the daemon knows, with capabilities and auth state")]
+    async fn list_providers(&self) -> Result<Json<Vec<ProviderInfo>>, McpError> {
+        self.client.providers().await.map(Json).map_err(to_mcp)
+    }
+
     /// Search YouTube Music for tracks and playlists.
-    #[tool(description = "Search YouTube Music for tracks and playlists")]
+    #[tool(description = "Search one provider for tracks and playlists")]
     async fn search(
         &self,
         Parameters(args): Parameters<SearchArgs>,
     ) -> Result<Json<SearchResults>, McpError> {
         self.client
-            .search(&args.query)
+            .search(args.provider, &args.query)
             .await
             .map(Json)
             .map_err(to_mcp)
     }
 
     /// List the playlists in the YouTube Music library.
-    #[tool(description = "List the playlists in the YouTube Music library")]
-    async fn list_playlists(&self) -> Result<Json<Vec<Playlist>>, McpError> {
-        self.client.playlists().await.map(Json).map_err(to_mcp)
+    #[tool(description = "List the playlists in one provider library")]
+    async fn list_playlists(
+        &self,
+        Parameters(args): Parameters<ListPlaylistsArgs>,
+    ) -> Result<Json<Vec<Playlist>>, McpError> {
+        self.client
+            .playlists(args.provider)
+            .await
+            .map(Json)
+            .map_err(to_mcp)
     }
 
     /// Get one playlist and its tracks.
@@ -208,7 +235,7 @@ impl McpServer {
         Parameters(args): Parameters<PlaylistArgs>,
     ) -> Result<Json<PlaylistDetail>, McpError> {
         self.client
-            .playlist(&args.playlist_id)
+            .playlist(args.provider, &args.playlist_id)
             .await
             .map(Json)
             .map_err(to_mcp)
@@ -307,7 +334,7 @@ impl McpServer {
         Parameters(args): Parameters<PlaylistArgs>,
     ) -> Result<Json<Status>, McpError> {
         self.client
-            .play_playlist(&args.playlist_id)
+            .play_playlist(args.provider, &args.playlist_id)
             .await
             .map(Json)
             .map_err(to_mcp)
@@ -615,6 +642,7 @@ mod tests {
                 failed: 0,
             },
             providers: vec![ProviderId::Youtube],
+            default_provider: ProviderId::Youtube,
         }
     }
 
@@ -633,6 +661,7 @@ mod tests {
     async fn mock_router(state: MockState) -> (String, tokio::task::JoinHandle<()>) {
         let router = Router::new()
             .route("/api/status", get(mock_status))
+            .route("/api/providers", get(mock_providers))
             .route(
                 "/api/playlists",
                 get(mock_playlists).post(mock_create_playlist),
@@ -692,6 +721,22 @@ mod tests {
             return Err(StatusCode::BAD_GATEWAY);
         }
         Ok(AxumJson(status()))
+    }
+
+    async fn mock_providers(State(state): State<MockState>) -> AxumJson<Vec<ProviderInfo>> {
+        state
+            .calls
+            .lock()
+            .unwrap()
+            .push("GET /api/providers".to_string());
+        AxumJson(vec![ProviderInfo::new(
+            ProviderId::Youtube,
+            AuthStatus {
+                state: AuthState::Ok,
+                source: None,
+                message: None,
+            },
+        )])
     }
 
     async fn mock_playlists(State(state): State<MockState>) -> AxumJson<Vec<Playlist>> {
@@ -974,6 +1019,7 @@ mod tests {
                 "download_status",
                 "get_playlist",
                 "list_playlists",
+                "list_providers",
                 "move_playlist_track",
                 "next",
                 "now_playing",
@@ -997,6 +1043,25 @@ mod tests {
                 "volume",
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn lists_providers_with_capabilities() {
+        let (server, state, handle) = server().await;
+        let Json(providers) = server.list_providers().await.unwrap();
+        assert_eq!(providers.len(), 1);
+        assert_eq!(providers[0].id, ProviderId::Youtube);
+        assert_eq!(providers[0].name, "YouTube Music");
+        assert!(providers[0].default);
+        assert!(providers[0].capabilities.search);
+        assert!(
+            state
+                .calls
+                .lock()
+                .unwrap()
+                .contains(&"GET /api/providers".to_string())
+        );
+        handle.abort();
     }
 
     #[tokio::test]
@@ -1025,6 +1090,7 @@ mod tests {
         let Json(deleted) = server
             .delete_playlist(Parameters(PlaylistArgs {
                 playlist_id: "p1".to_string(),
+                provider: ProviderId::Youtube,
             }))
             .await
             .unwrap();
@@ -1077,17 +1143,24 @@ mod tests {
         let Json(found) = server
             .search(Parameters(SearchArgs {
                 query: "test".to_string(),
+                provider: ProviderId::Youtube,
             }))
             .await
             .unwrap();
         assert_eq!(found.tracks[0].track_id, "v1");
 
-        let Json(playlists) = server.list_playlists().await.unwrap();
+        let Json(playlists) = server
+            .list_playlists(Parameters(ListPlaylistsArgs {
+                provider: ProviderId::Youtube,
+            }))
+            .await
+            .unwrap();
         assert_eq!(playlists[0].id, "p1");
 
         let Json(detail) = server
             .get_playlist(Parameters(PlaylistArgs {
                 playlist_id: "p1".to_string(),
+                provider: ProviderId::Youtube,
             }))
             .await
             .unwrap();
@@ -1156,6 +1229,7 @@ mod tests {
             server
                 .play_playlist(Parameters(PlaylistArgs {
                     playlist_id: "p1".to_string(),
+                    provider: ProviderId::Youtube,
                 }))
                 .await
                 .unwrap()
@@ -1314,6 +1388,7 @@ mod tests {
             server
                 .get_playlist(Parameters(PlaylistArgs {
                     playlist_id: "p9".to_string(),
+                    provider: ProviderId::Youtube,
                 }))
                 .await,
         );

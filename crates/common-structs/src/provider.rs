@@ -26,6 +26,25 @@ pub enum ProviderId {
 }
 
 impl ProviderId {
+    /// All providers the daemon knows, in display order.
+    /// YouTube Music is the only provider today. New providers
+    /// add a variant here and an entry in this list.
+    pub const fn all() -> &'static [Self] {
+        &[Self::Youtube]
+    }
+
+    /// The default provider for a fresh install.
+    pub const fn default_provider() -> Self {
+        Self::Youtube
+    }
+
+    /// The display name for the provider, as shown in clients.
+    pub const fn display_name(&self) -> &'static str {
+        match self {
+            Self::Youtube => "YouTube Music",
+        }
+    }
+
     /// The provider name as it appears in JSON and in cache paths.
     pub const fn as_str(&self) -> &'static str {
         match self {
@@ -138,6 +157,13 @@ impl fmt::Display for TrackKey {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn provider_list_has_youtube_as_the_default() {
+        assert_eq!(ProviderId::all(), &[ProviderId::Youtube]);
+        assert_eq!(ProviderId::default_provider(), ProviderId::Youtube);
+        assert_eq!(ProviderId::Youtube.display_name(), "YouTube Music");
+    }
 
     #[test]
     fn youtube_accepts_eleven_char_ids() {

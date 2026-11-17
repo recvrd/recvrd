@@ -43,6 +43,7 @@ async fn mock_daemon() -> String {
         queue_length: 1,
         downloads: DownloadSummary::default(),
         providers: vec![ProviderId::Youtube],
+        default_provider: ProviderId::Youtube,
     };
     let router = Router::new().route(
         "/api/status",
@@ -144,12 +145,13 @@ async fn mcp_stdio_lists_tools_and_exits_on_eof() {
         .iter()
         .map(|tool| tool["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names.len(), 27);
+    assert_eq!(names.len(), 28);
     assert!(names.contains(&"search"));
     assert!(names.contains(&"download_status"));
     assert!(names.contains(&"create_playlist"));
     assert!(names.contains(&"seek"));
     assert!(names.contains(&"queue_clear"));
+    assert!(names.contains(&"list_providers"));
 
     send(
         &mut stdin,

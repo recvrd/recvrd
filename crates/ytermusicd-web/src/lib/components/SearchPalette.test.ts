@@ -48,7 +48,7 @@ describe('SearchPalette', () => {
     await fireEvent.keyDown(input, { key: 'Enter' });
     await tick();
 
-    expect(api.playlist).toHaveBeenCalledWith('p1');
+    expect(api.playlist).toHaveBeenCalledWith('p1', 'youtube');
     expect(store.view).toEqual({ kind: 'playlist', id: 'p1', name: 'Playlist p1' });
   });
 

@@ -6,6 +6,7 @@ import {
   downloadStatus,
   makeApi,
   makePlaylist,
+  makeProviderInfo,
   makeQueue,
   makeStatus,
   makeTrack,
@@ -67,11 +68,50 @@ describe('AppStore', () => {
 
     expect(api.status).toHaveBeenCalledOnce();
     expect(api.playlists).toHaveBeenCalledOnce();
+    expect(api.providers).toHaveBeenCalledOnce();
+    expect(store.providers).toHaveLength(1);
+    expect(store.activeProvider).toBe('youtube');
+    expect(store.activeProviderName).toBe('YouTube Music');
     expect(store.playlists).toHaveLength(2);
     expect(sources[0].url).toBe('/api/events');
 
     sources[0].open();
     expect(store.connection).toBe('online');
+    store.dispose();
+  });
+
+  it('loads providers and scopes the library to the default', async () => {
+    const { api, store } = setup();
+    await store.init();
+    expect(api.providers).toHaveBeenCalledOnce();
+    expect(store.providers).toHaveLength(1);
+    expect(store.activeProvider).toBe('youtube');
+    expect(api.playlists).toHaveBeenCalledWith('youtube');
+    expect(store.canCreatePlaylist).toBe(true);
+    // Switching to the active provider again does nothing.
+    await store.setProvider('youtube');
+    expect(api.playlists).toHaveBeenCalledTimes(1);
+    store.dispose();
+  });
+
+  it('hides playlist creation when the provider lacks the capability', async () => {
+    const { api, store } = setup();
+    api.providers = vi.fn(async () => [
+      makeProviderInfo({
+        capabilities: {
+          search: true,
+          library: true,
+          playlists: true,
+          playlist_create: false,
+          playlist_edit: false,
+          downloads: true,
+          covers: true,
+        },
+      }),
+    ]);
+    await store.init();
+    expect(store.canCreatePlaylist).toBe(false);
+    expect(store.canEditPlaylist).toBe(false);
     store.dispose();
   });
 
@@ -332,7 +372,7 @@ describe('AppStore', () => {
     expect(api.search).not.toHaveBeenCalled();
 
     await vi.advanceTimersByTimeAsync(250);
-    expect(api.search).toHaveBeenCalledWith('civilization');
+    expect(api.search).toHaveBeenCalledWith('civilization', 'youtube');
     expect(store.searchResults?.tracks).toHaveLength(2);
     store.dispose();
   });
@@ -351,7 +391,7 @@ describe('AppStore', () => {
     window.history.replaceState(null, '', '/#/playlist/p1');
     const { api, store } = setup();
     await store.init();
-    expect(api.playlist).toHaveBeenCalledWith('p1');
+    expect(api.playlist).toHaveBeenCalledWith('p1', 'youtube');
     expect(store.view).toEqual({ kind: 'playlist', id: 'p1' });
     expect(store.playlist?.tracks).toHaveLength(2);
     store.dispose();

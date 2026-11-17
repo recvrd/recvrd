@@ -25,15 +25,16 @@
   );
 
   const auth = $derived.by(() => {
-    if (!store.status) return null;
+    const providerAuth = store.activeProviderInfo?.auth ?? store.status?.auth ?? null;
+    if (!providerAuth) return null;
     if (store.authExpired) {
       return {
-        ...store.status.auth,
+        ...providerAuth,
         state: 'invalid' as const,
-        message: 'YouTube Music rejected the request. Refresh headers.txt.',
+        message: `${store.activeProviderName} rejected the request. Refresh headers.txt.`,
       };
     }
-    return store.status.auth;
+    return providerAuth;
   });
 
   onMount(() => {
@@ -76,6 +77,18 @@
       <span class="slash" aria-hidden="true">$</span>
       {title}
     </div>
+    <label class="provider-select" title="Music provider">
+      <span class="visually-hidden">Music provider</span>
+      <select
+        aria-label="Music provider"
+        value={store.activeProvider}
+        onchange={(event) => void store.setProvider(event.currentTarget.value as 'youtube')}
+      >
+        {#each store.providers as provider (provider.id)}
+          <option value={provider.id}>{provider.name}</option>
+        {/each}
+      </select>
+    </label>
     <button class="search-button" onclick={() => store.openSearch()}>
       <span aria-hidden="true">⌕</span>
       <span>Search</span>
@@ -99,7 +112,7 @@
     error={store.error}
     onretry={() => store.retryConnection()}
   />
-  <AuthBanner {auth} />
+  <AuthBanner {auth} providerName={store.activeProviderName} />
 
   {#if store.error && store.connection === 'online'}
     <div class="error-banner" role="alert">
@@ -182,6 +195,28 @@
   .slash {
     color: var(--fg-muted);
     margin-right: 0.35rem;
+  }
+
+  .provider-select select {
+    background: color-mix(in srgb, var(--bg-raised) 33%, transparent);
+    color: var(--fg-muted);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0.3rem 0.4rem;
+    font-size: 0.78rem;
+  }
+
+  .provider-select select:hover {
+    color: var(--accent);
+  }
+
+  .visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
   }
 
   .search-button {

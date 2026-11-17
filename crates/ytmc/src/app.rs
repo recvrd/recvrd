@@ -5,8 +5,8 @@ use std::time::{Duration, Instant};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::widgets::{ListState, TableState};
 use ytermusicd_api::{
-    AuthState, DownloadStatus, PlaybackState, Playlist, PlaylistDetail, Queue, RepeatMode,
-    SearchResults, Status, Track, TrackKey,
+    AuthState, DownloadStatus, PlaybackState, Playlist, PlaylistDetail, ProviderId, ProviderInfo,
+    Queue, RepeatMode, SearchResults, Status, Track, TrackKey,
 };
 
 use crate::cover::CoverArt;
@@ -275,6 +275,10 @@ pub struct App {
     pub connection_message: Option<String>,
     /// Latest status.
     pub status: Option<Status>,
+    /// Active provider for library and search requests.
+    pub provider: ProviderId,
+    /// Providers the daemon knows.
+    pub providers: Vec<ProviderInfo>,
     /// Latest queue.
     pub queue: Queue,
     /// Library playlists.
@@ -331,6 +335,8 @@ impl App {
             connection: Connection::Connecting,
             connection_message: None,
             status: None,
+            provider: ProviderId::Youtube,
+            providers: Vec::new(),
             queue: Queue::default(),
             playlists: Vec::new(),
             playlist: None,
@@ -359,7 +365,32 @@ impl App {
 
     /// Return the commands to run at startup.
     pub fn initial_commands(&self) -> Vec<Command> {
-        vec![Command::RefreshPlaylists]
+        vec![Command::RefreshProviders, Command::RefreshPlaylists]
+    }
+
+    /// Return the display name of the active provider.
+    pub fn provider_name(&self) -> &'static str {
+        self.provider.display_name()
+    }
+
+    /// Cycle to the next provider. With one provider, report that
+    /// there is nothing to switch to.
+    pub fn cycle_provider(&mut self) -> Vec<Command> {
+        if self.providers.len() < 2 {
+            self.show_toast(
+                ToastLevel::Info,
+                format!("{} is the only provider.", self.provider_name()),
+            );
+            return Vec::new();
+        }
+        let current = self
+            .providers
+            .iter()
+            .position(|provider| provider.id == self.provider)
+            .unwrap_or(0);
+        let next = self.providers[(current + 1) % self.providers.len()].id;
+        self.provider = next;
+        vec![Command::SetProvider(next)]
     }
 
     /// Return the current track.
@@ -497,6 +528,22 @@ impl App {
                 Vec::new()
             }
             DaemonEvent::LibraryChanged => self.refresh_library(),
+            DaemonEvent::Providers(providers) => {
+                let known: Vec<ProviderId> = providers.iter().map(|provider| provider.id).collect();
+                self.providers = providers;
+                if known.contains(&self.provider) {
+                    Vec::new()
+                } else {
+                    let default = self
+                        .providers
+                        .iter()
+                        .find(|provider| provider.default)
+                        .map(|provider| provider.id)
+                        .unwrap_or(ProviderId::default_provider());
+                    self.provider = default;
+                    vec![Command::SetProvider(default)]
+                }
+            }
             DaemonEvent::Status(status) => self.apply_status(status),
             DaemonEvent::Playlists(playlists) => {
                 self.apply_playlists(playlists);
@@ -790,6 +837,7 @@ impl App {
             KeyCode::Char('x') => return self.queue_selected(),
             KeyCode::Char('t') => return self.retry_selected(),
             KeyCode::Char('s') => return self.toggle_shuffle(),
+            KeyCode::Char('o') => return self.cycle_provider(),
             KeyCode::Char('R') => return self.cycle_repeat(),
             KeyCode::Char('+') | KeyCode::Char('=') => return self.adjust_volume(5),
             KeyCode::Char('-') | KeyCode::Char('_') => return self.adjust_volume(-5),
@@ -1933,6 +1981,7 @@ mod tests {
             queue_length: 1,
             downloads: DownloadSummary::default(),
             providers: vec![ProviderId::Youtube],
+            default_provider: ProviderId::Youtube,
         }
     }
 
@@ -2035,6 +2084,33 @@ mod tests {
         let commands = app.tick();
         assert!(matches!(commands.first(), Some(Command::Search(query)) if query == "ab"));
         assert_eq!(app.search.query, "ab");
+    }
+
+    #[test]
+    fn provider_event_stores_the_list_and_o_reports_one_provider() {
+        use ytermusicd_api::{AuthStatus, ProviderCapabilities, ProviderInfo};
+
+        let mut app = App::new("http://localhost");
+        let commands = app.handle_daemon_event(DaemonEvent::Providers(vec![ProviderInfo {
+            id: ProviderId::Youtube,
+            name: "YouTube Music".to_string(),
+            default: true,
+            capabilities: ProviderCapabilities::for_provider(ProviderId::Youtube),
+            auth: AuthStatus::default(),
+        }]));
+        assert!(commands.is_empty());
+        assert_eq!(app.providers.len(), 1);
+        assert_eq!(app.provider, ProviderId::Youtube);
+        assert_eq!(app.provider_name(), "YouTube Music");
+
+        let commands = app.handle_key(key(KeyCode::Char('o')));
+        assert!(commands.is_empty());
+        assert_eq!(app.toasts.len(), 1);
+        assert!(
+            app.toasts[0].message.contains("only provider"),
+            "{}",
+            app.toasts[0].message
+        );
     }
 
     #[test]

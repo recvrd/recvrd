@@ -108,12 +108,14 @@
       class="palette"
       role="dialog"
       aria-modal="true"
-      aria-label={store.searchMode === 'add-to-playlist' ? 'Add tracks to a playlist' : 'Search YouTube Music'}
+      aria-label={store.searchMode === 'add-to-playlist' ? 'Add tracks to a playlist' : `Search ${store.activeProviderName}`}
       tabindex="-1"
       bind:this={dialog}
     >
       {#if store.searchMode === 'add-to-playlist'}
         <p class="mode muted">Add tracks to “{store.searchTargetName ?? 'this playlist'}”</p>
+      {:else}
+        <p class="mode muted">Search {store.activeProviderName}</p>
       {/if}
       <div class="search-row">
         <span aria-hidden="true">⌕</span>

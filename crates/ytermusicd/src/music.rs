@@ -1,6 +1,7 @@
 //! Music API used when no provider client is available.
 
 use async_trait::async_trait;
+use common_structs::ProviderId;
 use ytermusicd_api::{
     CreatePlaylistRequest, MusicApi, Playlist, PlaylistEditError, SearchResults, Track,
     UpdatePlaylistRequest,
@@ -10,15 +11,15 @@ pub struct UnavailableMusicApi;
 
 #[async_trait]
 impl MusicApi for UnavailableMusicApi {
-    async fn playlists(&self) -> Result<Vec<Playlist>, String> {
+    async fn playlists(&self, _provider: ProviderId) -> Result<Vec<Playlist>, String> {
         Err("YouTube Music client is unavailable; check auth/network".to_string())
     }
 
-    async fn playlist(&self, _id: &str) -> Result<Vec<Track>, String> {
+    async fn playlist(&self, _provider: ProviderId, _id: &str) -> Result<Vec<Track>, String> {
         Err("YouTube Music client is unavailable; check auth/network".to_string())
     }
 
-    async fn search(&self, _query: &str) -> Result<SearchResults, String> {
+    async fn search(&self, _provider: ProviderId, _query: &str) -> Result<SearchResults, String> {
         Err("YouTube Music client is unavailable; check auth/network".to_string())
     }
 

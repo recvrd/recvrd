@@ -5,7 +5,9 @@ import type { OkResponse } from '@api/OkResponse';
 import type { PlaybackSnapshot } from '@api/PlaybackSnapshot';
 import type { Playlist } from '@api/Playlist';
 import type { PlaylistDetail } from '@api/PlaylistDetail';
+import type { ProviderCapabilities } from '@api/ProviderCapabilities';
 import type { ProviderId } from '@api/ProviderId';
+import type { ProviderInfo } from '@api/ProviderInfo';
 import type { Queue } from '@api/Queue';
 import type { RepeatMode } from '@api/RepeatMode';
 import type { SearchResults } from '@api/SearchResults';
@@ -27,17 +29,18 @@ export class ApiError extends Error {
 
 export interface YtermusicdApi {
   status(): Promise<Status>;
-  playlists(): Promise<Playlist[]>;
-  playlist(id: string): Promise<PlaylistDetail>;
+  providers(): Promise<ProviderInfo[]>;
+  playlists(provider?: ProviderId): Promise<Playlist[]>;
+  playlist(id: string, provider?: ProviderId): Promise<PlaylistDetail>;
   createPlaylist(request: CreatePlaylistRequest): Promise<Playlist>;
   updatePlaylist(id: string, request: UpdatePlaylistRequest): Promise<Playlist>;
   deletePlaylist(id: string): Promise<OkResponse>;
   addPlaylistTracks(id: string, provider: ProviderId, trackIds: string[]): Promise<Track[]>;
   removePlaylistTracks(id: string, indices: number[]): Promise<Track[]>;
   movePlaylistTrack(id: string, from: number, to: number): Promise<Track[]>;
-  search(query: string): Promise<SearchResults>;
+  search(query: string, provider?: ProviderId): Promise<SearchResults>;
   queue(): Promise<Queue>;
-  playPlaylist(playlistId: string): Promise<Status>;
+  playPlaylist(playlistId: string, provider?: ProviderId): Promise<Status>;
   playTrack(track: Track): Promise<Status>;
   queueAdd(track: Track): Promise<Queue>;
   queueRemove(index: number): Promise<Queue>;
@@ -55,11 +58,13 @@ export interface YtermusicdApi {
   retryDownload(track: Track): Promise<void>;
 }
 
-export function describeError(error: unknown): string {
+export function describeError(error: unknown, providerName?: string): string {
   if (error instanceof ApiError) {
     switch (error.code) {
       case 'upstream_error':
-        return `YouTube Music rejected the request: ${error.message}`;
+        return providerName
+          ? `${providerName} rejected the request: ${error.message}`
+          : error.message;
       case 'bad_request':
         return `Invalid request: ${error.message}`;
       case 'not_found':
@@ -131,8 +136,13 @@ export function createApi(baseUrl = ''): YtermusicdApi {
 
   return {
     status: () => request<Status>('/api/status'),
-    playlists: () => request<Playlist[]>('/api/playlists'),
-    playlist: (id) => request<PlaylistDetail>(`/api/playlists/${encodeURIComponent(id)}`),
+    providers: () => request<ProviderInfo[]>('/api/providers'),
+    playlists: (provider: ProviderId = 'youtube') =>
+      request<Playlist[]>(`/api/playlists?provider=${encodeURIComponent(provider)}`),
+    playlist: (id, provider: ProviderId = 'youtube') =>
+      request<PlaylistDetail>(
+        `/api/playlists/${encodeURIComponent(id)}?provider=${encodeURIComponent(provider)}`,
+      ),
     createPlaylist: (requestBody) => post<Playlist>('/api/playlists', requestBody),
     updatePlaylist: (id, requestBody) =>
       patch<Playlist>(`/api/playlists/${encodeURIComponent(id)}`, requestBody),
@@ -152,9 +162,13 @@ export function createApi(baseUrl = ''): YtermusicdApi {
         from,
         to,
       }),
-    search: (query) => request<SearchResults>(`/api/search?q=${encodeURIComponent(query)}`),
+    search: (query, provider: ProviderId = 'youtube') =>
+      request<SearchResults>(
+        `/api/search?provider=${encodeURIComponent(provider)}&q=${encodeURIComponent(query)}`,
+      ),
     queue: () => request<Queue>('/api/queue'),
-    playPlaylist: (playlistId) => post<Status>('/api/play/playlist', { playlist_id: playlistId }),
+    playPlaylist: (playlistId, provider: ProviderId = 'youtube') =>
+      post<Status>('/api/play/playlist', { playlist_id: playlistId, provider }),
     playTrack: (track) => post<Status>('/api/play/track', { track }),
     queueAdd: (track) => post<Queue>('/api/queue', { track }),
     queueRemove: (index) => post<Queue>('/api/queue/remove', { index }),
@@ -216,4 +230,4 @@ export function downloadLabel(status: DownloadStatus): string {
   }
 }
 
-export type { PlaybackSnapshot, Playlist, PlaylistDetail, ProviderId, Queue, RepeatMode, SearchResults, Status, Track };
+export type { PlaybackSnapshot, Playlist, PlaylistDetail, ProviderCapabilities, ProviderId, ProviderInfo, Queue, RepeatMode, SearchResults, Status, Track };

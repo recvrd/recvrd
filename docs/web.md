@@ -51,6 +51,14 @@ artifacts contain the real app.
 - **Now playing** shows the current track, cover art, controls, seek, volume
   and download state.
 
+The top bar has a provider selector. It lists every provider from
+`GET /api/providers`. The choice is stored in `localStorage`, and library,
+playlist and search requests use it. The library header shows the active
+provider name. Actions a provider does not support are hidden: the *New
+playlist* button and the playlist edit actions appear only when the active
+provider reports the matching capability. The auth banner shows the auth
+state of the active provider.
+
 The now-playing bar has two layouts:
 
 - **compact** shows the track on the left, the transport above the seek bar,
