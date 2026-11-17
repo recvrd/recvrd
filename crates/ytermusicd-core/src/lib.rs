@@ -10,7 +10,7 @@ pub mod playback;
 pub mod state;
 
 pub use auth::{Auth, AuthError, AuthState, AuthStatus, LoadedAuth, resolve_auth};
-pub use config::{ConfigError, DaemonConfig, Downloader};
+pub use config::{ConfigError, DaemonConfig, Downloader, is_loopback_bind};
 pub use events::{CoreEvent, EventBus, EventEnvelope, Snapshot};
 pub use model::{
     PlaybackSnapshot, PlaybackStatus, Queue, QueueItem, QueueSnapshot, RepeatMode, Track,
