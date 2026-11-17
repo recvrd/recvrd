@@ -72,7 +72,7 @@
   <section class="library" aria-label="Library">
     <header class="hero">
       <div>
-        <p class="eyebrow">YouTube Music</p>
+        <p class="eyebrow">{store.activeProviderName}</p>
         <h1>Library</h1>
         <p class="muted">
           {store.filteredPlaylists.length} playlists
@@ -107,7 +107,7 @@
               Cancel
             </button>
           </form>
-        {:else}
+        {:else if store.canCreatePlaylist}
           <button class="accent" onclick={() => (creating = true)}>New playlist</button>
         {/if}
         <button class="refresh" onclick={() => store.loadPlaylists()}>Reload</button>
@@ -228,9 +228,11 @@
           <button disabled={!store.selectedTrack} onclick={() => store.queueSelected()}>
             Queue selected
           </button>
-          <button onclick={() => store.openSearchForPlaylist(playlistView.id)}>Add tracks</button>
-          <button onclick={startRename}>Rename</button>
-          <button class="danger" onclick={() => (confirmDelete = true)}>Delete</button>
+          {#if store.canEditPlaylist}
+            <button onclick={() => store.openSearchForPlaylist(playlistView.id)}>Add tracks</button>
+            <button onclick={startRename}>Rename</button>
+            <button class="danger" onclick={() => (confirmDelete = true)}>Delete</button>
+          {/if}
         {/if}
       </div>
     </header>
@@ -268,9 +270,9 @@
           onplay={(track) => store.playTrack(track)}
           onqueue={(track) => store.queueTrack(track)}
           onretry={(track) => store.retryDownload(track)}
-          onremove={requestRemove}
-          onmoveup={(index) => move(index, -1)}
-          onmovedown={(index) => move(index, 1)}
+          onremove={store.canEditPlaylist ? requestRemove : undefined}
+          onmoveup={store.canEditPlaylist ? (index) => move(index, -1) : undefined}
+          onmovedown={store.canEditPlaylist ? (index) => move(index, 1) : undefined}
           emptyMessage="This playlist has no tracks."
         />
       {/if}

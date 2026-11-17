@@ -9,4 +9,9 @@ export type Status = { name: string, version: string, status: string, uptime_sec
  * The providers the daemon knows. Old payloads without the
  * field read as an empty list.
  */
-providers: Array<ProviderId>, };
+providers: Array<ProviderId>, 
+/**
+ * The default provider for a fresh install. Old payloads
+ * without the field read as YouTube.
+ */
+default_provider: ProviderId, };

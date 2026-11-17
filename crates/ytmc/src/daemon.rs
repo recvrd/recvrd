@@ -3,7 +3,9 @@
 use std::time::Duration;
 
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
-use ytermusicd_api::{CreatePlaylistRequest, PlaylistPrivacy, RepeatMode, UpdatePlaylistRequest};
+use ytermusicd_api::{
+    CreatePlaylistRequest, PlaylistPrivacy, ProviderId, RepeatMode, UpdatePlaylistRequest,
+};
 use ytermusicd_client::{DaemonClient, DaemonError};
 
 use ytermusicd_api::TrackKey;
@@ -57,32 +59,61 @@ pub async fn run_events(client: DaemonClient, sender: UnboundedSender<DaemonEven
 
 /// Run commands. Mutations run in order. Search and cover requests run in
 /// parallel so a slow request cannot delay playback control.
+/// The worker holds the active provider. Library, playlist and search
+/// requests use it. The UI switches it with `Command::SetProvider`.
 pub async fn run_commands(
     client: DaemonClient,
     mut receiver: UnboundedReceiver<Command>,
     sender: UnboundedSender<DaemonEvent>,
 ) {
+    let mut provider = ProviderId::Youtube;
     while let Some(command) = receiver.recv().await {
+        if matches!(command, Command::SetProvider(_)) {
+            if let Command::SetProvider(next) = command {
+                provider = next;
+                run_one(&client, provider, Command::RefreshPlaylists, &sender).await;
+            }
+            continue;
+        }
+        if matches!(command, Command::RefreshProviders) {
+            match client.providers().await {
+                Ok(providers) => {
+                    let _ = sender.send(DaemonEvent::Providers(providers));
+                }
+                Err(error) => {
+                    let _ = sender.send(DaemonEvent::Toast {
+                        level: ToastLevel::Error,
+                        message: error.message,
+                    });
+                }
+            }
+            continue;
+        }
         if matches!(command, Command::Search(_) | Command::LoadCover(_)) {
             let client = client.clone();
             let sender = sender.clone();
             tokio::spawn(async move {
-                run_one(&client, command, &sender).await;
+                run_one(&client, provider, command, &sender).await;
             });
         } else {
-            run_one(&client, command, &sender).await;
+            run_one(&client, provider, command, &sender).await;
         }
     }
 }
 
-async fn run_one(client: &DaemonClient, command: Command, sender: &UnboundedSender<DaemonEvent>) {
+async fn run_one(
+    client: &DaemonClient,
+    provider: ProviderId,
+    command: Command,
+    sender: &UnboundedSender<DaemonEvent>,
+) {
     let failure = match &command {
         Command::LoadCover(key) => Failure::Cover(key.clone()),
         Command::OpenPlaylist(id) | Command::RefreshPlaylist(id) => Failure::Playlist(id.clone()),
         Command::Search(query) => Failure::Search(query.clone()),
         _ => Failure::Toast,
     };
-    match execute(client, command).await {
+    match execute(client, provider, command).await {
         Ok(events) => {
             for event in events {
                 if sender.send(event).is_err() {
@@ -111,15 +142,24 @@ async fn run_one(client: &DaemonClient, command: Command, sender: &UnboundedSend
     }
 }
 
-async fn execute(client: &DaemonClient, command: Command) -> Result<Vec<DaemonEvent>, DaemonError> {
+async fn execute(
+    client: &DaemonClient,
+    provider: ProviderId,
+    command: Command,
+) -> Result<Vec<DaemonEvent>, DaemonError> {
     match command {
-        Command::RefreshPlaylists => Ok(vec![DaemonEvent::Playlists(client.playlists().await?)]),
+        Command::RefreshPlaylists => Ok(vec![DaemonEvent::Playlists(
+            client.playlists(provider).await?,
+        )]),
         Command::OpenPlaylist(id) | Command::RefreshPlaylist(id) => {
-            Ok(vec![DaemonEvent::Playlist(client.playlist(&id).await?)])
+            Ok(vec![DaemonEvent::Playlist(
+                client.playlist(provider, &id).await?,
+            )])
         }
-        Command::PlayPlaylist(id) => {
-            Ok(vec![DaemonEvent::Status(client.play_playlist(&id).await?)])
-        }
+        Command::PlayPlaylist(id) => Ok(vec![DaemonEvent::Status(
+            client.play_playlist(provider, &id).await?,
+        )]),
+        Command::SetProvider(_) | Command::RefreshProviders => Ok(Vec::new()),
         Command::PlayTrack(track) => Ok(vec![DaemonEvent::Status(client.play_track(track).await?)]),
         Command::QueueTrack(track) => Ok(vec![DaemonEvent::Queue(client.queue_add(track).await?)]),
         Command::Pause => Ok(vec![DaemonEvent::Status(client.pause().await?)]),
@@ -156,7 +196,7 @@ async fn execute(client: &DaemonClient, command: Command) -> Result<Vec<DaemonEv
                 })
                 .await?;
             Ok(vec![
-                DaemonEvent::Playlists(client.playlists().await?),
+                DaemonEvent::Playlists(client.playlists(provider).await?),
                 DaemonEvent::Toast {
                     level: ToastLevel::Success,
                     message: "Playlist created.".to_string(),
@@ -167,12 +207,14 @@ async fn execute(client: &DaemonClient, command: Command) -> Result<Vec<DaemonEv
             client
                 .update_playlist(&id, &UpdatePlaylistRequest { title })
                 .await?;
-            Ok(vec![DaemonEvent::Playlists(client.playlists().await?)])
+            Ok(vec![DaemonEvent::Playlists(
+                client.playlists(provider).await?,
+            )])
         }
         Command::DeletePlaylist(id) => {
             client.delete_playlist(&id).await?;
             Ok(vec![
-                DaemonEvent::Playlists(client.playlists().await?),
+                DaemonEvent::Playlists(client.playlists(provider).await?),
                 DaemonEvent::Toast {
                     level: ToastLevel::Success,
                     message: "Playlist deleted.".to_string(),
@@ -202,7 +244,7 @@ async fn execute(client: &DaemonClient, command: Command) -> Result<Vec<DaemonEv
             ])
         }
         Command::Search(query) => {
-            let results = client.search(&query).await?;
+            let results = client.search(provider, &query).await?;
             Ok(vec![DaemonEvent::Search { query, results }])
         }
         Command::LoadCover(key) => {

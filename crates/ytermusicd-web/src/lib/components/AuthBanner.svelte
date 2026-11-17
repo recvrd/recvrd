@@ -1,7 +1,8 @@
 <script lang="ts">
   import type { AuthStatus } from '@api/AuthStatus';
 
-  let { auth }: { auth: AuthStatus | null } = $props();
+  let { auth, providerName = 'YouTube Music' }: { auth: AuthStatus | null; providerName?: string } =
+    $props();
 
   const visible = $derived(auth !== null && auth.state !== 'ok');
 </script>
@@ -10,8 +11,8 @@
   <div class="auth-banner" role="alert">
     <strong>
       {auth.state === 'missing'
-        ? 'YouTube Music sign-in is missing.'
-        : 'YouTube Music sign-in is invalid.'}
+        ? `${providerName} sign-in is missing.`
+        : `${providerName} sign-in is invalid.`}
     </strong>
     <span>
       Create or refresh <code>headers.txt</code> with the <code>Cookie</code> and

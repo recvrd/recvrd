@@ -61,10 +61,17 @@ describe('api client', () => {
     const api = createApi();
 
     await api.search('lo fi & rain');
-    expect(fetchMock.mock.calls[0][0]).toBe('/api/search?q=lo%20fi%20%26%20rain');
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/search?provider=youtube&q=lo%20fi%20%26%20rain');
 
     await api.playlist('VL/1');
-    expect(fetchMock.mock.calls[1][0]).toBe('/api/playlists/VL%2F1');
+    expect(fetchMock.mock.calls[1][0]).toBe('/api/playlists/VL%2F1?provider=youtube');
+
+    await api.playlists();
+    expect(fetchMock.mock.calls[2][0]).toBe('/api/playlists?provider=youtube');
+
+    const providers = await api.providers();
+    expect(fetchMock.mock.calls[3][0]).toBe('/api/providers');
+    expect(providers).toEqual({ tracks: [], playlists: [] });
   });
 
   it('calls the playlist edit endpoints', async () => {

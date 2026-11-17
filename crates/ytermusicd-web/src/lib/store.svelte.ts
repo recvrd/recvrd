@@ -2,12 +2,13 @@ import type { DownloadStatus } from '@api/DownloadStatus';
 import type { EventKind } from '@api/EventKind';
 import type { Playlist } from '@api/Playlist';
 import type { PlaylistDetail } from '@api/PlaylistDetail';
+import type { ProviderId } from '@api/ProviderId';
+import type { ProviderInfo } from '@api/ProviderInfo';
 import type { Queue } from '@api/Queue';
 import type { RepeatMode } from '@api/RepeatMode';
 import type { SearchResults } from '@api/SearchResults';
 import type { Status } from '@api/Status';
 import type { Track } from '@api/Track';
-import type { ProviderId } from '@api/ProviderId';
 import { ApiError, createApi, describeError, type YtermusicdApi } from './api';
 import { EventStream, type ConnectionState, type EventSourceLike } from './sse';
 
@@ -23,6 +24,7 @@ export type PlayerLayout = 'compact' | 'terminal';
 export type SearchMode = 'normal' | 'add-to-playlist';
 
 export const PLAYER_LAYOUT_KEY = 'ytermusicd.player-layout';
+export const PROVIDER_KEY = 'ytermusicd.provider';
 
 export function readPlayerLayout(): PlayerLayout {
   try {
@@ -32,6 +34,18 @@ export function readPlayerLayout(): PlayerLayout {
   } catch {
     return 'compact';
   }
+}
+
+/// Read the stored provider. An unknown or missing value means the
+/// default provider.
+export function readProvider(providers: ProviderId[] = ['youtube']): ProviderId {
+  try {
+    const stored = globalThis.localStorage?.getItem(PROVIDER_KEY);
+    if (stored && (providers as string[]).includes(stored)) return stored as ProviderId;
+  } catch {
+    // Ignore storage failures.
+  }
+  return 'youtube';
 }
 
 export interface Toast {
@@ -99,6 +113,8 @@ export class AppStore {
 
   status = $state<Status | null>(null);
   queue = $state<Queue | null>(null);
+  providers = $state<ProviderInfo[]>([]);
+  activeProvider = $state<ProviderId>('youtube');
   playlists = $state<Playlist[]>([]);
   playlist = $state<PlaylistDetail | null>(null);
   playlistsLoading = $state(false);
@@ -137,6 +153,7 @@ export class AppStore {
       ...options,
     };
     this.playerLayout = readPlayerLayout();
+    this.activeProvider = readProvider();
     this.events = new EventStream({
       create: options.createEventSource,
       onEvent: (event) => this.handleEvent(event),
@@ -153,7 +170,11 @@ export class AppStore {
   async init(): Promise<void> {
     this.parseLocation();
     this.events.connect();
-    await Promise.allSettled([this.refreshStatus(), this.loadPlaylists()]);
+    await Promise.allSettled([
+      this.loadProviders(),
+      this.refreshStatus(),
+      this.loadPlaylists(),
+    ]);
     if (this.view.kind === 'playlist') {
       await this.openPlaylist(this.view.id, this.view.name);
     }
@@ -172,6 +193,26 @@ export class AppStore {
 
   get currentTrack(): Track | null {
     return this.status?.playback.current ?? null;
+  }
+
+  get activeProviderInfo(): ProviderInfo | null {
+    return this.providers.find((provider) => provider.id === this.activeProvider) ?? null;
+  }
+
+  get activeProviderName(): string {
+    return this.activeProviderInfo?.name ?? 'YouTube Music';
+  }
+
+  get canCreatePlaylist(): boolean {
+    return this.activeProviderInfo?.capabilities.playlist_create ?? true;
+  }
+
+  get canEditPlaylist(): boolean {
+    return this.activeProviderInfo?.capabilities.playlist_edit ?? true;
+  }
+
+  get canSearch(): boolean {
+    return this.activeProviderInfo?.capabilities.search ?? true;
   }
 
   get filteredPlaylists(): Playlist[] {
@@ -212,7 +253,45 @@ export class AppStore {
     try {
       this.applyStatus(await this.api.status());
     } catch (error) {
-      this.error = describeError(error);
+      this.error = describeError(error, this.activeProviderName);
+    }
+  }
+
+  async loadProviders(): Promise<void> {
+    try {
+      this.providers = await this.api.providers();
+      const known = this.providers.map((provider) => provider.id);
+      let stored: string | null = null;
+      try {
+        stored = globalThis.localStorage?.getItem(PROVIDER_KEY) ?? null;
+      } catch {
+        // Ignore storage failures.
+      }
+      if (stored && (known as string[]).includes(stored)) {
+        this.activeProvider = stored as ProviderId;
+      } else {
+        this.activeProvider =
+          this.providers.find((provider) => provider.default)?.id ?? 'youtube';
+      }
+    } catch (error) {
+      this.error = describeError(error, this.activeProviderName);
+    }
+  }
+
+  /// Switch the active provider and reload the library for it.
+  async setProvider(provider: ProviderId): Promise<void> {
+    if (provider === this.activeProvider) return;
+    this.activeProvider = provider;
+    try {
+      globalThis.localStorage?.setItem(PROVIDER_KEY, provider);
+    } catch {
+      // Ignore storage failures.
+    }
+    this.searchResults = null;
+    this.searchQuery = '';
+    await this.loadPlaylists();
+    if (this.view.kind === 'playlist') {
+      await this.openPlaylist(this.view.id, this.view.name);
     }
   }
 
@@ -227,9 +306,9 @@ export class AppStore {
   async loadPlaylists(): Promise<void> {
     this.playlistsLoading = true;
     try {
-      this.playlists = await this.api.playlists();
+      this.playlists = await this.api.playlists(this.activeProvider);
     } catch (error) {
-      this.error = describeError(error);
+      this.error = describeError(error, this.activeProviderName);
     } finally {
       this.playlistsLoading = false;
     }
@@ -246,9 +325,9 @@ export class AppStore {
 
   private async loadPlaylist(id: string): Promise<void> {
     try {
-      this.playlist = await this.api.playlist(id);
+      this.playlist = await this.api.playlist(id, this.activeProvider);
     } catch (error) {
-      this.error = describeError(error);
+      this.error = describeError(error, this.activeProviderName);
     } finally {
       this.playlistLoading = false;
     }
@@ -420,7 +499,7 @@ export class AppStore {
 
   async playPlaylist(id: string): Promise<void> {
     try {
-      this.applyStatus(await this.api.playPlaylist(id));
+      this.applyStatus(await this.api.playPlaylist(id, this.activeProvider));
       await this.refreshQueue();
       this.notify('success', 'Playing playlist.');
     } catch (error) {
@@ -643,7 +722,7 @@ export class AppStore {
     if (!query) return;
     this.searchLoading = true;
     try {
-      const results = await this.api.search(query);
+      const results = await this.api.search(query, this.activeProvider);
       if (this.searchQuery.trim() === query) this.searchResults = results;
     } catch (error) {
       this.searchResults = null;
@@ -794,7 +873,7 @@ export class AppStore {
     ) {
       this.authExpired = true;
     }
-    this.notify('error', describeError(error));
+    this.notify('error', describeError(error, this.activeProviderName));
   }
 
   private scheduleStatusRefresh(): void {

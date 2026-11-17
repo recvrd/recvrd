@@ -28,8 +28,8 @@ use ytermusicd_api::{
     CreatePlaylistRequest, DownloadStatus, DownloadSummary, ErrorEnvelope, Event, EventKind,
     MovePlaylistTrackRequest, MusicApi, OkResponse, PlayNextRequest, PlayPlaylistRequest,
     PlayTrackRequest, PlaybackSnapshot as ApiPlaybackSnapshot, PlaybackState, Playlist,
-    PlaylistDetail, PlaylistEditError, Queue as ApiQueue, QueueItem as ApiQueueItem, QueueRequest,
-    RemovePlaylistTracksRequest, RemoveQueueRequest, ReorderQueueRequest,
+    PlaylistDetail, PlaylistEditError, ProviderInfo, Queue as ApiQueue, QueueItem as ApiQueueItem,
+    QueueRequest, RemovePlaylistTracksRequest, RemoveQueueRequest, ReorderQueueRequest,
     RepeatMode as ApiRepeatMode, RepeatRequest, RetryDownloadRequest, SearchResults, SeekRequest,
     ShuffleRequest, Status, Track, UpdatePlaylistRequest, VolumeRequest,
 };
@@ -143,6 +143,7 @@ impl IntoResponse for ApiFailure {
 pub fn router<S: AudioSink + Send + 'static>(state: AppState<S>) -> Router {
     Router::new()
         .route("/api/status", get(status))
+        .route("/api/providers", get(providers))
         .route("/api/playlists", get(playlists).post(create_playlist))
         .route(
             "/api/playlists/{id}",
@@ -188,32 +189,50 @@ async fn status<S: AudioSink + Send + 'static>(State(state): State<AppState<S>>)
 
 async fn playlists<S: AudioSink + Send + 'static>(
     State(state): State<AppState<S>>,
+    Query(query): Query<ProviderQuery>,
 ) -> Result<Json<Vec<Playlist>>, ApiFailure> {
+    let provider = parse_provider(query.provider)?;
     state
         .music
-        .playlists()
+        .playlists(provider)
         .await
         .map(Json)
-        .map_err(ApiFailure::upstream)
+        .map_err(|error| ApiFailure::upstream(format!("{provider}: {error}")))
+}
+
+/// Describe every provider the daemon knows, with its capabilities
+/// and its auth state. Clients use this list to build the provider
+/// selector and to hide actions a provider does not support.
+async fn providers<S: AudioSink + Send + 'static>(
+    State(state): State<AppState<S>>,
+) -> Json<Vec<ProviderInfo>> {
+    Json(
+        ProviderId::all()
+            .iter()
+            .map(|provider| ProviderInfo::new(*provider, api_auth(&state.auth)))
+            .collect(),
+    )
 }
 
 async fn playlist<S: AudioSink + Send + 'static>(
     State(state): State<AppState<S>>,
     AxumPath(id): AxumPath<String>,
+    Query(query): Query<ProviderQuery>,
 ) -> Result<Json<PlaylistDetail>, ApiFailure> {
+    let provider = parse_provider(query.provider)?;
     let playlist = state
         .music
-        .playlists()
+        .playlists(provider)
         .await
-        .map_err(ApiFailure::upstream)?
+        .map_err(|error| ApiFailure::upstream(format!("{provider}: {error}")))?
         .into_iter()
         .find(|playlist| playlist.id == id)
         .ok_or_else(|| ApiFailure::not_found(format!("playlist {id} not found")))?;
     let tracks = state
         .music
-        .playlist(&id)
+        .playlist(provider, &id)
         .await
-        .map_err(ApiFailure::upstream)?;
+        .map_err(|error| ApiFailure::upstream(format!("{provider}: {error}")))?;
     Ok(Json(PlaylistDetail { playlist, tracks }))
 }
 
@@ -436,6 +455,29 @@ fn playlist_failure(error: PlaylistEditError) -> ApiFailure {
 #[derive(Debug, Deserialize)]
 struct SearchQuery {
     q: String,
+    /// Optional provider name. A missing value means the default
+    /// provider.
+    #[serde(default)]
+    provider: Option<String>,
+}
+
+/// The optional `provider` query parameter shared by the library
+/// and search routes.
+#[derive(Debug, Deserialize)]
+struct ProviderQuery {
+    #[serde(default)]
+    provider: Option<String>,
+}
+
+/// Read the `provider` query parameter. A missing value means the
+/// default provider. An unknown name is a bad request.
+fn parse_provider(value: Option<String>) -> Result<ProviderId, ApiFailure> {
+    match value {
+        None => Ok(ProviderId::default_provider()),
+        Some(name) => name
+            .parse::<ProviderId>()
+            .map_err(|_| ApiFailure::bad_request(format!("unknown provider {name}"))),
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -451,12 +493,13 @@ async fn search<S: AudioSink + Send + 'static>(
     if query.q.trim().is_empty() {
         return Err(ApiFailure::bad_request("search query must not be empty"));
     }
+    let provider = parse_provider(query.provider)?;
     state
         .music
-        .search(&query.q)
+        .search(provider, &query.q)
         .await
         .map(Json)
-        .map_err(ApiFailure::upstream)
+        .map_err(|error| ApiFailure::upstream(format!("{provider}: {error}")))
 }
 
 /// Serve a cached cover image.
@@ -517,11 +560,12 @@ async fn play_playlist<S: AudioSink + Send + 'static>(
     State(state): State<AppState<S>>,
     Json(request): Json<PlayPlaylistRequest>,
 ) -> Result<Json<Status>, ApiFailure> {
+    let provider = request.provider;
     let tracks = state
         .music
-        .playlist(&request.playlist_id)
+        .playlist(provider, &request.playlist_id)
         .await
-        .map_err(ApiFailure::upstream)?;
+        .map_err(|error| ApiFailure::upstream(format!("{provider}: {error}")))?;
     if tracks.is_empty() {
         return Err(ApiFailure::bad_request("playlist has no tracks"));
     }
@@ -907,7 +951,8 @@ fn status_from_parts<S: AudioSink + Send + 'static>(
         playback: api_playback(playback),
         queue_length: queue.items.len(),
         downloads: api_download_summary(state.downloads.summary()),
-        providers: vec![ProviderId::Youtube],
+        providers: ProviderId::all().to_vec(),
+        default_provider: ProviderId::default_provider(),
     }
 }
 
@@ -1098,7 +1143,7 @@ mod tests {
 
     #[async_trait]
     impl MusicApi for MockMusicApi {
-        async fn playlists(&self) -> Result<Vec<Playlist>, String> {
+        async fn playlists(&self, _provider: ProviderId) -> Result<Vec<Playlist>, String> {
             Ok(vec![Playlist {
                 id: "p1".to_string(),
                 name: "Playlist One".to_string(),
@@ -1106,11 +1151,15 @@ mod tests {
             }])
         }
 
-        async fn playlist(&self, _id: &str) -> Result<Vec<Track>, String> {
+        async fn playlist(&self, _provider: ProviderId, _id: &str) -> Result<Vec<Track>, String> {
             Ok(vec![track("v1"), track("v2")])
         }
 
-        async fn search(&self, _query: &str) -> Result<SearchResults, String> {
+        async fn search(
+            &self,
+            _provider: ProviderId,
+            _query: &str,
+        ) -> Result<SearchResults, String> {
             Ok(SearchResults {
                 tracks: vec![track("v3")],
                 playlists: vec![],
@@ -1195,15 +1244,19 @@ mod tests {
 
     #[async_trait]
     impl MusicApi for FailingMusicApi {
-        async fn playlists(&self) -> Result<Vec<Playlist>, String> {
+        async fn playlists(&self, _provider: ProviderId) -> Result<Vec<Playlist>, String> {
             Err("upstream unavailable".to_string())
         }
 
-        async fn playlist(&self, _id: &str) -> Result<Vec<Track>, String> {
+        async fn playlist(&self, _provider: ProviderId, _id: &str) -> Result<Vec<Track>, String> {
             Err("upstream unavailable".to_string())
         }
 
-        async fn search(&self, _query: &str) -> Result<SearchResults, String> {
+        async fn search(
+            &self,
+            _provider: ProviderId,
+            _query: &str,
+        ) -> Result<SearchResults, String> {
             Err("upstream unavailable".to_string())
         }
 
@@ -1423,6 +1476,8 @@ mod tests {
             .unwrap();
         assert_eq!(status["auth"]["state"], "ok");
         assert_eq!(status["playback"]["state"], "stopped");
+        assert_eq!(status["providers"], serde_json::json!(["youtube"]));
+        assert_eq!(status["default_provider"], "youtube");
 
         let playlists: serde_json::Value = client
             .get(format!("{base}/api/playlists"))
@@ -1457,6 +1512,83 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn providers_endpoint_lists_youtube_with_capabilities_and_auth() {
+        let (base, server) = start_server(test_state()).await;
+        let client = reqwest::Client::new();
+
+        let providers: serde_json::Value = client
+            .get(format!("{base}/api/providers"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let list = providers.as_array().unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0]["id"], "youtube");
+        assert_eq!(list[0]["name"], "YouTube Music");
+        assert_eq!(list[0]["default"], true);
+        assert_eq!(list[0]["capabilities"]["search"], true);
+        assert_eq!(list[0]["capabilities"]["playlist_edit"], true);
+        assert_eq!(list[0]["capabilities"]["downloads"], true);
+        assert_eq!(list[0]["auth"]["state"], "ok");
+        assert_eq!(list[0]["auth"]["source"], "/tmp/headers.txt");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn provider_query_param_scopes_library_and_search() {
+        let (base, server) = start_server(test_state()).await;
+        let client = reqwest::Client::new();
+
+        let playlists: serde_json::Value = client
+            .get(format!("{base}/api/playlists?provider=youtube"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(playlists[0]["id"], "p1");
+
+        let search: serde_json::Value = client
+            .get(format!("{base}/api/search?provider=youtube&q=test"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(search["tracks"][0]["track_id"], "v3");
+
+        let unknown = client
+            .get(format!("{base}/api/playlists?provider=tidal"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(unknown.status().as_u16(), 400);
+        let body: serde_json::Value = unknown.json().await.unwrap();
+        assert_eq!(body["error"]["code"], "bad_request");
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("unknown provider tidal"),
+            "{}",
+            body["error"]["message"]
+        );
+
+        let unknown_search = client
+            .get(format!("{base}/api/search?provider=tidal&q=test"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(unknown_search.status().as_u16(), 400);
+        server.abort();
+    }
+
+    #[tokio::test]
     async fn playback_and_queue_commands() {
         let (base, server) = start_server(test_state()).await;
         let client = reqwest::Client::new();
@@ -1465,6 +1597,7 @@ mod tests {
             .post(format!("{base}/api/play/playlist"))
             .json(&PlayPlaylistRequest {
                 playlist_id: "p1".to_string(),
+                provider: ProviderId::Youtube,
             })
             .send()
             .await
@@ -1548,6 +1681,7 @@ mod tests {
             .post(format!("{base}/api/play/playlist"))
             .json(&PlayPlaylistRequest {
                 playlist_id: "p1".to_string(),
+                provider: ProviderId::Youtube,
             })
             .send()
             .await
@@ -1850,6 +1984,7 @@ mod tests {
             .post(format!("{base}/api/play/playlist"))
             .json(&PlayPlaylistRequest {
                 playlist_id: "p1".to_string(),
+                provider: ProviderId::Youtube,
             })
             .send()
             .await

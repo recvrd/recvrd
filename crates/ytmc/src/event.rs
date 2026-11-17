@@ -2,7 +2,7 @@
 
 use ytermusicd_api::{
     ApiError, DownloadStatus, Event, EventKind, PlaybackSnapshot, Playlist, PlaylistDetail,
-    ProviderId, Queue, RepeatMode, SearchResults, Status, Track, TrackKey,
+    ProviderId, ProviderInfo, Queue, RepeatMode, SearchResults, Status, Track, TrackKey,
 };
 use ytermusicd_client::DaemonError;
 
@@ -40,6 +40,8 @@ pub enum DaemonEvent {
     Playlist(PlaylistDetail),
     /// A playlist request failed.
     PlaylistError { id: String, message: String },
+    /// The provider list response.
+    Providers(Vec<ProviderInfo>),
     /// A track list response for one playlist.
     PlaylistTracks { id: String, tracks: Vec<Track> },
     /// A search response.
@@ -88,6 +90,10 @@ impl DaemonEvent {
 pub enum Command {
     /// Reload all playlists.
     RefreshPlaylists,
+    /// Switch the active provider for library and search requests.
+    SetProvider(ProviderId),
+    /// Reload the provider list.
+    RefreshProviders,
     /// Open one playlist.
     OpenPlaylist(String),
     /// Reload one playlist.

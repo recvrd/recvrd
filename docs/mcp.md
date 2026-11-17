@@ -47,16 +47,17 @@ your-mcp-client --server "ytermusicd mcp"
 
 | Tool | Arguments | Result |
 | --- | --- | --- |
-| `search` | `query` | Tracks and playlists |
-| `list_playlists` | none | Library playlists |
-| `get_playlist` | `playlist_id` | Playlist detail and tracks |
+| `list_providers` | none | Providers with capabilities and auth state |
+| `search` | `query`, `provider` (default `youtube`) | Tracks and playlists |
+| `list_playlists` | `provider` (default `youtube`) | Library playlists |
+| `get_playlist` | `playlist_id`, `provider` (default `youtube`) | Playlist detail and tracks |
 | `create_playlist` | `title`, `description`, `privacy` | New playlist |
 | `rename_playlist` | `playlist_id`, `title` | Updated playlist |
 | `delete_playlist` | `playlist_id` | `{ok: true}` |
 | `add_playlist_tracks` | `playlist_id`, `provider`, `track_ids` | Updated track list |
 | `remove_playlist_tracks` | `playlist_id`, `indices` | Updated track list |
 | `move_playlist_track` | `playlist_id`, `from`, `to` | Updated track list |
-| `play_playlist` | `playlist_id` | Updated status |
+| `play_playlist` | `playlist_id`, `provider` (default `youtube`) | Updated status |
 | `play_track` | `track` | Updated status |
 | `queue_add` | `track` | Updated queue |
 | `now_playing` | none | Status with current playback |

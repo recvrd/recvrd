@@ -4,6 +4,7 @@
 use std::{collections::HashSet, sync::Arc};
 
 use async_trait::async_trait;
+use common_structs::ProviderId;
 use ytermusicd_api::{
     CreatePlaylistRequest, MusicApi, Playlist, PlaylistEditError, PlaylistPrivacy, SearchResults,
     Track, UpdatePlaylistRequest,
@@ -30,6 +31,19 @@ pub async fn connect(
     YoutubeMusicInstance::new(headers, auth.account_id().map(str::to_string)).await
 }
 
+/// Reject a provider this implementation does not serve. YouTube Music
+/// is the only provider today. A second provider adds its own
+/// implementation instead of extending this check.
+fn check_provider(provider: ProviderId) -> Result<(), String> {
+    if provider == ProviderId::Youtube {
+        Ok(())
+    } else {
+        Err(format!(
+            "provider {provider} is not available; YouTube Music is the only provider"
+        ))
+    }
+}
+
 /// The YouTube Music implementation of the provider-neutral API.
 pub struct YoutubeMusicApi {
     client: Arc<YoutubeMusicInstance>,
@@ -45,7 +59,8 @@ impl YoutubeMusicApi {
 
 #[async_trait]
 impl MusicApi for YoutubeMusicApi {
-    async fn playlists(&self) -> Result<Vec<Playlist>, String> {
+    async fn playlists(&self, provider: ProviderId) -> Result<Vec<Playlist>, String> {
+        check_provider(provider)?;
         let mut playlists = Vec::new();
         for endpoint in [Endpoint::MusicLibraryLanding, Endpoint::MusicLikedPlaylists] {
             match self.client.get_library(&endpoint, 2).await {
@@ -62,7 +77,8 @@ impl MusicApi for YoutubeMusicApi {
         Ok(playlists)
     }
 
-    async fn playlist(&self, id: &str) -> Result<Vec<Track>, String> {
+    async fn playlist(&self, provider: ProviderId, id: &str) -> Result<Vec<Track>, String> {
+        check_provider(provider)?;
         self.client
             .get_playlist_raw(id, 5)
             .await
@@ -70,7 +86,8 @@ impl MusicApi for YoutubeMusicApi {
             .map_err(|error| format!("failed to load playlist {id}: {error:?}"))
     }
 
-    async fn search(&self, query: &str) -> Result<SearchResults, String> {
+    async fn search(&self, provider: ProviderId, query: &str) -> Result<SearchResults, String> {
+        check_provider(provider)?;
         self.client
             .search(query, 2)
             .await
@@ -133,7 +150,9 @@ impl MusicApi for YoutubeMusicApi {
             .add_playlist_items(id, track_ids)
             .await
             .map_err(edit_error("add tracks"))?;
-        self.playlist(id).await.map_err(PlaylistEditError::Upstream)
+        self.playlist(ProviderId::Youtube, id)
+            .await
+            .map_err(PlaylistEditError::Upstream)
     }
 
     async fn remove_playlist_tracks(
@@ -173,7 +192,9 @@ impl MusicApi for YoutubeMusicApi {
             .remove_playlist_items(id, &remove)
             .await
             .map_err(edit_error("remove tracks"))?;
-        self.playlist(id).await.map_err(PlaylistEditError::Upstream)
+        self.playlist(ProviderId::Youtube, id)
+            .await
+            .map_err(PlaylistEditError::Upstream)
     }
 
     async fn move_playlist_track(
@@ -217,7 +238,9 @@ impl MusicApi for YoutubeMusicApi {
             .move_playlist_item(id, &set_video_id, successor.as_deref())
             .await
             .map_err(edit_error("move track"))?;
-        self.playlist(id).await.map_err(PlaylistEditError::Upstream)
+        self.playlist(ProviderId::Youtube, id)
+            .await
+            .map_err(PlaylistEditError::Upstream)
     }
 }
 

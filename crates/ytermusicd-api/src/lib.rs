@@ -11,6 +11,74 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS, Default)]
+#[ts(export)]
+pub struct ProviderCapabilities {
+    /// The provider supports track and playlist search.
+    pub search: bool,
+    /// The provider supports a library of playlists.
+    pub library: bool,
+    /// The provider supports reading playlists.
+    pub playlists: bool,
+    /// The provider supports creating playlists.
+    pub playlist_create: bool,
+    /// The provider supports editing playlists.
+    pub playlist_edit: bool,
+    /// The provider supports downloads.
+    pub downloads: bool,
+    /// The provider supports cover art.
+    pub covers: bool,
+}
+
+impl ProviderCapabilities {
+    /// The capabilities of one provider. YouTube Music supports
+    /// every action today. A provider that lacks an action must
+    /// set its flag to false, so clients can hide the action.
+    pub fn for_provider(provider: ProviderId) -> Self {
+        match provider {
+            ProviderId::Youtube => Self {
+                search: true,
+                library: true,
+                playlists: true,
+                playlist_create: true,
+                playlist_edit: true,
+                downloads: true,
+                covers: true,
+            },
+        }
+    }
+}
+
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ProviderInfo {
+    /// The provider id, as used in the `provider` parameter.
+    pub id: ProviderId,
+    /// The display name, as shown in clients.
+    pub name: String,
+    /// True for the default provider of a fresh install.
+    pub default: bool,
+    /// The actions this provider supports.
+    pub capabilities: ProviderCapabilities,
+    /// The auth state of this provider.
+    pub auth: AuthStatus,
+}
+
+impl ProviderInfo {
+    /// Build the description of one provider.
+    pub fn new(id: ProviderId, auth: AuthStatus) -> Self {
+        Self {
+            id,
+            name: id.display_name().to_string(),
+            default: id == ProviderId::default_provider(),
+            capabilities: ProviderCapabilities::for_provider(id),
+            auth,
+        }
+    }
+}
+
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct Track {
@@ -233,6 +301,10 @@ pub struct Status {
     /// field read as an empty list.
     #[serde(default)]
     pub providers: Vec<ProviderId>,
+    /// The default provider for a fresh install. Old payloads
+    /// without the field read as YouTube.
+    #[serde(default)]
+    pub default_provider: ProviderId,
 }
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -255,6 +327,10 @@ pub struct ErrorEnvelope {
 #[ts(export)]
 pub struct PlayPlaylistRequest {
     pub playlist_id: String,
+    /// The provider the playlist belongs to. Old payloads without
+    /// the field read as YouTube.
+    #[serde(default)]
+    pub provider: ProviderId,
 }
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -455,6 +531,24 @@ mod tests {
     }
 
     #[test]
+    fn provider_info_round_trip() {
+        let info = ProviderInfo::new(
+            ProviderId::Youtube,
+            AuthStatus {
+                state: AuthState::Ok,
+                source: Some("headers.txt".to_string()),
+                message: None,
+            },
+        );
+        assert_eq!(info.name, "YouTube Music");
+        assert!(info.default);
+        assert!(info.capabilities.search);
+        assert!(info.capabilities.playlist_edit);
+        let json = serde_json::to_string(&info).unwrap();
+        assert_eq!(serde_json::from_str::<ProviderInfo>(&json).unwrap(), info);
+    }
+
+    #[test]
     fn status_round_trip() {
         let status = Status {
             name: "ytermusicd".to_string(),
@@ -466,6 +560,7 @@ mod tests {
             queue_length: 0,
             downloads: DownloadSummary::default(),
             providers: vec![ProviderId::Youtube],
+            default_provider: ProviderId::Youtube,
         };
         let json = serde_json::to_string(&status).unwrap();
         assert_eq!(serde_json::from_str::<Status>(&json).unwrap(), status);

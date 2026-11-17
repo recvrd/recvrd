@@ -2,12 +2,32 @@ import { vi } from 'vitest';
 import type { DownloadStatus } from '@api/DownloadStatus';
 import type { Playlist } from '@api/Playlist';
 import type { PlaylistDetail } from '@api/PlaylistDetail';
+import type { ProviderInfo } from '@api/ProviderInfo';
 import type { Queue } from '@api/Queue';
 import type { SearchResults } from '@api/SearchResults';
 import type { Status } from '@api/Status';
 import type { Track } from '@api/Track';
 import type { YtermusicdApi } from '../lib/api';
 import type { EventSourceLike } from '../lib/sse';
+
+export function makeProviderInfo(overrides: Partial<ProviderInfo> = {}): ProviderInfo {
+  return {
+    id: 'youtube',
+    name: 'YouTube Music',
+    default: true,
+    capabilities: {
+      search: true,
+      library: true,
+      playlists: true,
+      playlist_create: true,
+      playlist_edit: true,
+      downloads: true,
+      covers: true,
+    },
+    auth: { state: 'ok', source: '/tmp/headers.txt', message: null },
+    ...overrides,
+  };
+}
 
 export function makeTrack(id: string, overrides: Partial<Track> = {}): Track {
   return {
@@ -68,6 +88,7 @@ export function makeStatus(overrides: Partial<Status> = {}): Status {
     queue_length: 0,
     downloads: { queued: 0, active: 0, completed: 0, retrying: 0, failed: 0 },
     providers: ['youtube'],
+    default_provider: 'youtube',
     ...overrides,
   };
 }
@@ -91,6 +112,7 @@ export function makeApi(
 
   const api: YtermusicdApi = {
     status: vi.fn(async () => status),
+    providers: vi.fn(async () => [makeProviderInfo()]),
     playlists: vi.fn(async () => playlists),
     playlist: vi.fn(async (id: string) =>
       makePlaylistDetail(

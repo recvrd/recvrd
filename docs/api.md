@@ -35,7 +35,7 @@ Every non-2xx response uses one envelope:
 | --- | --- | --- |
 | `bad_request` | 400 | Invalid or out-of-range input |
 | `not_found` | 404 | Unknown playlist or route |
-| `upstream_error` | 502 | YouTube Music request failed |
+| `upstream_error` | 502 | Upstream provider request failed |
 | `internal_error` | 500 | Local audio/daemon failure |
 
 `GET /api/status` itself returns 200 with an `auth.state` of `ok`, `missing` or
@@ -46,15 +46,16 @@ Every non-2xx response uses one envelope:
 | Method | Path | Purpose |
 | --- | --- | --- |
 | GET | `/api/status` | Daemon, auth, playback and queue summary |
-| GET | `/api/playlists` | Library playlists |
+| GET | `/api/providers` | Providers with capabilities and auth state |
+| GET | `/api/playlists?provider=...` | Library playlists |
 | POST | `/api/playlists` | Create a playlist |
-| GET | `/api/playlists/{id}` | Playlist metadata and tracks |
+| GET | `/api/playlists/{id}?provider=...` | Playlist metadata and tracks |
 | PATCH | `/api/playlists/{id}` | Rename a playlist |
 | DELETE | `/api/playlists/{id}` | Delete a playlist |
 | POST | `/api/playlists/{id}/tracks` | Add tracks (`{provider, track_ids}`) |
 | POST | `/api/playlists/{id}/tracks/remove` | Remove tracks (`{indices}`) |
 | POST | `/api/playlists/{id}/tracks/move` | Move a track (`{from,to}`) |
-| GET | `/api/search?q=...` | Track and playlist search |
+| GET | `/api/search?provider=...&q=...` | Track and playlist search |
 | GET | `/api/tracks/{provider}/{track_id}/cover` | Cached cover art (JPEG) |
 | GET | `/api/queue` | Queue snapshot |
 | POST | `/api/queue` | Enqueue a track (alias: `/api/queue/add`) |
@@ -62,7 +63,7 @@ Every non-2xx response uses one envelope:
 | POST | `/api/queue/reorder` | Move an item (`{from,to}`) |
 | POST | `/api/queue/remove` | Remove an item (`{index}`) |
 | POST | `/api/queue/play-next` | Move an item to play next (`{index}`) |
-| POST | `/api/play/playlist` | Replace the queue with a playlist and play |
+| POST | `/api/play/playlist` | Replace the queue with a playlist and play (`{playlist_id, provider}`) |
 | POST | `/api/play/track` | Play a track immediately |
 | POST | `/api/pause` | Pause (idempotent) |
 | POST | `/api/resume` | Resume (idempotent) |
@@ -111,8 +112,53 @@ curl http://127.0.0.1:8080/api/status
     "retrying": 0,
     "failed": 0
   },
-  "providers": ["youtube"]
+  "providers": ["youtube"],
+  "default_provider": "youtube"
 }
+```
+
+### Providers
+
+```sh
+curl http://127.0.0.1:8080/api/providers
+```
+
+```json
+[
+  {
+    "id": "youtube",
+    "name": "YouTube Music",
+    "default": true,
+    "capabilities": {
+      "search": true,
+      "library": true,
+      "playlists": true,
+      "playlist_create": true,
+      "playlist_edit": true,
+      "downloads": true,
+      "covers": true
+    },
+    "auth": {
+      "state": "ok",
+      "source": "/home/me/.config/ytermusicd/headers.txt",
+      "message": null
+    }
+  }
+]
+```
+
+`GET /api/providers` lists every provider the daemon knows. Each entry
+names the provider, marks the default, lists the actions it supports, and
+reports its auth state. Clients hide actions a provider does not support.
+
+Library and search requests take an optional `provider` parameter. A missing
+value means the default provider. An unknown name returns 400 with
+`unknown provider {name}`. Upstream errors name the provider, for example
+`youtube: search failed: ...`.
+
+```sh
+curl 'http://127.0.0.1:8080/api/playlists?provider=youtube'
+curl 'http://127.0.0.1:8080/api/search?provider=youtube&q=civilization'
 ```
 
 ### Library and search
