@@ -11,7 +11,7 @@ use rmcp::{
 use serde::{Deserialize, Serialize};
 use ytermusicd_api::{
     CreatePlaylistRequest, DownloadSummary, OkResponse, Playlist, PlaylistDetail, PlaylistPrivacy,
-    Queue, QueueItem, SearchResults, Status, Track, UpdatePlaylistRequest,
+    Queue, QueueItem, RepeatMode, SearchResults, Status, Track, UpdatePlaylistRequest,
 };
 use ytermusicd_client::DaemonClient;
 
@@ -117,6 +117,44 @@ pub struct TrackArgs {
 pub struct VolumeArgs {
     /// Volume from 0 to 100.
     pub volume: u8,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SeekArgs {
+    /// Position in seconds from the start of the track.
+    pub position_secs: f64,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ShuffleArgs {
+    /// Enable shuffle when true.
+    pub enabled: bool,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct RepeatArgs {
+    /// Repeat mode: off, one or all.
+    pub repeat: RepeatMode,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct QueueIndexArgs {
+    /// Queue index from the queue view.
+    pub index: usize,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ReorderQueueArgs {
+    /// Current queue index.
+    pub from: usize,
+    /// New queue index.
+    pub to: usize,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct RetryDownloadArgs {
+    /// Video ID of the failed download.
+    pub video_id: String,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -339,6 +377,106 @@ impl McpServer {
             .map_err(to_mcp)
     }
 
+    /// Seek to a position in the current track.
+    #[tool(description = "Seek to a position in the current track in seconds")]
+    async fn seek(&self, Parameters(args): Parameters<SeekArgs>) -> Result<Json<Status>, McpError> {
+        if !args.position_secs.is_finite() || args.position_secs < 0.0 {
+            return Err(McpError::invalid_params(
+                "position_secs must be a finite number at or after 0",
+                None,
+            ));
+        }
+        self.client
+            .seek(args.position_secs)
+            .await
+            .map(Json)
+            .map_err(to_mcp)
+    }
+
+    /// Enable or disable shuffle.
+    #[tool(description = "Enable or disable shuffle")]
+    async fn shuffle(
+        &self,
+        Parameters(args): Parameters<ShuffleArgs>,
+    ) -> Result<Json<Status>, McpError> {
+        self.client
+            .shuffle(args.enabled)
+            .await
+            .map(Json)
+            .map_err(to_mcp)
+    }
+
+    /// Set the repeat mode.
+    #[tool(description = "Set the repeat mode (off, one or all)")]
+    async fn repeat(
+        &self,
+        Parameters(args): Parameters<RepeatArgs>,
+    ) -> Result<Json<Status>, McpError> {
+        self.client
+            .repeat(args.repeat)
+            .await
+            .map(Json)
+            .map_err(to_mcp)
+    }
+
+    /// Remove one track from the queue.
+    #[tool(description = "Remove one track from the queue by index")]
+    async fn queue_remove(
+        &self,
+        Parameters(args): Parameters<QueueIndexArgs>,
+    ) -> Result<Json<Queue>, McpError> {
+        self.client
+            .queue_remove(args.index)
+            .await
+            .map(Json)
+            .map_err(to_mcp)
+    }
+
+    /// Move one track within the queue.
+    #[tool(description = "Move one track within the queue")]
+    async fn queue_reorder(
+        &self,
+        Parameters(args): Parameters<ReorderQueueArgs>,
+    ) -> Result<Json<Queue>, McpError> {
+        self.client
+            .queue_reorder(args.from, args.to)
+            .await
+            .map(Json)
+            .map_err(to_mcp)
+    }
+
+    /// Move one queue track to play next.
+    #[tool(description = "Move one queue track to play next")]
+    async fn queue_play_next(
+        &self,
+        Parameters(args): Parameters<QueueIndexArgs>,
+    ) -> Result<Json<Queue>, McpError> {
+        self.client
+            .queue_play_next(args.index)
+            .await
+            .map(Json)
+            .map_err(to_mcp)
+    }
+
+    /// Remove all tracks from the queue.
+    #[tool(description = "Remove all tracks from the queue")]
+    async fn queue_clear(&self) -> Result<Json<Queue>, McpError> {
+        self.client.queue_clear().await.map(Json).map_err(to_mcp)
+    }
+
+    /// Retry a failed download.
+    #[tool(description = "Retry a failed download by video ID")]
+    async fn retry_download(
+        &self,
+        Parameters(args): Parameters<RetryDownloadArgs>,
+    ) -> Result<Json<OkResponse>, McpError> {
+        self.client
+            .retry_download(&args.video_id)
+            .await
+            .map(|()| Json(OkResponse { ok: true }))
+            .map_err(to_mcp)
+    }
+
     /// Report download status for queue tracks.
     #[tool(description = "Report download status for queue tracks")]
     async fn download_status(
@@ -377,7 +515,7 @@ impl McpServer {
 impl ServerHandler for McpServer {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
-            "Tools for the ytermusicd daemon. Playlist editing is available. Lyrics and HTTP transport are post-v1.",
+            "Tools for the ytermusicd daemon. Playlist editing, seek, shuffle, repeat, and queue management are available. Lyrics and HTTP transport are post-v1.",
         )
     }
 }
@@ -502,13 +640,25 @@ mod tests {
                 post(mock_move_playlist_track),
             )
             .route("/api/search", get(mock_search))
-            .route("/api/queue", get(mock_queue).post(mock_queue_add))
+            .route(
+                "/api/queue",
+                get(mock_queue)
+                    .post(mock_queue_add)
+                    .delete(mock_queue_delete),
+            )
+            .route("/api/queue/remove", post(mock_queue_op))
+            .route("/api/queue/reorder", post(mock_queue_op))
+            .route("/api/queue/play-next", post(mock_queue_op))
             .route("/api/play/playlist", post(mock_play_playlist))
             .route("/api/play/track", post(mock_play_track))
             .route("/api/pause", post(mock_status_post))
             .route("/api/resume", post(mock_status_post))
             .route("/api/next", post(mock_status_post))
             .route("/api/previous", post(mock_status_post))
+            .route("/api/seek", post(mock_status_op))
+            .route("/api/shuffle", post(mock_status_op))
+            .route("/api/repeat", post(mock_status_op))
+            .route("/api/downloads/retry", post(mock_retry_download))
             .route("/api/volume", post(mock_volume))
             .with_state(state);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -726,6 +876,48 @@ mod tests {
         AxumJson(status())
     }
 
+    async fn mock_status_op(
+        State(state): State<MockState>,
+        uri: axum::http::Uri,
+    ) -> AxumJson<Status> {
+        state
+            .calls
+            .lock()
+            .unwrap()
+            .push(format!("POST {}", uri.path()));
+        AxumJson(status())
+    }
+
+    async fn mock_queue_op(
+        State(state): State<MockState>,
+        uri: axum::http::Uri,
+    ) -> AxumJson<Queue> {
+        state
+            .calls
+            .lock()
+            .unwrap()
+            .push(format!("POST {}", uri.path()));
+        AxumJson(queue())
+    }
+
+    async fn mock_queue_delete(State(state): State<MockState>) -> AxumJson<Queue> {
+        state
+            .calls
+            .lock()
+            .unwrap()
+            .push("DELETE /api/queue".to_string());
+        AxumJson(queue())
+    }
+
+    async fn mock_retry_download(State(state): State<MockState>) -> StatusCode {
+        state
+            .calls
+            .lock()
+            .unwrap()
+            .push("POST /api/downloads/retry".to_string());
+        StatusCode::OK
+    }
+
     async fn mock_volume(
         State(state): State<MockState>,
         AxumJson(request): AxumJson<serde_json::Value>,
@@ -777,10 +969,18 @@ mod tests {
                 "play_track",
                 "previous",
                 "queue_add",
+                "queue_clear",
+                "queue_play_next",
+                "queue_remove",
+                "queue_reorder",
                 "remove_playlist_tracks",
                 "rename_playlist",
+                "repeat",
                 "resume",
+                "retry_download",
                 "search",
+                "seek",
+                "shuffle",
                 "volume",
             ]
         );
@@ -957,6 +1157,82 @@ mod tests {
         let (server, _state, handle) = server().await;
         let error = expect_error(server.volume(Parameters(VolumeArgs { volume: 101 })).await);
         assert!(error.message.contains("0 and 100"));
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn new_tools_call_the_daemon() {
+        let (server, state, handle) = server().await;
+
+        let Json(seeked) = server
+            .seek(Parameters(SeekArgs {
+                position_secs: 30.0,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(seeked.playback.state, PlaybackState::Playing);
+
+        let error = expect_error(
+            server
+                .seek(Parameters(SeekArgs {
+                    position_secs: -1.0,
+                }))
+                .await,
+        );
+        assert!(error.message.contains("position_secs"));
+
+        let Json(shuffled) = server
+            .shuffle(Parameters(ShuffleArgs { enabled: true }))
+            .await
+            .unwrap();
+        assert_eq!(shuffled.playback.state, PlaybackState::Playing);
+
+        let Json(repeated) = server
+            .repeat(Parameters(RepeatArgs {
+                repeat: RepeatMode::One,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(repeated.playback.state, PlaybackState::Playing);
+
+        let Json(removed) = server
+            .queue_remove(Parameters(QueueIndexArgs { index: 0 }))
+            .await
+            .unwrap();
+        assert_eq!(removed.items.len(), 1);
+
+        let Json(reordered) = server
+            .queue_reorder(Parameters(ReorderQueueArgs { from: 0, to: 1 }))
+            .await
+            .unwrap();
+        assert_eq!(reordered.items.len(), 1);
+
+        let Json(next) = server
+            .queue_play_next(Parameters(QueueIndexArgs { index: 0 }))
+            .await
+            .unwrap();
+        assert_eq!(next.items.len(), 1);
+
+        let Json(cleared) = server.queue_clear().await.unwrap();
+        assert_eq!(cleared.items.len(), 1);
+
+        let Json(retried) = server
+            .retry_download(Parameters(RetryDownloadArgs {
+                video_id: "v1".to_string(),
+            }))
+            .await
+            .unwrap();
+        assert!(retried.ok);
+
+        let calls = state.calls.lock().unwrap().clone();
+        assert!(calls.contains(&"POST /api/seek".to_string()));
+        assert!(calls.contains(&"POST /api/shuffle".to_string()));
+        assert!(calls.contains(&"POST /api/repeat".to_string()));
+        assert!(calls.contains(&"POST /api/queue/remove".to_string()));
+        assert!(calls.contains(&"POST /api/queue/reorder".to_string()));
+        assert!(calls.contains(&"POST /api/queue/play-next".to_string()));
+        assert!(calls.contains(&"DELETE /api/queue".to_string()));
+        assert!(calls.contains(&"POST /api/downloads/retry".to_string()));
         handle.abort();
     }
 

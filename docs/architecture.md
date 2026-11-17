@@ -151,8 +151,9 @@ display name `ytermusicd`. `playerctl -l` lists it while the daemon runs.
 ## MCP
 
 `ytermusicd mcp` is a stdio proxy to the REST API. It uses `rmcp` and holds no
-playback state. The proxy has 19 tools: search, playlists, playlist edits,
-playback transport, queue add, now playing, volume and download status. It reads
+playback state. The proxy has 27 tools: search, playlists, playlist edits,
+playback transport, seek, shuffle, repeat, queue management, queue add, now
+playing, volume and download status. It reads
 the daemon URL from `--url` or `YTERMUSICD_URL`, applies a 30-second timeout, and
 exits when stdin closes. See [docs/mcp.md](mcp.md). Lyrics and HTTP transport
 are post-v1.
