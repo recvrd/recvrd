@@ -362,7 +362,8 @@ pub fn playlist_dto(playlist: YoutubeMusicPlaylistRef) -> Playlist {
 
 pub fn track_dto(track: ytpapi2::YoutubeMusicVideoRef) -> Track {
     Track {
-        video_id: track.video_id,
+        provider: track.provider,
+        track_id: track.video_id,
         title: track.title,
         artist: track.author,
         album: track.album,
@@ -372,7 +373,8 @@ pub fn track_dto(track: ytpapi2::YoutubeMusicVideoRef) -> Track {
 
 pub fn core_track(track: Track) -> ytermusicd_core::Track {
     ytermusicd_core::Track {
-        video_id: track.video_id,
+        provider: track.provider,
+        track_id: track.track_id,
         title: track.title,
         author: track.artist,
         album: track.album,
@@ -392,6 +394,7 @@ mod tests {
             author: "Artist".to_string(),
             album: "Album".to_string(),
             duration: "3:00".to_string(),
+            provider: common_structs::ProviderId::Youtube,
             set_video_id: None,
         });
         assert_eq!(track.artist, "Artist");

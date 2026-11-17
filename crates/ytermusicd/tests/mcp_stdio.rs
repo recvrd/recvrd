@@ -7,7 +7,8 @@ use tokio::{
     time::timeout,
 };
 use ytermusicd_api::{
-    AuthState, AuthStatus, DownloadSummary, PlaybackSnapshot, PlaybackState, Status, Track,
+    AuthState, AuthStatus, DownloadSummary, PlaybackSnapshot, PlaybackState, ProviderId, Status,
+    Track,
 };
 
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -27,7 +28,8 @@ async fn mock_daemon() -> String {
         playback: PlaybackSnapshot {
             state: PlaybackState::Playing,
             current: Some(Track {
-                video_id: "v1".to_string(),
+                provider: ProviderId::Youtube,
+                track_id: "v1".to_string(),
                 title: "Song".to_string(),
                 artist: "Artist".to_string(),
                 album: "Album".to_string(),
@@ -40,6 +42,7 @@ async fn mock_daemon() -> String {
         },
         queue_length: 1,
         downloads: DownloadSummary::default(),
+        providers: vec![ProviderId::Youtube],
     };
     let router = Router::new().route(
         "/api/status",
@@ -164,8 +167,12 @@ async fn mcp_stdio_lists_tools_and_exits_on_eof() {
         50
     );
     assert_eq!(
-        call["result"]["structuredContent"]["playback"]["current"]["video_id"],
+        call["result"]["structuredContent"]["playback"]["current"]["track_id"],
         "v1"
+    );
+    assert_eq!(
+        call["result"]["structuredContent"]["playback"]["current"]["provider"],
+        "youtube"
     );
 
     drop(stdin);

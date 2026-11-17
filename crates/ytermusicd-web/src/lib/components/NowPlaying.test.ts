@@ -47,7 +47,7 @@ describe('NowPlaying', () => {
     const { container } = render(NowPlaying, { props: { store } });
 
     const cover = container.querySelector<HTMLImageElement>('.track .cover');
-    expect(cover?.getAttribute('src')).toBe('/api/tracks/v1/cover');
+    expect(cover?.getAttribute('src')).toBe('/api/tracks/youtube/v1/cover');
   });
 
   it('opens the full player', async () => {
@@ -83,7 +83,7 @@ describe('NowPlaying', () => {
 
     const retry = screen.getByRole('button', { name: /Download failed/ });
     await fireEvent.click(retry);
-    expect(api.retryDownload).toHaveBeenCalledWith('v1');
+    expect(api.retryDownload).toHaveBeenCalledWith(expect.objectContaining({ track_id: 'v1' }));
   });
 
   it('handles the empty state', () => {

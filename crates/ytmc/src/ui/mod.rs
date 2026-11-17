@@ -323,12 +323,13 @@ mod tests {
     use ratatui::backend::TestBackend;
     use ytermusicd_api::{
         AuthState, AuthStatus, DownloadStatus, DownloadSummary, PlaybackSnapshot, PlaybackState,
-        Playlist, Queue, QueueItem, RepeatMode, Status, Track,
+        Playlist, ProviderId, Queue, QueueItem, RepeatMode, Status, Track,
     };
 
     fn track() -> Track {
         Track {
-            video_id: "v1".to_string(),
+            provider: ProviderId::Youtube,
+            track_id: "v1".to_string(),
             title: "Song".to_string(),
             artist: "Artist".to_string(),
             album: "Album".to_string(),
@@ -359,6 +360,7 @@ mod tests {
             },
             queue_length: 1,
             downloads: DownloadSummary::default(),
+            providers: vec![ProviderId::Youtube],
         });
         app.queue = Queue {
             items: vec![QueueItem {

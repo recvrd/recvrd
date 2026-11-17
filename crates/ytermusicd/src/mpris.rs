@@ -1,3 +1,4 @@
+use common_structs::TrackKey;
 use souvlaki::{MediaControlEvent, MediaMetadata, MediaPlayback, MediaPosition, SeekDirection};
 use std::{
     path::{Path, PathBuf},
@@ -15,7 +16,7 @@ pub struct MprisHandle;
 
 enum MprisUpdate {
     Snapshot(PlaybackSnapshot),
-    Cover { video_id: String, path: PathBuf },
+    Cover { key: TrackKey, path: PathBuf },
 }
 
 #[cfg(target_os = "linux")]
@@ -63,14 +64,14 @@ pub fn spawn(
                         let cover = current
                             .current
                             .as_ref()
-                            .and_then(|track| thread_artwork.cached_path(&track.video_id));
+                            .and_then(|track| thread_artwork.cached_path(&track.key()));
                         update_controls(&mut controls, &current, cover.as_deref());
                     }
-                    MprisUpdate::Cover { video_id, path } => {
+                    MprisUpdate::Cover { key, path } => {
                         if current
                             .current
                             .as_ref()
-                            .is_some_and(|track| track.video_id == video_id)
+                            .is_some_and(|track| track.key() == key)
                         {
                             update_controls(&mut controls, &current, Some(&path));
                         }
@@ -83,37 +84,20 @@ pub fn spawn(
     ready_rx.recv().map_err(|error| error.to_string())??;
 
     let (initial, mut receiver) = events.subscribe();
-    let initial_id = initial
-        .playback
-        .current
-        .as_ref()
-        .map(|track| track.video_id.clone());
+    let initial_id = initial.playback.current.as_ref().map(|track| track.key());
     let current_id = Arc::new(Mutex::new(initial_id.clone()));
     let _ = update_tx.send(MprisUpdate::Snapshot(initial.playback));
-    if let Some(video_id) = initial_id {
-        prefetch_cover(
-            artwork.clone(),
-            update_tx.clone(),
-            current_id.clone(),
-            video_id,
-        );
+    if let Some(key) = initial_id {
+        prefetch_cover(artwork.clone(), update_tx.clone(), current_id.clone(), key);
     }
     tokio::spawn(async move {
         while let Ok(envelope) = receiver.recv().await {
             if let CoreEvent::Playback(snapshot) = envelope.event {
-                let video_id = snapshot
-                    .current
-                    .as_ref()
-                    .map(|track| track.video_id.clone());
-                *current_id.lock().unwrap() = video_id.clone();
+                let key = snapshot.current.as_ref().map(|track| track.key());
+                *current_id.lock().unwrap() = key.clone();
                 let _ = update_tx.send(MprisUpdate::Snapshot(snapshot));
-                if let Some(video_id) = video_id {
-                    prefetch_cover(
-                        artwork.clone(),
-                        update_tx.clone(),
-                        current_id.clone(),
-                        video_id,
-                    );
+                if let Some(key) = key {
+                    prefetch_cover(artwork.clone(), update_tx.clone(), current_id.clone(), key);
                 }
             }
         }
@@ -134,24 +118,24 @@ pub fn spawn(
 fn prefetch_cover(
     artwork: Arc<ArtworkCache>,
     updates: mpsc::Sender<MprisUpdate>,
-    current_id: Arc<Mutex<Option<String>>>,
-    video_id: String,
+    current_id: Arc<Mutex<Option<TrackKey>>>,
+    key: TrackKey,
 ) {
     tokio::spawn(async move {
-        if artwork.cached_path(&video_id).is_some() {
+        if artwork.cached_path(&key).is_some() {
             return;
         }
-        let Some(path) = artwork.ensure(&video_id).await else {
+        let Some(path) = artwork.ensure(&key).await else {
             return;
         };
-        if is_current_track(&current_id, &video_id) {
-            let _ = updates.send(MprisUpdate::Cover { video_id, path });
+        if is_current_track(&current_id, &key) {
+            let _ = updates.send(MprisUpdate::Cover { key, path });
         }
     });
 }
 
-fn is_current_track(current_id: &Mutex<Option<String>>, video_id: &str) -> bool {
-    current_id.lock().unwrap().as_deref() == Some(video_id)
+fn is_current_track(current_id: &Mutex<Option<TrackKey>>, key: &TrackKey) -> bool {
+    current_id.lock().unwrap().as_ref() == Some(key)
 }
 
 fn update_controls(
@@ -264,7 +248,8 @@ mod tests {
             status,
             current_index: Some(0),
             current: Some(Track {
-                video_id: "v1".to_string(),
+                provider: common_structs::ProviderId::Youtube,
+                track_id: "v1".to_string(),
                 title: "Song".to_string(),
                 author: "Artist".to_string(),
                 album: "Album".to_string(),
@@ -307,12 +292,21 @@ mod tests {
 
     #[test]
     fn stale_cover_updates_are_ignored() {
-        let current = Mutex::new(Some("abcdefghijk".to_string()));
-        assert!(is_current_track(&current, "abcdefghijk"));
-        assert!(!is_current_track(&current, "zzzzzzzzzzz"));
+        let current = Mutex::new(Some(TrackKey::youtube("abcdefghijk")));
+        assert!(is_current_track(
+            &current,
+            &TrackKey::youtube("abcdefghijk")
+        ));
+        assert!(!is_current_track(
+            &current,
+            &TrackKey::youtube("zzzzzzzzzzz")
+        ));
 
         *current.lock().unwrap() = None;
-        assert!(!is_current_track(&current, "abcdefghijk"));
+        assert!(!is_current_track(
+            &current,
+            &TrackKey::youtube("abcdefghijk")
+        ));
     }
 
     #[test]

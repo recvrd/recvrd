@@ -127,15 +127,11 @@ impl PersistedState {
             )));
         }
         if !self.original_tracks.is_empty() {
-            let mut saved: Vec<&str> = self
-                .tracks
-                .iter()
-                .map(|track| track.video_id.as_str())
-                .collect();
-            let mut original: Vec<&str> = self
+            let mut saved: Vec<_> = self.tracks.iter().map(|track| track.key()).collect();
+            let mut original: Vec<_> = self
                 .original_tracks
                 .iter()
-                .map(|track| track.video_id.as_str())
+                .map(|track| track.key())
                 .collect();
             saved.sort_unstable();
             original.sort_unstable();
@@ -180,7 +176,8 @@ mod tests {
 
     fn track(index: usize) -> Track {
         Track {
-            video_id: format!("video-{index}"),
+            provider: common_structs::ProviderId::Youtube,
+            track_id: format!("video-{index}"),
             title: format!("Track {index}"),
             author: "Artist".to_string(),
             album: "Album".to_string(),
@@ -283,6 +280,26 @@ mod tests {
         let state = PersistedState::load(&path).unwrap();
         assert!(state.original_tracks.is_empty());
         assert!(state.shuffle);
+    }
+
+    #[test]
+    fn old_state_file_with_video_id_loads_as_youtube() {
+        // State files written before the provider model have
+        // `video_id` and no `provider`. They still load.
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("state.toml");
+        fs::write(
+            &path,
+            "version = 1\ncurrent = 0\nrepeat = \"off\"\nshuffle = false\nvolume = 50\nposition_secs = 0.0\n[[tracks]]\nvideo_id = \"dQw4w9WgXcQ\"\ntitle = \"Song\"\nauthor = \"Artist\"\nalbum = \"Album\"\nduration = \"3:00\"\n",
+        )
+        .unwrap();
+        let state = PersistedState::load(&path).unwrap();
+        assert_eq!(state.tracks.len(), 1);
+        assert_eq!(state.tracks[0].track_id, "dQw4w9WgXcQ");
+        assert_eq!(
+            state.tracks[0].provider,
+            common_structs::ProviderId::Youtube
+        );
     }
 
     #[test]

@@ -3,6 +3,7 @@
 //! These types are the API contract. The web UI and MCP proxy should consume
 //! the generated TypeScript bindings rather than duplicating shapes.
 
+pub use common_structs::{ProviderId, TrackKey};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -10,11 +11,24 @@ use ts_rs::TS;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct Track {
-    pub video_id: String,
+    /// The provider this track came from. Old payloads without the
+    /// field read as YouTube.
+    #[serde(default)]
+    pub provider: ProviderId,
+    /// The provider-scoped track ID. Accepts the old `video_id` name.
+    #[serde(alias = "video_id")]
+    pub track_id: String,
     pub title: String,
     pub artist: String,
     pub album: String,
     pub duration: String,
+}
+
+impl Track {
+    /// The provider-scoped key of this track.
+    pub fn key(&self) -> TrackKey {
+        TrackKey::new(self.provider, self.track_id.clone())
+    }
 }
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -67,7 +81,11 @@ pub struct UpdatePlaylistRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct AddPlaylistTracksRequest {
-    pub video_ids: Vec<String>,
+    /// The provider the track IDs belong to. Old payloads without
+    /// the field read as YouTube.
+    #[serde(default)]
+    pub provider: ProviderId,
+    pub track_ids: Vec<String>,
 }
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -208,6 +226,10 @@ pub struct Status {
     pub playback: PlaybackSnapshot,
     pub queue_length: usize,
     pub downloads: DownloadSummary,
+    /// The providers the daemon knows. Old payloads without the
+    /// field read as an empty list.
+    #[serde(default)]
+    pub providers: Vec<ProviderId>,
 }
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -278,7 +300,11 @@ pub struct RepeatRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct RetryDownloadRequest {
-    pub video_id: String,
+    /// The provider the track ID belongs to. Old payloads without
+    /// the field read as YouTube.
+    #[serde(default)]
+    pub provider: ProviderId,
+    pub track_id: String,
 }
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -319,11 +345,13 @@ pub enum EventKind {
         queue: Queue,
     },
     Download {
-        video_id: String,
+        provider: ProviderId,
+        track_id: String,
         status: DownloadStatus,
     },
     TrackEnded {
-        video_id: String,
+        provider: ProviderId,
+        track_id: String,
     },
     Error {
         error: ApiError,
@@ -346,7 +374,8 @@ mod tests {
 
     fn track() -> Track {
         Track {
-            video_id: "v1".to_string(),
+            provider: ProviderId::Youtube,
+            track_id: "v1".to_string(),
             title: "Song".to_string(),
             artist: "Artist".to_string(),
             album: "Album".to_string(),
@@ -401,7 +430,8 @@ mod tests {
         let event = Event {
             id: 7,
             event: EventKind::Download {
-                video_id: "v1".to_string(),
+                provider: ProviderId::Youtube,
+                track_id: "v1".to_string(),
                 status: DownloadStatus::Downloaded,
             },
         };
@@ -409,6 +439,16 @@ mod tests {
         assert_eq!(json["id"], 7);
         assert_eq!(json["event"]["type"], "download");
         assert_eq!(json["event"]["status"]["state"], "downloaded");
+    }
+
+    #[test]
+    fn track_reads_the_old_video_id_field() {
+        // Payloads written before the provider model have `video_id`
+        // and no `provider`. They still load, as YouTube.
+        let json = r#"{"video_id":"dQw4w9WgXcQ","title":"Song","artist":"Artist","album":"Album","duration":"3:00"}"#;
+        let track: Track = serde_json::from_str(json).unwrap();
+        assert_eq!(track.track_id, "dQw4w9WgXcQ");
+        assert_eq!(track.provider, ProviderId::Youtube);
     }
 
     #[test]
@@ -422,6 +462,7 @@ mod tests {
             playback: PlaybackSnapshot::default(),
             queue_length: 0,
             downloads: DownloadSummary::default(),
+            providers: vec![ProviderId::Youtube],
         };
         let json = serde_json::to_string(&status).unwrap();
         assert_eq!(serde_json::from_str::<Status>(&json).unwrap(), status);

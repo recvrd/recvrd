@@ -102,7 +102,7 @@ impl Screen for PlayerState {
                         if MusicDownloadStatus::DownloadFailed != *music_status {
                             return;
                         }
-                        if let Some(e) = self.list.iter().find(|x| &x.video_id == key) {
+                        if let Some(e) = self.list.iter().find(|x| &x.key() == key) {
                             musics.push(e.clone());
                             *music_status = MusicDownloadStatus::NotDownloaded;
                         }
@@ -233,7 +233,7 @@ impl Screen for PlayerState {
                 let music_state = self
                     .list
                     .get(index)
-                    .and_then(|x| self.music_status.get(&x.video_id))
+                    .and_then(|x| self.music_status.get(&x.key()))
                     .copied()
                     .unwrap_or(MusicDownloadStatus::Downloaded);
                 let music_state_c = music_state.character(Some(!self.sink.is_paused()));

@@ -53,7 +53,7 @@ describe('LibraryView', () => {
       screen.getByRole('heading', { level: 2, name: 'Dashboard Song' }),
     ).toBeInTheDocument();
     expect(container.querySelector<HTMLImageElement>('.np-art img')?.getAttribute('src')).toBe(
-      '/api/tracks/v9/cover',
+      '/api/tracks/youtube/v9/cover',
     );
 
     await fireEvent.click(screen.getByRole('button', { name: 'Full player' }));

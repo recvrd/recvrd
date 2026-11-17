@@ -1,20 +1,34 @@
-use common_structs::MusicDownloadStatus;
+use common_structs::{MusicDownloadStatus, ProviderId, TrackKey};
 use serde::{Deserialize, Serialize};
 
 /// A playable track independent of the YouTube Music API client.
+/// `provider` defaults to YouTube and `track_id` accepts the old
+/// `video_id` name, so state files written before the provider
+/// model still load.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Track {
-    pub video_id: String,
+    #[serde(default)]
+    pub provider: ProviderId,
+    #[serde(alias = "video_id")]
+    pub track_id: String,
     pub title: String,
     pub author: String,
     pub album: String,
     pub duration: String,
 }
 
+impl Track {
+    /// The provider-scoped key of this track.
+    pub fn key(&self) -> TrackKey {
+        TrackKey::new(self.provider, self.track_id.clone())
+    }
+}
+
 impl From<ytpapi2::YoutubeMusicVideoRef> for Track {
     fn from(value: ytpapi2::YoutubeMusicVideoRef) -> Self {
         Self {
-            video_id: value.video_id,
+            provider: value.provider,
+            track_id: value.video_id,
             title: value.title,
             author: value.author,
             album: value.album,
@@ -26,7 +40,8 @@ impl From<ytpapi2::YoutubeMusicVideoRef> for Track {
 impl From<&ytpapi2::YoutubeMusicVideoRef> for Track {
     fn from(value: &ytpapi2::YoutubeMusicVideoRef) -> Self {
         Self {
-            video_id: value.video_id.clone(),
+            provider: value.provider,
+            track_id: value.video_id.clone(),
             title: value.title.clone(),
             author: value.author.clone(),
             album: value.album.clone(),
@@ -167,7 +182,7 @@ impl Queue {
         if enabled == self.shuffle {
             return;
         }
-        let current_id = self.current_track().map(|track| track.video_id.clone());
+        let current_key = self.current_track().map(|track| track.key());
 
         if enabled {
             self.original = Some(self.items.clone());
@@ -180,8 +195,8 @@ impl Queue {
             self.shuffle = false;
         }
 
-        self.current = current_id
-            .and_then(|id| self.items.iter().position(|item| item.track.video_id == id))
+        self.current = current_key
+            .and_then(|key| self.items.iter().position(|item| item.track.key() == key))
             .or_else(|| (!self.items.is_empty()).then_some(0));
     }
 
@@ -199,10 +214,10 @@ impl Queue {
         if self.shuffle && !self.items.is_empty() {
             let seed = fastrand::u64(..);
             self.original = Some(self.items.clone());
-            let current_id = self.current_track().map(|track| track.video_id.clone());
+            let current_key = self.current_track().map(|track| track.key());
             shuffle_items(&mut self.items, seed);
-            self.current = current_id
-                .and_then(|id| self.items.iter().position(|item| item.track.video_id == id))
+            self.current = current_key
+                .and_then(|key| self.items.iter().position(|item| item.track.key() == key))
                 .or_else(|| (!self.items.is_empty()).then_some(0));
         }
     }
@@ -234,11 +249,11 @@ impl Queue {
         // Keep the unshuffled order in step: insert after the current
         // track there, not at the end.
         let original_index = self.current.and_then(|current| {
-            let current_id = self.items.get(current)?.track.video_id.clone();
+            let current_key = self.items.get(current)?.track.key();
             self.original.as_ref().and_then(|original| {
                 original
                     .iter()
-                    .position(|entry| entry.track.video_id == current_id)
+                    .position(|entry| entry.track.key() == current_key)
                     .map(|position| position + 1)
             })
         });
@@ -264,8 +279,9 @@ impl Queue {
             return None;
         }
         let removed = self.items.remove(index);
+        let removed_key = removed.track.key();
         if let Some(original) = &mut self.original {
-            original.retain(|item| item.track.video_id != removed.track.video_id);
+            original.retain(|item| item.track.key() != removed_key);
         }
         self.current = match self.current {
             None => None,
@@ -287,13 +303,13 @@ impl Queue {
             return false;
         }
         let item = self.items.remove(from);
-        let track_id = item.track.video_id.clone();
+        let track_key = item.track.key();
         self.items.insert(to, item);
 
         if let Some(original) = &mut self.original
             && let Some(original_index) = original
                 .iter()
-                .position(|entry| entry.track.video_id == track_id)
+                .position(|entry| entry.track.key() == track_key)
         {
             let moved = original.remove(original_index);
             let target = to.min(original.len());
@@ -372,11 +388,7 @@ impl Queue {
         let Some(index) = self.current else {
             return false;
         };
-        let Some(track_id) = self
-            .items
-            .get(index)
-            .map(|item| item.track.video_id.clone())
-        else {
+        let Some(track_key) = self.items.get(index).map(|item| item.track.key()) else {
             return false;
         };
         let mut changed = false;
@@ -389,7 +401,7 @@ impl Queue {
         if let Some(original) = &mut self.original
             && let Some(item) = original
                 .iter_mut()
-                .find(|item| item.track.video_id == track_id)
+                .find(|item| item.track.key() == track_key)
             && item.track.duration != duration
         {
             item.track.duration = duration;
@@ -427,15 +439,15 @@ impl Queue {
         }
     }
 
-    pub fn set_download_status(&mut self, video_id: &str, status: MusicDownloadStatus) {
+    pub fn set_download_status(&mut self, key: &TrackKey, status: MusicDownloadStatus) {
         for item in &mut self.items {
-            if item.track.video_id == video_id {
+            if item.track.key() == *key {
                 item.download = status;
             }
         }
         if let Some(original) = &mut self.original {
             for item in original {
-                if item.track.video_id == video_id {
+                if item.track.key() == *key {
                     item.download = status;
                 }
             }
@@ -468,7 +480,8 @@ mod tests {
     fn tracks(count: usize) -> Vec<Track> {
         (0..count)
             .map(|index| Track {
-                video_id: format!("video-{index}"),
+                provider: ProviderId::Youtube,
+                track_id: format!("video-{index}"),
                 title: format!("Track {index}"),
                 author: "Artist".to_string(),
                 album: "Album".to_string(),
@@ -510,7 +523,7 @@ mod tests {
         queue.play_now(tracks[2].clone());
         assert_eq!(queue.len(), 3);
         assert_eq!(queue.current_index(), Some(1));
-        assert_eq!(queue.current_track().unwrap().video_id, "video-2");
+        assert_eq!(queue.current_track().unwrap().track_id, "video-2");
     }
 
     #[test]
@@ -534,7 +547,7 @@ mod tests {
         queue.set_current(Some(1));
         assert!(queue.move_item(1, 2));
         assert_eq!(queue.current_index(), Some(2));
-        assert_eq!(queue.current_track().unwrap().video_id, "video-1");
+        assert_eq!(queue.current_track().unwrap().track_id, "video-1");
     }
 
     #[test]
@@ -544,14 +557,14 @@ mod tests {
         let original: Vec<_> = queue
             .items()
             .iter()
-            .map(|item| item.track.video_id.clone())
+            .map(|item| item.track.track_id.clone())
             .collect();
 
         queue.set_shuffle_with_seed(true, 42);
         let shuffled: Vec<_> = queue
             .items()
             .iter()
-            .map(|item| item.track.video_id.clone())
+            .map(|item| item.track.track_id.clone())
             .collect();
         assert_ne!(original, shuffled);
 
@@ -559,7 +572,7 @@ mod tests {
         let restored: Vec<_> = queue
             .items()
             .iter()
-            .map(|item| item.track.video_id.clone())
+            .map(|item| item.track.track_id.clone())
             .collect();
         assert_eq!(original, restored);
 
@@ -567,7 +580,7 @@ mod tests {
         let shuffled_again: Vec<_> = queue
             .items()
             .iter()
-            .map(|item| item.track.video_id.clone())
+            .map(|item| item.track.track_id.clone())
             .collect();
         assert_eq!(shuffled, shuffled_again);
     }
@@ -577,24 +590,63 @@ mod tests {
         let mut queue = Queue::new();
         queue.replace(tracks(5));
         queue.set_current(Some(2));
-        let current = queue.current_track().unwrap().video_id.clone();
+        let current = queue.current_track().unwrap().track_id.clone();
         queue.set_shuffle_with_seed(true, 7);
-        assert_eq!(queue.current_track().unwrap().video_id, current);
+        assert_eq!(queue.current_track().unwrap().track_id, current);
     }
 
     #[test]
     fn download_status_updates_items() {
         let mut queue = Queue::new();
         queue.replace(tracks(2));
-        queue.set_download_status("video-1", MusicDownloadStatus::Downloaded);
+        queue.set_download_status(
+            &TrackKey::youtube("video-1"),
+            MusicDownloadStatus::Downloaded,
+        );
         assert_eq!(queue.items()[1].download, MusicDownloadStatus::Downloaded);
     }
 
-    fn video_ids(queue: &Queue) -> Vec<String> {
+    #[test]
+    fn download_status_by_key_touches_only_the_matching_track() {
+        let mut queue = Queue::new();
+        queue.replace(tracks(3));
+        queue.set_download_status(
+            &TrackKey::youtube("video-1"),
+            MusicDownloadStatus::Downloaded,
+        );
+        assert_eq!(
+            queue.items()[0].download,
+            MusicDownloadStatus::NotDownloaded
+        );
+        assert_eq!(queue.items()[1].download, MusicDownloadStatus::Downloaded);
+        assert_eq!(
+            queue.items()[2].download,
+            MusicDownloadStatus::NotDownloaded
+        );
+    }
+
+    #[test]
+    fn track_key_carries_the_provider() {
+        let track = tracks(1).into_iter().next().unwrap();
+        assert_eq!(track.key(), TrackKey::youtube("video-0"));
+        assert_eq!(track.key().provider, ProviderId::Youtube);
+    }
+
+    #[test]
+    fn track_reads_the_old_video_id_field() {
+        // State files written before the provider model have
+        // `video_id` and no `provider`. They still load, as YouTube.
+        let json = r#"{"video_id":"dQw4w9WgXcQ","title":"Song","author":"Artist","album":"Album","duration":"3:00"}"#;
+        let track: Track = serde_json::from_str(json).unwrap();
+        assert_eq!(track.track_id, "dQw4w9WgXcQ");
+        assert_eq!(track.provider, ProviderId::Youtube);
+    }
+
+    fn track_ids(queue: &Queue) -> Vec<String> {
         queue
             .items()
             .iter()
-            .map(|item| item.track.video_id.clone())
+            .map(|item| item.track.track_id.clone())
             .collect()
     }
 
@@ -616,9 +668,9 @@ mod tests {
         restored.set_shuffle(false);
         let expected: Vec<String> = original
             .iter()
-            .map(|track| track.video_id.clone())
+            .map(|track| track.track_id.clone())
             .collect();
-        assert_eq!(video_ids(&restored), expected);
+        assert_eq!(track_ids(&restored), expected);
     }
 
     #[test]
@@ -628,18 +680,19 @@ mod tests {
         queue.set_current(Some(2));
         queue.set_shuffle_with_seed(true, 7);
         let new_track = Track {
-            video_id: "video-new".to_string(),
+            provider: ProviderId::Youtube,
+            track_id: "video-new".to_string(),
             title: "New".to_string(),
             author: "Artist".to_string(),
             album: "Album".to_string(),
             duration: "3:00".to_string(),
         };
         queue.play_now(new_track);
-        assert_eq!(queue.current_track().unwrap().video_id, "video-new");
+        assert_eq!(queue.current_track().unwrap().track_id, "video-new");
 
         queue.set_shuffle(false);
         assert_eq!(
-            video_ids(&queue),
+            track_ids(&queue),
             [
                 "video-0",
                 "video-1",

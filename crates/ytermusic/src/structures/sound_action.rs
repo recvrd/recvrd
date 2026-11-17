@@ -1,4 +1,4 @@
-use common_structs::MusicDownloadStatus;
+use common_structs::{MusicDownloadStatus, TrackKey};
 use download_manager::{DownloadManagerMessage, MessageHandler};
 use flume::Sender;
 use log::{error, trace};
@@ -37,11 +37,11 @@ pub enum SoundAction {
     AddVideoUnary(YoutubeMusicVideoRef),
     DeleteVideoUnary,
     ReplaceQueue(Vec<YoutubeMusicVideoRef>),
-    VideoStatusUpdate(String, MusicDownloadStatus),
+    VideoStatusUpdate(TrackKey, MusicDownloadStatus),
 }
 
 impl SoundAction {
-    fn insert(player: &mut PlayerState, video: String, status: MusicDownloadStatus) {
+    fn insert(player: &mut PlayerState, video: TrackKey, status: MusicDownloadStatus) {
         if matches!(
             player.music_status.get(&video),
             Some(&MusicDownloadStatus::DownloadFailed)
@@ -82,16 +82,16 @@ impl SoundAction {
 
                 player.set_relative_current(a as _);
             }
-            Self::VideoStatusUpdate(video, status) => {
-                player.music_status.insert(video, status);
+            Self::VideoStatusUpdate(key, status) => {
+                player.music_status.insert(key, status);
             }
             Self::AddVideosToQueue(video) => {
                 let db = DATABASE.read_or_empty();
                 for v in video {
                     Self::insert(
                         player,
-                        v.video_id.clone(),
-                        if db.iter().any(|e| e.video_id == v.video_id) {
+                        v.key(),
+                        if db.iter().any(|e| e.key() == v.key()) {
                             MusicDownloadStatus::Downloaded
                         } else {
                             MusicDownloadStatus::NotDownloaded
@@ -115,11 +115,11 @@ impl SoundAction {
             Self::AddVideoUnary(video) => {
                 Self::insert(
                     player,
-                    video.video_id.clone(),
+                    video.key(),
                     if DATABASE
                         .read_or_empty()
                         .iter()
-                        .any(|e| e.video_id == video.video_id)
+                        .any(|e| e.key() == video.key())
                     {
                         MusicDownloadStatus::Downloaded
                     } else {
@@ -136,16 +136,16 @@ impl SoundAction {
                 let index_list = player.list_selector.get_relative_position();
                 let video = player.relative_current(index_list).cloned().unwrap();
                 if matches!(
-                    player.music_status.get(&video.video_id), // not sure abt conditions, needs testing
+                    player.music_status.get(&video.key()), // not sure abt conditions, needs testing
                     Some(
                         &MusicDownloadStatus::DownloadFailed
                             | &MusicDownloadStatus::Downloading(_)
                             | &MusicDownloadStatus::NotDownloaded
                     )
                 ) {
-                    DOWNLOAD_MANAGER.remove_from_in_downloads(&video.video_id);
+                    DOWNLOAD_MANAGER.remove_from_in_downloads(&video.key());
                 }
-                player.music_status.remove(&video.video_id); // maybe not necessary to do it
+                player.music_status.remove(&video.key()); // maybe not necessary to do it
 
                 //manage deleting in the list
                 player.list.retain(|vid| *vid != video);
@@ -163,13 +163,13 @@ impl SoundAction {
                 }
 
                 let cache_folder = CACHE_DIR.join("downloads");
-                let json_path = cache_folder.join(format!("{}.json", video.video_id));
+                let json_path = video.key().download_file(&cache_folder, "json");
                 match fs::remove_file(json_path) {
                     Ok(_) => trace!("Deleted JSON file"),
                     Err(e) => error!("Error deleting JSON video file: {}", e),
                 }
 
-                let mp4_path = cache_folder.join(format!("{}.mp4", video.video_id));
+                let mp4_path = video.key().download_file(&cache_folder, "mp4");
                 match fs::remove_file(mp4_path) {
                     Ok(_) => trace!("Deleted MP4 file"),
                     Err(e) => error!("Error deleting MP4 video file: {}", e),

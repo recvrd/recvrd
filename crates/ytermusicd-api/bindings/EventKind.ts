@@ -2,7 +2,8 @@
 import type { ApiError } from "./ApiError";
 import type { DownloadStatus } from "./DownloadStatus";
 import type { PlaybackSnapshot } from "./PlaybackSnapshot";
+import type { ProviderId } from "./ProviderId";
 import type { Queue } from "./Queue";
 import type { Status } from "./Status";
 
-export type EventKind = { "type": "snapshot", status: Status, queue: Queue, } | { "type": "playback", playback: PlaybackSnapshot, } | { "type": "queue", queue: Queue, } | { "type": "download", video_id: string, status: DownloadStatus, } | { "type": "track_ended", video_id: string, } | { "type": "error", error: ApiError, } | { "type": "library_changed" };
+export type EventKind = { "type": "snapshot", status: Status, queue: Queue, } | { "type": "playback", playback: PlaybackSnapshot, } | { "type": "queue", queue: Queue, } | { "type": "download", provider: ProviderId, track_id: string, status: DownloadStatus, } | { "type": "track_ended", provider: ProviderId, track_id: string, } | { "type": "error", error: ApiError, } | { "type": "library_changed" };

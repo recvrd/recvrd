@@ -41,7 +41,7 @@ describe('FullPlayer', () => {
     expect(within(dialog).getByText('Album')).toBeInTheDocument();
     expect(within(dialog).getByText('Track 1 of 2')).toBeInTheDocument();
     expect(container.querySelector<HTMLImageElement>('.art')?.getAttribute('src')).toBe(
-      '/api/tracks/v1/cover',
+      '/api/tracks/youtube/v1/cover',
     );
   });
 

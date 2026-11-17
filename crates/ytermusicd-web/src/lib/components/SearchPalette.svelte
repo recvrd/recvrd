@@ -147,7 +147,7 @@
         {:else if !store.searchResults || entries.length === 0}
           <p class="hint muted">No results for “{store.searchQuery}”.</p>
         {:else}
-          {#each entries as entry, index (entry.kind === 'track' ? entry.track.video_id : entry.playlist.id)}
+          {#each entries as entry, index (entry.kind === 'track' ? entry.track.track_id : entry.playlist.id)}
             <div class="result" class:active={index === active}>
               <button
                 id={`search-entry-${index}`}

@@ -1,5 +1,11 @@
 use clap::{Parser, Subcommand};
-use std::{path::PathBuf, process::ExitCode, sync::Arc, time::Duration};
+use common_structs::ProviderId;
+use std::{
+    path::{Path, PathBuf},
+    process::ExitCode,
+    sync::Arc,
+    time::Duration,
+};
 use tokio::sync::{Mutex as AsyncMutex, mpsc};
 use ytermusicd_core::{
     AuthStatus, DaemonConfig, Downloader as ConfigDownloader, Paths, PlaybackService,
@@ -153,6 +159,11 @@ fn run_serve(
     let cache_dir = paths.cache_dir.clone();
     let covers_dir = paths.covers_dir();
     let state_path = paths.state_file();
+    if let Err(error) = migrate_cache(&cache_dir, &covers_dir) {
+        log::error!("cache migration failed: {error}");
+        eprintln!("cache migration failed: {error}");
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, error));
+    }
     log::info!("starting ytermusicd serve on {bind}:{port}");
     if !is_loopback_bind(&bind) {
         let warning = format!(
@@ -275,6 +286,121 @@ fn run_serve(
     })
 }
 
+/// Move a version 0 cache into the provider-scoped layout, and
+/// upgrade the database to version 1. Flat download and cover files
+/// move to `downloads/youtube/` and `covers/youtube/`. A file that
+/// cannot move stays in place and is logged, so a bad cache never
+/// blocks startup. A database with an unknown version is an error.
+fn migrate_cache(cache_dir: &Path, covers_dir: &Path) -> Result<(), String> {
+    let database = database::YTLocalDatabase::new(cache_dir.to_path_buf());
+    database.upgrade().map_err(|error| error.to_string())?;
+    migrate_flat_files(
+        &cache_dir.join("downloads"),
+        &["mp4", "json", "part"],
+        cache_dir,
+    );
+    migrate_flat_files(covers_dir, &["jpg"], cache_dir);
+    Ok(())
+}
+
+/// Move flat files in `dir` into the `youtube` subdirectory. Files
+/// with an invalid id go to quarantine, not to the trash.
+fn migrate_flat_files(dir: &Path, extensions: &[&str], cache_dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let scoped = dir.join(ProviderId::Youtube.as_str());
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(extension) = path.extension().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if !extensions.contains(&extension) {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if !ProviderId::Youtube.validate_id(stem) {
+            quarantine(&path, cache_dir);
+            continue;
+        }
+        if std::fs::create_dir_all(&scoped).is_err() {
+            log::warn!("could not create {}", scoped.display());
+            continue;
+        }
+        let Some(name) = path.file_name() else {
+            continue;
+        };
+        move_or_quarantine(&path, &scoped.join(name), cache_dir);
+    }
+}
+
+/// Move `source` to `target`. When `target` exists, keep the larger
+/// file and quarantine the smaller one.
+fn move_or_quarantine(source: &Path, target: &Path, cache_dir: &Path) {
+    if !target.exists() {
+        if let Err(error) = std::fs::rename(source, target) {
+            log::warn!(
+                "could not move {} to {}: {error}",
+                source.display(),
+                target.display()
+            );
+        }
+        return;
+    }
+    let source_len = std::fs::metadata(source)
+        .map(|data| data.len())
+        .unwrap_or(0);
+    let target_len = std::fs::metadata(target)
+        .map(|data| data.len())
+        .unwrap_or(0);
+    if source_len > target_len {
+        quarantine(target, cache_dir);
+        if let Err(error) = std::fs::rename(source, target) {
+            log::warn!(
+                "could not move {} to {}: {error}",
+                source.display(),
+                target.display()
+            );
+        }
+    } else {
+        quarantine(source, cache_dir);
+    }
+}
+
+/// Move `path` to `cache/quarantine/`. A name clash adds a number.
+fn quarantine(path: &Path, cache_dir: &Path) {
+    let dir = cache_dir.join("quarantine");
+    if std::fs::create_dir_all(&dir).is_err() {
+        log::warn!("could not create {}", dir.display());
+        return;
+    }
+    let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+        return;
+    };
+    let mut target = dir.join(name);
+    let mut suffix = 1;
+    while target.exists() {
+        let stem = path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or("file");
+        let extension = path
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or("");
+        target = dir.join(format!("{stem}-{suffix}.{extension}"));
+        suffix += 1;
+    }
+    if let Err(error) = std::fs::rename(path, &target) {
+        log::warn!("could not quarantine {}: {error}", path.display());
+    }
+}
+
 fn init_logging() {
     let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
         .try_init();
@@ -284,6 +410,91 @@ fn init_logging() {
 mod tests {
     use super::*;
     use clap::CommandFactory;
+
+    fn write_file(path: &Path, bytes: &[u8]) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    #[test]
+    fn migrate_cache_moves_flat_files_into_the_youtube_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path();
+        let covers = cache.join("covers");
+        write_file(&cache.join("downloads/abcdefghijk.mp4"), b"video");
+        write_file(&cache.join("downloads/abcdefghijk.json"), b"{}");
+        write_file(&cache.join("downloads/abcdefghijk.part"), b"part");
+        write_file(&covers.join("abcdefghijk.jpg"), b"jpeg");
+        write_file(&cache.join("downloads/notes.txt"), b"keep me");
+
+        migrate_cache(cache, &covers).unwrap();
+
+        assert!(cache.join("downloads/youtube/abcdefghijk.mp4").exists());
+        assert!(cache.join("downloads/youtube/abcdefghijk.json").exists());
+        assert!(cache.join("downloads/youtube/abcdefghijk.part").exists());
+        assert!(covers.join("youtube/abcdefghijk.jpg").exists());
+        assert!(cache.join("downloads/notes.txt").exists());
+        assert!(!cache.join("quarantine").exists());
+    }
+
+    #[test]
+    fn migrate_cache_quarantines_files_with_invalid_ids() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path();
+        let covers = cache.join("covers");
+        write_file(&cache.join("downloads/short.mp4"), b"video");
+        write_file(&covers.join("not-an-id.jpg"), b"jpeg");
+
+        migrate_cache(cache, &covers).unwrap();
+
+        assert!(cache.join("quarantine/short.mp4").exists());
+        assert!(cache.join("quarantine/not-an-id.jpg").exists());
+        assert!(!cache.join("downloads/youtube").exists());
+        assert!(!covers.join("youtube").exists());
+    }
+
+    #[test]
+    fn migrate_cache_keeps_the_larger_file_on_collision() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path();
+        let covers = cache.join("covers");
+        // Flat file is smaller than the scoped copy: flat is quarantined.
+        write_file(&cache.join("downloads/abcdefghijk.mp4"), b"small");
+        write_file(
+            &cache.join("downloads/youtube/abcdefghijk.mp4"),
+            b"much larger scoped copy",
+        );
+        // Flat file is larger than the scoped copy: scoped is quarantined.
+        write_file(
+            &cache.join("downloads/zzzzzzzzzzz.mp4"),
+            b"much larger flat copy",
+        );
+        write_file(&cache.join("downloads/youtube/zzzzzzzzzzz.mp4"), b"small");
+
+        migrate_cache(cache, &covers).unwrap();
+
+        assert_eq!(
+            std::fs::read(cache.join("downloads/youtube/abcdefghijk.mp4")).unwrap(),
+            b"much larger scoped copy"
+        );
+        assert!(cache.join("quarantine/abcdefghijk.mp4").exists());
+        assert_eq!(
+            std::fs::read(cache.join("downloads/youtube/zzzzzzzzzzz.mp4")).unwrap(),
+            b"much larger flat copy"
+        );
+        assert!(cache.join("quarantine/zzzzzzzzzzz.mp4").exists());
+    }
+
+    #[test]
+    fn migrate_cache_rejects_an_unknown_database_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path();
+        let covers = cache.join("covers");
+        write_file(&cache.join("db.bin"), b"YTDB\x63");
+
+        let error = migrate_cache(cache, &covers).unwrap_err();
+        assert!(error.contains("unsupported database version 99"), "{error}");
+    }
 
     #[test]
     fn cli_definition_is_valid() {

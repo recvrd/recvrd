@@ -1,8 +1,8 @@
 //! Events and commands that connect the terminal UI to the daemon.
 
 use ytermusicd_api::{
-    ApiError, DownloadStatus, Event, EventKind, PlaybackSnapshot, Playlist, PlaylistDetail, Queue,
-    RepeatMode, SearchResults, Status, Track,
+    ApiError, DownloadStatus, Event, EventKind, PlaybackSnapshot, Playlist, PlaylistDetail,
+    ProviderId, Queue, RepeatMode, SearchResults, Status, Track, TrackKey,
 };
 use ytermusicd_client::DaemonError;
 
@@ -23,7 +23,7 @@ pub enum DaemonEvent {
     Queue(Queue),
     /// A download status update.
     Download {
-        video_id: String,
+        key: TrackKey,
         status: DownloadStatus,
     },
     /// A track ended. Playback events follow.
@@ -51,7 +51,7 @@ pub enum DaemonEvent {
     SearchError { query: String, message: String },
     /// A cover image response.
     Cover {
-        video_id: String,
+        key: TrackKey,
         art: Option<CoverArt>,
     },
     /// A user-visible message.
@@ -68,7 +68,14 @@ impl DaemonEvent {
             },
             EventKind::Playback { playback } => Self::Playback(playback),
             EventKind::Queue { queue } => Self::Queue(queue),
-            EventKind::Download { video_id, status } => Self::Download { video_id, status },
+            EventKind::Download {
+                provider,
+                track_id,
+                status,
+            } => Self::Download {
+                key: TrackKey::new(provider, track_id),
+                status,
+            },
             EventKind::TrackEnded { .. } => Self::TrackEnded,
             EventKind::Error { error } => Self::Error(error),
             EventKind::LibraryChanged => Self::LibraryChanged,
@@ -116,7 +123,7 @@ pub enum Command {
     /// Remove all queue items.
     QueueClear,
     /// Retry a failed download.
-    RetryDownload(String),
+    RetryDownload(TrackKey),
     /// Create a playlist.
     CreatePlaylist { title: String },
     /// Rename a playlist.
@@ -128,11 +135,15 @@ pub enum Command {
     /// Move one playlist track.
     MovePlaylistTrack { id: String, from: usize, to: usize },
     /// Add one or more tracks to a playlist.
-    AddPlaylistTracks { id: String, video_ids: Vec<String> },
+    AddPlaylistTracks {
+        id: String,
+        provider: ProviderId,
+        track_ids: Vec<String>,
+    },
     /// Search tracks and playlists.
     Search(String),
-    /// Load cover art for a video.
-    LoadCover(String),
+    /// Load cover art for a track.
+    LoadCover(TrackKey),
 }
 
 /// The severity of a toast.

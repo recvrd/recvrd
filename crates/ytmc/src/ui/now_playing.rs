@@ -51,7 +51,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App, hitmap: &mut HitMap) {
 fn render_cover_area(frame: &mut Frame, area: Rect, app: &App) {
     let current = app.current_track();
     if let (Some(track), Some(art)) = (current, app.cover.as_ref())
-        && app.cover_for.as_deref() == Some(track.video_id.as_str())
+        && app.cover_for.as_ref() == Some(&track.key())
     {
         render_cover(frame, area, art);
         return;

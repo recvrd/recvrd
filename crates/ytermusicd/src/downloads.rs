@@ -1,3 +1,4 @@
+use common_structs::TrackKey;
 use database::YTLocalDatabase;
 use download_manager::{
     DownloadManager, DownloadManagerMessage, DownloadSummary as ManagerSummary, Downloader,
@@ -20,13 +21,13 @@ use ytpapi2::YoutubeMusicVideoRef;
 pub trait DownloadControl: Send + Sync {
     fn queue_playlist(&self, tracks: &[Track]);
     fn queue_tracks(&self, tracks: &[Track]);
-    fn retry(&self, video_id: &str) -> bool;
+    fn retry(&self, key: &TrackKey) -> bool;
     fn summary(&self) -> ManagerSummary;
 }
 
 struct Inner {
     manager: &'static DownloadManager,
-    tracks: Mutex<HashMap<String, YoutubeMusicVideoRef>>,
+    tracks: Mutex<HashMap<TrackKey, YoutubeMusicVideoRef>>,
 }
 
 /// Owns the daemon's download manager. It remembers track metadata so a failed
@@ -62,19 +63,19 @@ impl DownloadService {
     {
         let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
         let handler: MessageHandler = Arc::new(move |message| match message {
-            DownloadManagerMessage::VideoStatusUpdate(video_id, status) => {
-                let _ = sender.send((video_id, status));
+            DownloadManagerMessage::VideoStatusUpdate(key, status) => {
+                let _ = sender.send((key, status));
             }
         });
         self.inner.manager.spawn_system(Never, handler);
 
         tokio::spawn(async move {
-            while let Some((video_id, status)) = receiver.recv().await {
+            while let Some((key, status)) = receiver.recv().await {
                 let mut playback = playback.lock().await;
                 if status == common_structs::MusicDownloadStatus::DownloadFailed {
-                    playback.on_download_failed(&video_id);
+                    playback.on_download_failed(&key);
                 } else {
-                    playback.set_download_status(&video_id, status);
+                    playback.set_download_status(&key, status);
                 }
             }
         });
@@ -86,7 +87,7 @@ impl DownloadService {
             .iter()
             .map(|track| {
                 let reference = video_ref(track);
-                known.insert(reference.video_id.clone(), reference.clone());
+                known.insert(reference.key(), reference.clone());
                 reference
             })
             .collect()
@@ -104,8 +105,8 @@ impl DownloadControl for DownloadService {
         self.inner.manager.add_to_download_list(references);
     }
 
-    fn retry(&self, video_id: &str) -> bool {
-        let track = self.inner.tracks.lock().unwrap().get(video_id).cloned();
+    fn retry(&self, key: &TrackKey) -> bool {
+        let track = self.inner.tracks.lock().unwrap().get(key).cloned();
         match track {
             Some(track) => {
                 self.inner.manager.add_to_download_list([track]);
@@ -122,11 +123,12 @@ impl DownloadControl for DownloadService {
 
 pub fn video_ref(track: &Track) -> YoutubeMusicVideoRef {
     YoutubeMusicVideoRef {
-        video_id: track.video_id.clone(),
+        video_id: track.track_id.clone(),
         title: track.title.clone(),
         author: track.author.clone(),
         album: track.album.clone(),
         duration: track.duration.clone(),
+        provider: track.provider,
         set_video_id: None,
     }
 }
@@ -151,7 +153,8 @@ mod tests {
     #[test]
     fn converts_track_to_download_reference() {
         let track = Track {
-            video_id: "v1".to_string(),
+            provider: common_structs::ProviderId::Youtube,
+            track_id: "v1".to_string(),
             title: "Song".to_string(),
             author: "Artist".to_string(),
             album: "Album".to_string(),
@@ -159,6 +162,7 @@ mod tests {
         };
         let reference = video_ref(&track);
         assert_eq!(reference.video_id, "v1");
+        assert_eq!(reference.provider, common_structs::ProviderId::Youtube);
         assert_eq!(reference.title, "Song");
         assert_eq!(reference.author, "Artist");
         assert_eq!(reference.album, "Album");

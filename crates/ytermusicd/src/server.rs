@@ -8,6 +8,7 @@ use axum::{
     },
     routing::{get, post},
 };
+use common_structs::{ProviderId, TrackKey};
 use serde::Deserialize;
 use std::{
     collections::HashSet,
@@ -158,7 +159,7 @@ pub fn router<S: AudioSink + Send + 'static>(state: AppState<S>) -> Router {
         )
         .route("/api/playlists/{id}/tracks/move", post(move_playlist_track))
         .route("/api/search", get(search))
-        .route("/api/tracks/{video_id}/cover", get(cover))
+        .route("/api/tracks/{provider}/{track_id}/cover", get(cover))
         .route("/api/queue", get(queue).post(queue_add).delete(queue_clear))
         .route("/api/queue/reorder", post(queue_reorder))
         .route("/api/queue/remove", post(queue_remove))
@@ -269,10 +270,10 @@ async fn add_playlist_tracks<S: AudioSink + Send + 'static>(
     Json(request): Json<AddPlaylistTracksRequest>,
 ) -> Result<Json<Vec<Track>>, ApiFailure> {
     validate_playlist_id(&id)?;
-    validate_video_ids(&request.video_ids)?;
+    validate_track_keys(request.provider, &request.track_ids)?;
     state
         .music
-        .add_playlist_tracks(&id, &request.video_ids)
+        .add_playlist_tracks(&id, &request.track_ids)
         .await
         .map(Json)
         .map_err(playlist_failure)
@@ -359,36 +360,42 @@ fn validate_playlist_id(id: &str) -> Result<(), ApiFailure> {
     Ok(())
 }
 
-fn is_video_id(value: &str) -> bool {
-    value.len() == 11
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
-}
-
-fn validate_video_ids(video_ids: &[String]) -> Result<(), ApiFailure> {
-    if video_ids.is_empty() {
+/// Validate playlist track IDs for one provider. Playlist edits run
+/// through the YouTube Music client, so only that provider is valid
+/// here until another provider implements them.
+fn validate_track_keys(provider: ProviderId, track_ids: &[String]) -> Result<(), ApiFailure> {
+    if provider != ProviderId::Youtube {
+        return Err(ApiFailure::bad_request(format!(
+            "playlist editing is only supported for the {provider} provider"
+        )));
+    }
+    if track_ids.is_empty() {
         return Err(ApiFailure::bad_request("select at least one track"));
     }
-    if video_ids.len() > MAX_PLAYLIST_TRACKS_PER_REQUEST {
+    if track_ids.len() > MAX_PLAYLIST_TRACKS_PER_REQUEST {
         return Err(ApiFailure::bad_request(format!(
             "add no more than {MAX_PLAYLIST_TRACKS_PER_REQUEST} tracks"
         )));
     }
     let mut seen = HashSet::new();
-    for video_id in video_ids {
-        if !is_video_id(video_id) {
+    for track_id in track_ids {
+        if !provider.validate_id(track_id) {
             return Err(ApiFailure::bad_request(format!(
-                "invalid video ID {video_id}"
+                "invalid track ID {track_id}"
             )));
         }
-        if !seen.insert(video_id) {
+        if !seen.insert(track_id) {
             return Err(ApiFailure::bad_request(format!(
-                "duplicate video ID {video_id}"
+                "duplicate track ID {track_id}"
             )));
         }
     }
     Ok(())
+}
+
+/// The provider-scoped key of an API track.
+fn track_key(track: &Track) -> TrackKey {
+    TrackKey::new(track.provider, track.track_id.clone())
 }
 
 fn validate_indices(indices: &[usize]) -> Result<(), ApiFailure> {
@@ -447,21 +454,27 @@ async fn search<S: AudioSink + Send + 'static>(
 /// Serve a cached cover image.
 async fn cover<S: AudioSink + Send + 'static>(
     State(state): State<AppState<S>>,
-    AxumPath(video_id): AxumPath<String>,
+    AxumPath((provider, track_id)): AxumPath<(String, String)>,
     headers: HeaderMap,
 ) -> Result<Response, ApiFailure> {
-    let Some(path) = state.artwork.ensure(&video_id).await else {
-        let message = if ArtworkCache::is_valid_video_id(&video_id) {
-            format!("cover art for {video_id} is not available")
+    let Ok(provider) = provider.parse::<ProviderId>() else {
+        return Err(ApiFailure::not_found(format!(
+            "unknown provider {provider}"
+        )));
+    };
+    let key = TrackKey::new(provider, track_id);
+    let Some(path) = state.artwork.ensure(&key).await else {
+        let message = if key.validate() {
+            format!("cover art for {key} is not available")
         } else {
-            format!("invalid video id {video_id}")
+            format!("invalid track ID {key}")
         };
         return Err(ApiFailure::not_found(message));
     };
     let bytes = tokio::fs::read(&path)
         .await
         .map_err(|error| ApiFailure::internal(format!("could not read cover art: {error}")))?;
-    let etag = format!("\"{video_id}-{}\"", bytes.len());
+    let etag = format!("\"{key}-{}\"", bytes.len());
     let matches = headers
         .get(header::IF_NONE_MATCH)
         .and_then(|value| value.to_str().ok())
@@ -519,11 +532,9 @@ async fn play_track<S: AudioSink + Send + 'static>(
     State(state): State<AppState<S>>,
     Json(request): Json<PlayTrackRequest>,
 ) -> Result<Json<Status>, ApiFailure> {
-    if !is_video_id(&request.track.video_id) {
-        return Err(ApiFailure::bad_request(format!(
-            "invalid video ID {}",
-            request.track.video_id
-        )));
+    let key = track_key(&request.track);
+    if !key.validate() {
+        return Err(ApiFailure::bad_request(format!("invalid track ID {key}")));
     }
     let track = core_track(request.track);
     state.downloads.queue_tracks(std::slice::from_ref(&track));
@@ -540,11 +551,9 @@ async fn queue_add<S: AudioSink + Send + 'static>(
     State(state): State<AppState<S>>,
     Json(request): Json<QueueRequest>,
 ) -> Result<Json<ApiQueue>, ApiFailure> {
-    if !is_video_id(&request.track.video_id) {
-        return Err(ApiFailure::bad_request(format!(
-            "invalid video ID {}",
-            request.track.video_id
-        )));
+    let key = track_key(&request.track);
+    if !key.validate() {
+        return Err(ApiFailure::bad_request(format!("invalid track ID {key}")));
     }
     let track = core_track(request.track);
     state.downloads.queue_tracks(std::slice::from_ref(&track));
@@ -667,12 +676,12 @@ async fn retry_download<S: AudioSink + Send + 'static>(
     State(state): State<AppState<S>>,
     Json(request): Json<RetryDownloadRequest>,
 ) -> Result<StatusCode, ApiFailure> {
-    if state.downloads.retry(&request.video_id) {
+    let key = TrackKey::new(request.provider, request.track_id.clone());
+    if state.downloads.retry(&key) {
         Ok(StatusCode::ACCEPTED)
     } else {
         Err(ApiFailure::not_found(format!(
-            "no queued track with video id {}",
-            request.video_id
+            "no queued track with track ID {key}"
         )))
     }
 }
@@ -890,6 +899,7 @@ fn status_from_parts<S: AudioSink + Send + 'static>(
         playback: api_playback(playback),
         queue_length: queue.items.len(),
         downloads: api_download_summary(state.downloads.summary()),
+        providers: vec![ProviderId::Youtube],
     }
 }
 
@@ -948,7 +958,8 @@ fn api_queue(queue: &QueueSnapshot) -> ApiQueue {
 
 fn api_track(track: &ytermusicd_core::Track) -> Track {
     Track {
-        video_id: track.video_id.clone(),
+        provider: track.provider,
+        track_id: track.track_id.clone(),
         title: track.title.clone(),
         artist: track.author.clone(),
         album: track.album.clone(),
@@ -996,11 +1007,15 @@ fn api_event(event: CoreEvent) -> Option<EventKind> {
         CoreEvent::Queue(queue) => Some(EventKind::Queue {
             queue: api_queue(&queue),
         }),
-        CoreEvent::DownloadStatus { video_id, status } => Some(EventKind::Download {
-            video_id,
+        CoreEvent::DownloadStatus { track_id, status } => Some(EventKind::Download {
+            provider: track_id.provider,
+            track_id: track_id.id,
             status: api_download(status),
         }),
-        CoreEvent::TrackEnded { video_id } => Some(EventKind::TrackEnded { video_id }),
+        CoreEvent::TrackEnded { track_id } => Some(EventKind::TrackEnded {
+            provider: track_id.provider,
+            track_id: track_id.id,
+        }),
         CoreEvent::Error { message } => Some(EventKind::Error {
             error: ApiError {
                 code: "core_error".to_string(),
@@ -1065,7 +1080,8 @@ mod tests {
 
     fn track(id: &str) -> Track {
         Track {
-            video_id: id.to_string(),
+            provider: ProviderId::Youtube,
+            track_id: id.to_string(),
             title: format!("Track {id}"),
             artist: "Artist".to_string(),
             album: "Album".to_string(),
@@ -1133,12 +1149,12 @@ mod tests {
         async fn add_playlist_tracks(
             &self,
             id: &str,
-            video_ids: &[String],
+            track_ids: &[String],
         ) -> Result<Vec<Track>, PlaylistEditError> {
             self.edits
                 .lock()
                 .unwrap()
-                .push(format!("add {id} {}", video_ids.join(",")));
+                .push(format!("add {id} {}", track_ids.join(",")));
             Ok(vec![track("v1")])
         }
 
@@ -1212,7 +1228,7 @@ mod tests {
         async fn add_playlist_tracks(
             &self,
             _id: &str,
-            _video_ids: &[String],
+            _track_ids: &[String],
         ) -> Result<Vec<Track>, PlaylistEditError> {
             Err(PlaylistEditError::Upstream(
                 "upstream unavailable".to_string(),
@@ -1253,17 +1269,17 @@ mod tests {
             self.playlists
                 .lock()
                 .unwrap()
-                .push(tracks.iter().map(|track| track.video_id.clone()).collect());
+                .push(tracks.iter().map(|track| track.track_id.clone()).collect());
         }
 
         fn queue_tracks(&self, tracks: &[CoreTrack]) {
             self.queued
                 .lock()
                 .unwrap()
-                .extend(tracks.iter().map(|track| track.video_id.clone()));
+                .extend(tracks.iter().map(|track| track.track_id.clone()));
         }
 
-        fn retry(&self, _video_id: &str) -> bool {
+        fn retry(&self, _key: &TrackKey) -> bool {
             self.retryable
         }
 
@@ -1290,9 +1306,9 @@ mod tests {
 
     #[async_trait]
     impl CoverFetcher for FakeCovers {
-        async fn fetch(&self, video_id: &str) -> Option<Vec<u8>> {
+        async fn fetch(&self, key: &TrackKey) -> Option<Vec<u8>> {
             self.calls.fetch_add(1, Ordering::SeqCst);
-            (video_id == "abcdefghijk").then(|| b"fake-jpeg-data".to_vec())
+            (key.id == "abcdefghijk").then(|| b"fake-jpeg-data".to_vec())
         }
     }
 
@@ -1429,7 +1445,7 @@ mod tests {
             .json()
             .await
             .unwrap();
-        assert_eq!(search["tracks"][0]["video_id"], "v3");
+        assert_eq!(search["tracks"][0]["track_id"], "v3");
         server.abort();
     }
 
@@ -1450,7 +1466,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(started["playback"]["state"], "playing");
-        assert_eq!(started["playback"]["current"]["video_id"], "v1");
+        assert_eq!(started["playback"]["current"]["track_id"], "v1");
         assert_eq!(started["queue_length"], 2);
 
         let volume: serde_json::Value = client
@@ -1493,7 +1509,7 @@ mod tests {
             .json()
             .await
             .unwrap();
-        assert_eq!(next["playback"]["current"]["video_id"], "v2");
+        assert_eq!(next["playback"]["current"]["track_id"], "v2");
 
         let previous: serde_json::Value = client
             .post(format!("{base}/api/previous"))
@@ -1503,7 +1519,7 @@ mod tests {
             .json()
             .await
             .unwrap();
-        assert_eq!(previous["playback"]["current"]["video_id"], "v1");
+        assert_eq!(previous["playback"]["current"]["track_id"], "v1");
 
         let queue: serde_json::Value = client
             .get(format!("{base}/api/queue"))
@@ -1551,7 +1567,7 @@ mod tests {
             .json()
             .await
             .unwrap();
-        assert_eq!(played_next["items"][1]["track"]["video_id"], "9bZkp7q19f0");
+        assert_eq!(played_next["items"][1]["track"]["track_id"], "9bZkp7q19f0");
 
         let reordered: serde_json::Value = client
             .post(format!("{base}/api/queue/reorder"))
@@ -1562,7 +1578,7 @@ mod tests {
             .json()
             .await
             .unwrap();
-        assert_eq!(reordered["items"][0]["track"]["video_id"], "9bZkp7q19f0");
+        assert_eq!(reordered["items"][0]["track"]["track_id"], "9bZkp7q19f0");
 
         let removed: serde_json::Value = client
             .post(format!("{base}/api/queue/remove"))
@@ -1604,7 +1620,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(started["playback"]["state"], "playing");
-        assert_eq!(started["playback"]["current"]["video_id"], "dQw4w9WgXcQ");
+        assert_eq!(started["playback"]["current"]["track_id"], "dQw4w9WgXcQ");
 
         let seeked: serde_json::Value = client
             .post(format!("{base}/api/seek"))
@@ -1668,15 +1684,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn play_track_and_queue_add_reject_invalid_video_ids() {
+    async fn play_track_and_queue_add_reject_invalid_track_ids() {
         let (base, server) = start_server(test_state()).await;
         let client = reqwest::Client::new();
 
-        for video_id in ["../../x", "too-short", ""] {
+        for track_id in ["../../x", "too-short", ""] {
             let response = client
                 .post(format!("{base}/api/play/track"))
                 .json(&PlayTrackRequest {
-                    track: track(video_id),
+                    track: track(track_id),
                 })
                 .send()
                 .await
@@ -1688,7 +1704,7 @@ mod tests {
             let response = client
                 .post(format!("{base}/api/queue"))
                 .json(&QueueRequest {
-                    track: track(video_id),
+                    track: track(track_id),
                 })
                 .send()
                 .await
@@ -1875,7 +1891,8 @@ mod tests {
         let accepted = client
             .post(format!("{base}/api/downloads/retry"))
             .json(&RetryDownloadRequest {
-                video_id: "v1".to_string(),
+                provider: ProviderId::Youtube,
+                track_id: "v1".to_string(),
             })
             .send()
             .await
@@ -1887,7 +1904,8 @@ mod tests {
         let missing = client
             .post(format!("{base}/api/downloads/retry"))
             .json(&RetryDownloadRequest {
-                video_id: "missing".to_string(),
+                provider: ProviderId::Youtube,
+                track_id: "missing".to_string(),
             })
             .send()
             .await
@@ -2123,7 +2141,7 @@ mod tests {
         let client = reqwest::Client::new();
 
         let response = client
-            .get(format!("{base}/api/tracks/abcdefghijk/cover"))
+            .get(format!("{base}/api/tracks/youtube/abcdefghijk/cover"))
             .send()
             .await
             .unwrap();
@@ -2137,7 +2155,7 @@ mod tests {
         assert_eq!(response.bytes().await.unwrap().as_ref(), b"fake-jpeg-data");
 
         let cached = client
-            .get(format!("{base}/api/tracks/abcdefghijk/cover"))
+            .get(format!("{base}/api/tracks/youtube/abcdefghijk/cover"))
             .header("If-None-Match", etag)
             .send()
             .await
@@ -2203,7 +2221,8 @@ mod tests {
         let added = client
             .post(format!("{base}/api/playlists/VLnew/tracks"))
             .json(&AddPlaylistTracksRequest {
-                video_ids: vec!["abcdefghijk".to_string()],
+                provider: ProviderId::Youtube,
+                track_ids: vec!["abcdefghijk".to_string()],
             })
             .send()
             .await
@@ -2250,7 +2269,7 @@ mod tests {
         let client = reqwest::Client::new();
 
         let invalid = client
-            .get(format!("{base}/api/tracks/short/cover"))
+            .get(format!("{base}/api/tracks/youtube/short/cover"))
             .send()
             .await
             .unwrap();
@@ -2260,7 +2279,7 @@ mod tests {
         assert_eq!(covers.calls(), 0);
 
         let missing = client
-            .get(format!("{base}/api/tracks/zzzzzzzzzzz/cover"))
+            .get(format!("{base}/api/tracks/youtube/zzzzzzzzzzz/cover"))
             .send()
             .await
             .unwrap();
@@ -2297,7 +2316,8 @@ mod tests {
         let bad_video = client
             .post(format!("{base}/api/playlists/VL1/tracks"))
             .json(&AddPlaylistTracksRequest {
-                video_ids: vec!["short".to_string()],
+                provider: ProviderId::Youtube,
+                track_ids: vec!["short".to_string()],
             })
             .send()
             .await
@@ -2307,7 +2327,8 @@ mod tests {
         let duplicate_video = client
             .post(format!("{base}/api/playlists/VL1/tracks"))
             .json(&AddPlaylistTracksRequest {
-                video_ids: vec!["abcdefghijk".to_string(), "abcdefghijk".to_string()],
+                provider: ProviderId::Youtube,
+                track_ids: vec!["abcdefghijk".to_string(), "abcdefghijk".to_string()],
             })
             .send()
             .await

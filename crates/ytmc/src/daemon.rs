@@ -6,11 +6,13 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use ytermusicd_api::{CreatePlaylistRequest, PlaylistPrivacy, RepeatMode, UpdatePlaylistRequest};
 use ytermusicd_client::{DaemonClient, DaemonError};
 
+use ytermusicd_api::TrackKey;
+
 use crate::cover;
 use crate::event::{Command, DaemonEvent, ToastLevel};
 
 enum Failure {
-    Cover(String),
+    Cover(TrackKey),
     Playlist(String),
     Search(String),
     Toast,
@@ -75,7 +77,7 @@ pub async fn run_commands(
 
 async fn run_one(client: &DaemonClient, command: Command, sender: &UnboundedSender<DaemonEvent>) {
     let failure = match &command {
-        Command::LoadCover(video_id) => Failure::Cover(video_id.clone()),
+        Command::LoadCover(key) => Failure::Cover(key.clone()),
         Command::OpenPlaylist(id) | Command::RefreshPlaylist(id) => Failure::Playlist(id.clone()),
         Command::Search(query) => Failure::Search(query.clone()),
         _ => Failure::Toast,
@@ -90,10 +92,7 @@ async fn run_one(client: &DaemonClient, command: Command, sender: &UnboundedSend
         }
         Err(error) => {
             let event = match failure {
-                Failure::Cover(video_id) => DaemonEvent::Cover {
-                    video_id,
-                    art: None,
-                },
+                Failure::Cover(key) => DaemonEvent::Cover { key, art: None },
                 Failure::Playlist(id) => DaemonEvent::PlaylistError {
                     id,
                     message: error.message,
@@ -141,8 +140,8 @@ async fn execute(client: &DaemonClient, command: Command) -> Result<Vec<DaemonEv
             client.queue_play_next(index).await?,
         )]),
         Command::QueueClear => Ok(vec![DaemonEvent::Queue(client.queue_clear().await?)]),
-        Command::RetryDownload(video_id) => {
-            client.retry_download(&video_id).await?;
+        Command::RetryDownload(key) => {
+            client.retry_download(&key).await?;
             Ok(vec![DaemonEvent::Toast {
                 level: ToastLevel::Success,
                 message: "Download retry requested.".to_string(),
@@ -188,8 +187,12 @@ async fn execute(client: &DaemonClient, command: Command) -> Result<Vec<DaemonEv
             let tracks = client.move_playlist_track(&id, from, to).await?;
             Ok(vec![DaemonEvent::PlaylistTracks { id, tracks }])
         }
-        Command::AddPlaylistTracks { id, video_ids } => {
-            let tracks = client.add_playlist_tracks(&id, video_ids).await?;
+        Command::AddPlaylistTracks {
+            id,
+            provider,
+            track_ids,
+        } => {
+            let tracks = client.add_playlist_tracks(&id, provider, track_ids).await?;
             Ok(vec![
                 DaemonEvent::PlaylistTracks { id, tracks },
                 DaemonEvent::Toast {
@@ -202,13 +205,13 @@ async fn execute(client: &DaemonClient, command: Command) -> Result<Vec<DaemonEv
             let results = client.search(&query).await?;
             Ok(vec![DaemonEvent::Search { query, results }])
         }
-        Command::LoadCover(video_id) => {
-            let bytes = client.cover(&video_id).await?;
+        Command::LoadCover(key) => {
+            let bytes = client.cover(&key).await?;
             let art = tokio::task::spawn_blocking(move || cover::render_jpeg(&bytes, 10, 5))
                 .await
                 .ok()
                 .flatten();
-            Ok(vec![DaemonEvent::Cover { video_id, art }])
+            Ok(vec![DaemonEvent::Cover { key, art }])
         }
     }
 }

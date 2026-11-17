@@ -27,7 +27,7 @@ describe('QueueView', () => {
     await tick();
 
     expect(api.queueReorder).toHaveBeenCalledWith(2, 0);
-    expect(store.queue?.items.map((item) => item.track.video_id)).toEqual([
+    expect(store.queue?.items.map((item) => item.track.track_id)).toEqual([
       'v2',
       'v0',
       'v1',
@@ -44,7 +44,7 @@ describe('QueueView', () => {
     );
     await tick();
     expect(api.queueRemove).toHaveBeenCalledWith(1);
-    expect(store.queue?.items.map((item) => item.track.video_id)).toEqual([
+    expect(store.queue?.items.map((item) => item.track.track_id)).toEqual([
       'v0',
       'v2',
     ]);
@@ -78,7 +78,7 @@ describe('QueueView', () => {
     await fireEvent.click(
       screen.getByRole('button', { name: `Retry download for ${failed.track.title}` }),
     );
-    expect(api.retryDownload).toHaveBeenCalledWith(failed.track.video_id);
+    expect(api.retryDownload).toHaveBeenCalledWith(failed.track);
 
     await fireEvent.click(
       screen.getByRole('button', { name: `Play ${failed.track.title} next` }),

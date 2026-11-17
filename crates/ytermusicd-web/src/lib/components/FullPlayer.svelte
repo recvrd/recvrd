@@ -25,7 +25,7 @@
     {#if track}
       <div
         class="backdrop"
-        style={`background-image: url(${coverUrl(track.video_id)})`}
+        style={`background-image: url(${coverUrl(track)})`}
         aria-hidden="true"
       ></div>
     {/if}
@@ -48,7 +48,7 @@
         {#if track}
           <img
             class="art"
-            src={coverUrl(track.video_id)}
+            src={coverUrl(track)}
             alt=""
             loading="lazy"
             onload={(event) => {

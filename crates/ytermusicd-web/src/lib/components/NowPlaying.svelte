@@ -46,7 +46,7 @@
     {#if track}
       <img
         class="cover"
-        src={coverUrl(track.video_id)}
+        src={coverUrl(track)}
         alt=""
         loading="lazy"
         onload={(event) => {
@@ -68,7 +68,7 @@
           </div>
         {/if}
         {#if download && download.state === 'failed'}
-          <button class="retry" onclick={() => store.retryDownload(track.video_id)}>
+          <button class="retry" onclick={() => store.retryDownload(track)}>
             Download failed — retry
           </button>
         {:else if download}

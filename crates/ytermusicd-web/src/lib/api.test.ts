@@ -7,9 +7,9 @@ afterEach(() => {
 });
 
 describe('cover URLs', () => {
-  it('encodes the video id', () => {
-    expect(coverUrl('abcdefghijk')).toBe('/api/tracks/abcdefghijk/cover');
-    expect(coverUrl('a/b c')).toBe('/api/tracks/a%2Fb%20c/cover');
+  it('encodes the track key', () => {
+    expect(coverUrl(makeTrack('abcdefghijk'))).toBe('/api/tracks/youtube/abcdefghijk/cover');
+    expect(coverUrl(makeTrack('a/b c'))).toBe('/api/tracks/youtube/a%2Fb%20c/cover');
   });
 });
 
@@ -90,11 +90,11 @@ describe('api client', () => {
     expect(fetchMock.mock.calls[2][0]).toBe('/api/playlists/VL1');
     expect(fetchMock.mock.calls[2][1]).toMatchObject({ method: 'DELETE' });
 
-    await api.addPlaylistTracks('VL1', ['v1']);
+    await api.addPlaylistTracks('VL1', 'youtube', ['v1']);
     expect(fetchMock.mock.calls[3][0]).toBe('/api/playlists/VL1/tracks');
     expect(fetchMock.mock.calls[3][1]).toMatchObject({
       method: 'POST',
-      body: JSON.stringify({ video_ids: ['v1'] }),
+      body: JSON.stringify({ provider: 'youtube', track_ids: ['v1'] }),
     });
 
     await api.removePlaylistTracks('VL1', [0]);
@@ -153,12 +153,12 @@ describe('api client', () => {
     vi.stubGlobal('fetch', fetchMock);
     const api = createApi();
 
-    await expect(api.retryDownload('v1')).resolves.toBeUndefined();
+    await expect(api.retryDownload(makeTrack('v1'))).resolves.toBeUndefined();
     expect(fetchMock).toHaveBeenCalledWith(
       '/api/downloads/retry',
       expect.objectContaining({
         method: 'POST',
-        body: JSON.stringify({ video_id: 'v1' }),
+        body: JSON.stringify({ provider: 'youtube', track_id: 'v1' }),
       }),
     );
   });

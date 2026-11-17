@@ -1,5 +1,6 @@
 use std::fmt::Display;
 
+use common_structs::{ProviderId, TrackKey};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -47,9 +48,20 @@ pub struct YoutubeMusicVideoRef {
     pub album: String,
     pub video_id: String,
     pub duration: String,
+    /// The provider this reference came from. Always YouTube here;
+    /// old JSON sidecars without the field read as YouTube.
+    #[serde(default)]
+    pub provider: ProviderId,
     /// Unique ID of one playlist item. Mutations need it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub set_video_id: Option<String>,
+}
+
+impl YoutubeMusicVideoRef {
+    /// The provider-scoped key of this reference.
+    pub fn key(&self) -> TrackKey {
+        TrackKey::new(self.provider, self.video_id.clone())
+    }
 }
 
 impl Display for YoutubeMusicVideoRef {
@@ -157,6 +169,7 @@ pub fn get_video_from_album(value: &Value) -> Option<YoutubeMusicVideoRef> {
         album: String::new(),
         video_id: video_id.to_string(),
         duration: String::new(),
+        provider: ProviderId::Youtube,
         set_video_id: get_set_video_id(value),
     })
 }
@@ -247,6 +260,7 @@ pub(crate) fn get_video(value: &Value) -> Option<YoutubeMusicVideoRef> {
         author: texts.next()?,
         album: texts.next().unwrap_or_default(),
         duration: String::new(),
+        provider: ProviderId::Youtube,
         set_video_id: get_set_video_id(value),
     })
 }

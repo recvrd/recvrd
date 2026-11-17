@@ -62,7 +62,7 @@ Use the `terminal` or `bar` button in the now-playing bar to swap layouts. The
 web UI stores the choice in `localStorage`.
 
 The track table and the now-playing bar show cover art from
-`/api/tracks/{video_id}/cover`. A missing image leaves the placeholder visible.
+`/api/tracks/{provider}/{track_id}/cover`. A missing image leaves the placeholder visible.
 
 ## Playlist editing
 

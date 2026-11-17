@@ -2,5 +2,11 @@
 import type { AuthStatus } from "./AuthStatus";
 import type { DownloadSummary } from "./DownloadSummary";
 import type { PlaybackSnapshot } from "./PlaybackSnapshot";
+import type { ProviderId } from "./ProviderId";
 
-export type Status = { name: string, version: string, status: string, uptime_seconds: number, auth: AuthStatus, playback: PlaybackSnapshot, queue_length: number, downloads: DownloadSummary, };
+export type Status = { name: string, version: string, status: string, uptime_seconds: number, auth: AuthStatus, playback: PlaybackSnapshot, queue_length: number, downloads: DownloadSummary, 
+/**
+ * The providers the daemon knows. Old payloads without the
+ * field read as an empty list.
+ */
+providers: Array<ProviderId>, };
