@@ -94,3 +94,19 @@ jobs:
         if: steps.detect.outputs.present == 'true'
         working-directory: crates/ytermusicd-web
         run: npm run build
+
+  nix:
+    name: Nix flake
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v21
+
+      - name: Check flake
+        run: nix flake check
+
+      - name: Build Nix packages
+        run: nix build .#ytermusicd .#ytmc
