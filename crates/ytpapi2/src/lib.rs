@@ -361,7 +361,7 @@ impl YoutubeMusicInstance {
         }: &Continuation,
     ) -> Result<String> {
         trace!("Browse continuation {continuation}");
-        let url = innertube_url(
+        let url = self.innertube_url(
             "browse",
             &[
                 ("ctoken", continuation),
@@ -397,7 +397,7 @@ impl YoutubeMusicInstance {
         endpoint_param: &str,
     ) -> Result<String> {
         trace!("Browse {endpoint_route}");
-        let url = innertube_url(
+        let url = self.innertube_url(
             endpoint_route,
             &[("key", &self.innertube_api_key), ("prettyPrint", "false")],
         )?;
@@ -526,7 +526,10 @@ impl YoutubeMusicInstance {
         mut n_continuations: usize,
     ) -> Result<SearchResults> {
         let (search_json, mut continuations) = self
-            .browse(&Endpoint::Search(search_query.to_string()), false)
+            .browse(
+                &Endpoint::Search(search_query.to_string()),
+                n_continuations > 0,
+            )
             .await?;
         debug!("Search response: {search_json}");
         let mut videos = from_json(&search_json, get_video)?;
@@ -732,18 +735,21 @@ impl PlaylistPrivacy {
     }
 }
 
-/// Build an InnerTube request URL with percent-encoded query pairs,
-/// so a continuation token or API key cannot change the query string.
-fn innertube_url(route: &str, query: &[(&str, &str)]) -> Result<reqwest::Url> {
-    let mut url = reqwest::Url::parse(&format!("{YTM_DOMAIN}/youtubei/v1/{route}"))
-        .map_err(|error| YoutubeMusicError::Other(error.to_string()))?;
-    {
-        let mut pairs = url.query_pairs_mut();
-        for (key, value) in query {
-            pairs.append_pair(key, value);
+impl YoutubeMusicInstance {
+    /// Build an InnerTube request URL with percent-encoded query pairs,
+    /// so a continuation token or API key cannot change the query string.
+    /// The URL uses the instance base URL, as the edit path already does.
+    fn innertube_url(&self, route: &str, query: &[(&str, &str)]) -> Result<reqwest::Url> {
+        let mut url = reqwest::Url::parse(&format!("{}/youtubei/v1/{route}", self.base_url))
+            .map_err(|error| YoutubeMusicError::Other(error.to_string()))?;
+        {
+            let mut pairs = url.query_pairs_mut();
+            for (key, value) in query {
+                pairs.append_pair(key, value);
+            }
         }
+        Ok(url)
     }
-    Ok(url)
 }
 
 fn edit_playlist_id(playlist_id: &str) -> Result<&str> {
@@ -1270,10 +1276,157 @@ mod browse_tests {
 
     #[test]
     fn innertube_url_percent_encodes_query_values() {
-        let url = innertube_url("browse", &[("ctoken", "a&b=c+d"), ("key", "test-key")]).unwrap();
+        let url = instance(None)
+            .innertube_url("browse", &[("ctoken", "a&b=c+d"), ("key", "test-key")])
+            .unwrap();
         assert_eq!(
             url.as_str(),
-            "https://music.youtube.com/youtubei/v1/browse?ctoken=a%26b%3Dc%2Bd&key=test-key"
+            "http://127.0.0.1:9/youtubei/v1/browse?ctoken=a%26b%3Dc%2Bd&key=test-key"
         );
+    }
+}
+
+#[cfg(test)]
+mod search_pagination_tests {
+    use super::*;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    /// One search result page with a single video. `continuation` adds a
+    /// continuation token when present.
+    fn search_page(video_id: &str, title: &str, continuation: Option<&str>) -> Value {
+        let mut page = json!({
+            "contents": [{
+                "videoId": video_id,
+                "flexColumns": [
+                    { "musicResponsiveListItemFlexColumnRenderer": {
+                        "text": { "runs": [title] },
+                        "trackingParams": "a"
+                    }},
+                    { "musicResponsiveListItemFlexColumnRenderer": {
+                        "text": { "runs": ["Artist"] },
+                        "trackingParams": "b"
+                    }},
+                    { "musicResponsiveListItemFlexColumnRenderer": {
+                        "text": { "runs": ["Album"] },
+                        "trackingParams": "c"
+                    }}
+                ]
+            }]
+        });
+        if let Some(token) = continuation {
+            page["nextContinuationData"] = json!({
+                "continuation": token,
+                "clickTrackingParams": "tracking"
+            });
+        }
+        page
+    }
+
+    async fn read_request(socket: &mut tokio::net::TcpStream) -> String {
+        use tokio::io::AsyncReadExt;
+
+        let mut buffer = Vec::new();
+        let mut chunk = [0u8; 1024];
+        loop {
+            let count = socket.read(&mut chunk).await.unwrap();
+            if count == 0 {
+                break;
+            }
+            buffer.extend_from_slice(&chunk[..count]);
+            if let Some(position) = buffer.windows(4).position(|window| window == b"\r\n\r\n") {
+                let header_end = position + 4;
+                let headers = String::from_utf8_lossy(&buffer[..header_end]).to_string();
+                let length = headers
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().ok())
+                            .flatten()
+                    })
+                    .unwrap_or(0);
+                if buffer.len() >= header_end + length {
+                    break;
+                }
+            }
+        }
+        String::from_utf8_lossy(&buffer).to_string()
+    }
+
+    /// Serve the first page for search requests and the second page for
+    /// continuation requests, and count every request.
+    async fn serve_pages(
+        listener: tokio::net::TcpListener,
+        first: Value,
+        second: Value,
+        requests: Arc<AtomicUsize>,
+    ) {
+        use tokio::io::AsyncWriteExt;
+
+        loop {
+            let Ok((mut socket, _)) = listener.accept().await else {
+                return;
+            };
+            let request = read_request(&mut socket).await;
+            requests.fetch_add(1, Ordering::SeqCst);
+            let body = if request.contains("/youtubei/v1/search") {
+                first.to_string()
+            } else {
+                second.to_string()
+            };
+            let reply = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = socket.write_all(reply.as_bytes()).await;
+        }
+    }
+
+    async fn local_instance() -> (YoutubeMusicInstance, Arc<AtomicUsize>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let requests = Arc::new(AtomicUsize::new(0));
+        tokio::spawn(serve_pages(
+            listener,
+            search_page("vid1", "Song One", Some("token1")),
+            search_page("vid2", "Song Two", None),
+            Arc::clone(&requests),
+        ));
+        let instance = YoutubeMusicInstance::for_test(
+            format!("http://{address}"),
+            "test-key".to_string(),
+            "1.0".to_string(),
+            "SAPISID=x".to_string(),
+            None,
+        );
+        (instance, requests)
+    }
+
+    fn video_ids(results: &SearchResults) -> Vec<&str> {
+        results
+            .videos
+            .iter()
+            .map(|video| video.video_id.as_str())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn search_follows_continuations_with_budget() {
+        let (instance, requests) = local_instance().await;
+        let results = instance.search("query", 2).await.unwrap();
+        assert_eq!(requests.load(Ordering::SeqCst), 2);
+        assert_eq!(video_ids(&results), ["vid1", "vid2"]);
+    }
+
+    #[tokio::test]
+    async fn search_stops_at_first_page_without_budget() {
+        let (instance, requests) = local_instance().await;
+        let results = instance.search("query", 0).await.unwrap();
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+        assert_eq!(video_ids(&results), ["vid1"]);
     }
 }
