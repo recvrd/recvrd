@@ -1,5 +1,3 @@
-mod task;
-
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     path::{Path, PathBuf},
@@ -7,13 +5,49 @@ use std::{
     time::Duration,
 };
 
+use async_trait::async_trait;
 use database::YTLocalDatabase;
 use tokio::{select, sync::Notify, task::JoinHandle};
-use ytpapi2::YoutubeMusicVideoRef;
+use ytermusicd_core::Track;
 
 use common_structs::{MusicDownloadStatus, TrackKey};
 
-pub use task::DownloadError;
+/// Error from a track download backend.
+#[derive(Debug)]
+pub enum DownloadError {
+    BackendFailed(String),
+    IoError(std::io::Error),
+}
+
+impl std::fmt::Display for DownloadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DownloadError::BackendFailed(msg) => write!(f, "download backend failed: {msg}"),
+            DownloadError::IoError(error) => write!(f, "IO error: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for DownloadError {}
+
+impl From<std::io::Error> for DownloadError {
+    fn from(error: std::io::Error) -> Self {
+        DownloadError::IoError(error)
+    }
+}
+
+/// Download one track to a file. Providers implement this trait;
+/// the manager owns the queue, retries and status, not the backend.
+#[async_trait]
+#[allow(clippy::double_must_use)]
+pub trait TrackDownloader: Send + Sync {
+    async fn download(
+        &self,
+        track: &Track,
+        output: &Path,
+        progress: &(dyn Fn(usize) + Send + Sync),
+    ) -> Result<(), DownloadError>;
+}
 
 pub type MessageHandler = Arc<dyn Fn(DownloadManagerMessage) + Send + Sync + 'static>;
 
@@ -33,13 +67,6 @@ pub enum DownloadManagerMessage {
     VideoStatusUpdate(TrackKey, MusicDownloadStatus),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Downloader {
-    YtDlp,
-    #[cfg(feature = "rusty-ytdl-backend")]
-    RustyYtdl,
-}
-
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DownloadSummary {
     pub queued: usize,
@@ -53,12 +80,11 @@ pub struct DownloadManager {
     database: &'static YTLocalDatabase,
     cache_dir: PathBuf,
     parallel_downloads: u16,
-    pub downloader: Downloader,
-    yt_dlp_path: PathBuf,
+    downloader: Arc<dyn TrackDownloader>,
     max_retries: u32,
     retry_delay: Duration,
     handles: Mutex<Vec<JoinHandle<()>>>,
-    download_list: Mutex<VecDeque<YoutubeMusicVideoRef>>,
+    download_list: Mutex<VecDeque<Track>>,
     in_download: Mutex<HashSet<TrackKey>>,
     statuses: Mutex<HashMap<TrackKey, MusicDownloadStatus>>,
     notify: Notify,
@@ -69,14 +95,13 @@ impl DownloadManager {
         cache_dir: PathBuf,
         database: &'static YTLocalDatabase,
         parallel_downloads: u16,
-        downloader: Downloader,
+        downloader: Arc<dyn TrackDownloader>,
     ) -> Self {
         Self {
             database,
             cache_dir,
             parallel_downloads,
             downloader,
-            yt_dlp_path: PathBuf::from("yt-dlp"),
             max_retries: 2,
             retry_delay: Duration::from_millis(500),
             handles: Mutex::new(Vec::new()),
@@ -85,11 +110,6 @@ impl DownloadManager {
             statuses: Mutex::new(HashMap::new()),
             notify: Notify::new(),
         }
-    }
-
-    pub fn with_yt_dlp_path(mut self, path: impl Into<PathBuf>) -> Self {
-        self.yt_dlp_path = path.into();
-        self
     }
 
     pub fn with_max_retries(mut self, max_retries: u32) -> Self {
@@ -131,7 +151,7 @@ impl DownloadManager {
         self.in_download.lock().unwrap().remove(key);
     }
 
-    fn take(&self) -> Option<YoutubeMusicVideoRef> {
+    fn take(&self) -> Option<Track> {
         self.download_list.lock().unwrap().pop_front()
     }
 
@@ -189,7 +209,7 @@ impl DownloadManager {
         self.spawn_system(cancelation, sender);
     }
 
-    pub fn set_download_list(&self, to_add: impl IntoIterator<Item = YoutubeMusicVideoRef>) {
+    pub fn set_download_list(&self, to_add: impl IntoIterator<Item = Track>) {
         let mut list = self.download_list.lock().unwrap();
         list.clear();
         list.extend(to_add);
@@ -198,7 +218,7 @@ impl DownloadManager {
         self.notify.notify_waiters();
     }
 
-    pub fn add_to_download_list(&self, to_add: impl IntoIterator<Item = YoutubeMusicVideoRef>) {
+    pub fn add_to_download_list(&self, to_add: impl IntoIterator<Item = Track>) {
         let mut list = self.download_list.lock().unwrap();
         list.extend(to_add);
         drop(list);
@@ -209,7 +229,7 @@ impl DownloadManager {
         self.statuses.lock().unwrap().insert(key.clone(), status);
     }
 
-    pub async fn start_download(&self, song: YoutubeMusicVideoRef, s: MessageHandler) -> bool {
+    pub async fn start_download(&self, song: Track, s: MessageHandler) -> bool {
         let key = song.key();
         if !key.validate() {
             log::error!("refused download with invalid track ID {key}");
@@ -235,9 +255,8 @@ impl DownloadManager {
         self.start_download_inner(song, s).await
     }
 
-    async fn start_download_inner(&self, song: YoutubeMusicVideoRef, s: MessageHandler) -> bool {
+    async fn start_download_inner(&self, song: Track, s: MessageHandler) -> bool {
         let key = song.key();
-        let id = song.video_id.clone();
         self.set_status(&key, MusicDownloadStatus::Downloading(1));
         s(DownloadManagerMessage::VideoStatusUpdate(
             key.clone(),
@@ -288,7 +307,7 @@ impl DownloadManager {
                 }
             };
 
-            match self.handle_download(&id, &part, &reporter).await {
+            match self.handle_download(&song, &part, &reporter).await {
                 Ok(()) => {
                     if let Err(error) = self.finalize(&song, &part, &mp4, &json) {
                         log::error!("couldn't finalize download for {key}: {error}");
@@ -333,9 +352,18 @@ impl DownloadManager {
         }
     }
 
+    async fn handle_download(
+        &self,
+        song: &Track,
+        output: &Path,
+        progress: &(dyn Fn(usize) + Send + Sync),
+    ) -> Result<(), DownloadError> {
+        self.downloader.download(song, output, progress).await
+    }
+
     fn finalize(
         &self,
-        song: &YoutubeMusicVideoRef,
+        song: &Track,
         part: &std::path::Path,
         mp4: &std::path::Path,
         json: &std::path::Path,
@@ -353,7 +381,7 @@ impl DownloadManager {
     pub fn start_task_unary(
         &'static self,
         s: MessageHandler,
-        song: YoutubeMusicVideoRef,
+        song: Track,
         cancelation: impl Future<Output = ()> + Send + 'static,
     ) {
         let fut = async move {
@@ -383,12 +411,17 @@ impl Drop for InDownloadGuard<'_> {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
     use common_structs::ProviderId;
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
     use tempfile::{TempDir, tempdir};
-    use tokio::sync::{Mutex as AsyncMutex, MutexGuard as AsyncMutexGuard};
+    use tokio::{
+        io::{AsyncBufReadExt, AsyncReadExt, BufReader},
+        process::Command,
+        sync::{Mutex as AsyncMutex, MutexGuard as AsyncMutexGuard},
+    };
 
     static TEST_LOCK: AsyncMutex<()> = AsyncMutex::const_new(());
 
@@ -397,7 +430,7 @@ mod tests {
     }
 
     fn script(dir: &Path, body: &str) -> PathBuf {
-        let path = dir.join("fake-yt-dlp");
+        let path = dir.join("fake-downloader");
         fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
         let mut permissions = fs::metadata(&path).unwrap().permissions();
         permissions.set_mode(0o755);
@@ -405,20 +438,82 @@ mod tests {
         path
     }
 
-    fn song(id: &str) -> YoutubeMusicVideoRef {
-        YoutubeMusicVideoRef {
-            video_id: id.to_string(),
+    fn song(id: &str) -> Track {
+        Track {
+            provider: ProviderId::Youtube,
+            track_id: id.to_string(),
             title: format!("Track {id}"),
             author: "Artist".to_string(),
             album: "Album".to_string(),
             duration: "3:00".to_string(),
-            provider: ProviderId::Youtube,
-            set_video_id: None,
         }
     }
 
     fn scoped(downloads: &Path) -> PathBuf {
         downloads.join("youtube")
+    }
+
+    /// A small fake downloader for manager tests. It runs a fake
+    /// script and parses its `download:` progress lines. The real
+    /// download invocation lives in the provider crate, so the manager
+    /// tests cannot use it.
+    struct FakeDownloader {
+        script: PathBuf,
+    }
+
+    fn parse_progress(line: &str) -> Option<usize> {
+        let value = line
+            .trim()
+            .strip_prefix("download:")?
+            .trim()
+            .trim_end_matches('%');
+        value
+            .parse::<f64>()
+            .ok()
+            .map(|percent| percent.clamp(0.0, 100.0) as usize)
+    }
+
+    #[async_trait]
+    impl TrackDownloader for FakeDownloader {
+        async fn download(
+            &self,
+            _track: &Track,
+            output: &Path,
+            progress: &(dyn Fn(usize) + Send + Sync),
+        ) -> Result<(), DownloadError> {
+            progress(0);
+            let mut child = Command::new(&self.script)
+                .arg("-o")
+                .arg(output)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .kill_on_drop(true)
+                .spawn()?;
+            let stdout = child.stdout.take().ok_or_else(|| {
+                DownloadError::IoError(std::io::Error::other("fake stdout was not captured"))
+            })?;
+            let stderr = child.stderr.take().ok_or_else(|| {
+                DownloadError::IoError(std::io::Error::other("fake stderr was not captured"))
+            })?;
+            let stderr_task = tokio::spawn(async move {
+                let mut buffer = String::new();
+                let _ = BufReader::new(stderr).read_to_string(&mut buffer).await;
+                buffer
+            });
+            let mut lines = BufReader::new(stdout).lines();
+            while let Some(line) = lines.next_line().await? {
+                if let Some(percent) = parse_progress(&line) {
+                    progress(percent);
+                }
+            }
+            let status = child.wait().await?;
+            let stderr = stderr_task.await.unwrap_or_default();
+            if !status.success() {
+                return Err(DownloadError::BackendFailed(stderr));
+            }
+            progress(100);
+            Ok(())
+        }
     }
 
     fn manager(dir: &TempDir, script: PathBuf, max_retries: u32) -> (DownloadManager, PathBuf) {
@@ -427,8 +522,7 @@ mod tests {
         fs::create_dir_all(&downloads).unwrap();
         let database: &'static YTLocalDatabase =
             Box::leak(Box::new(YTLocalDatabase::new(cache.clone())));
-        let manager = DownloadManager::new(cache, database, 1, Downloader::YtDlp)
-            .with_yt_dlp_path(script)
+        let manager = DownloadManager::new(cache, database, 1, Arc::new(FakeDownloader { script }))
             .with_max_retries(max_retries)
             .with_retry_delay(Duration::ZERO);
         (manager, downloads)
@@ -682,7 +776,7 @@ mod tests {
     async fn cancellation_kills_the_child_process() {
         let _guard = serial().await;
         let dir = tempdir().unwrap();
-        let pid_file = dir.path().join("yt-dlp.pid");
+        let pid_file = dir.path().join("fake-downloader.pid");
         // Record the child pid, then write to the part file in a loop so
         // a surviving child is visible as a growing file. The loop is
         // bounded so a failing run cannot leak a writer forever.
@@ -706,7 +800,7 @@ mod tests {
             }
             waited += 1;
         }
-        assert!(part.exists(), "fake yt-dlp never started");
+        assert!(part.exists(), "fake downloader never started");
         let pid: u32 = fs::read_to_string(&pid_file)
             .unwrap()
             .trim()
@@ -718,7 +812,7 @@ mod tests {
         while process_running(pid) {
             assert!(
                 tokio::time::Instant::now() < deadline,
-                "yt-dlp child {pid} still runs after cancel"
+                "downloader child {pid} still runs after cancel"
             );
             tokio::time::sleep(Duration::from_millis(25)).await;
         }

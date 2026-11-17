@@ -1,8 +1,8 @@
 use common_structs::TrackKey;
 use database::YTLocalDatabase;
 use download_manager::{
-    DownloadManager, DownloadManagerMessage, DownloadSummary as ManagerSummary, Downloader,
-    MessageHandler,
+    DownloadManager, DownloadManagerMessage, DownloadSummary as ManagerSummary, MessageHandler,
+    TrackDownloader,
 };
 use std::{
     collections::HashMap,
@@ -14,10 +14,9 @@ use std::{
 };
 use tokio::sync::Mutex as AsyncMutex;
 use ytermusicd_core::{AudioSink, PlaybackService, Track};
-use ytpapi2::YoutubeMusicVideoRef;
 
 /// Download operations needed by the HTTP layer. A trait keeps API tests
-/// independent of `yt-dlp`, the filesystem and the real download manager.
+/// independent of the download backend, the filesystem and the real download manager.
 pub trait DownloadControl: Send + Sync {
     fn queue_playlist(&self, tracks: &[Track]);
     fn queue_tracks(&self, tracks: &[Track]);
@@ -27,7 +26,7 @@ pub trait DownloadControl: Send + Sync {
 
 struct Inner {
     manager: &'static DownloadManager,
-    tracks: Mutex<HashMap<TrackKey, YoutubeMusicVideoRef>>,
+    tracks: Mutex<HashMap<TrackKey, Track>>,
 }
 
 /// Owns the daemon's download manager. It remembers track metadata so a failed
@@ -38,7 +37,11 @@ pub struct DownloadService {
 }
 
 impl DownloadService {
-    pub fn new(cache_dir: PathBuf, parallel_downloads: u16, downloader: Downloader) -> Self {
+    pub fn new(
+        cache_dir: PathBuf,
+        parallel_downloads: u16,
+        downloader: Arc<dyn TrackDownloader>,
+    ) -> Self {
         let database: &'static YTLocalDatabase =
             Box::leak(Box::new(YTLocalDatabase::new(cache_dir.clone())));
         let manager: &'static DownloadManager = Box::leak(Box::new(DownloadManager::new(
@@ -81,14 +84,13 @@ impl DownloadService {
         });
     }
 
-    fn remember(&self, tracks: &[Track]) -> Vec<YoutubeMusicVideoRef> {
+    fn remember(&self, tracks: &[Track]) -> Vec<Track> {
         let mut known = self.inner.tracks.lock().unwrap();
         tracks
             .iter()
             .map(|track| {
-                let reference = video_ref(track);
-                known.insert(reference.key(), reference.clone());
-                reference
+                known.insert(track.key(), track.clone());
+                track.clone()
             })
             .collect()
     }
@@ -121,18 +123,6 @@ impl DownloadControl for DownloadService {
     }
 }
 
-pub fn video_ref(track: &Track) -> YoutubeMusicVideoRef {
-    YoutubeMusicVideoRef {
-        video_id: track.track_id.clone(),
-        title: track.title.clone(),
-        author: track.author.clone(),
-        album: track.album.clone(),
-        duration: track.duration.clone(),
-        provider: track.provider,
-        set_video_id: None,
-    }
-}
-
 /// The download workers live as long as the daemon process; this future never
 /// completes and is cloned for each worker by `spawn_system`.
 #[derive(Clone, Copy)]
@@ -143,29 +133,5 @@ impl Future for Never {
 
     fn poll(self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<Self::Output> {
         Poll::Pending
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn converts_track_to_download_reference() {
-        let track = Track {
-            provider: common_structs::ProviderId::Youtube,
-            track_id: "v1".to_string(),
-            title: "Song".to_string(),
-            author: "Artist".to_string(),
-            album: "Album".to_string(),
-            duration: "3:00".to_string(),
-        };
-        let reference = video_ref(&track);
-        assert_eq!(reference.video_id, "v1");
-        assert_eq!(reference.provider, common_structs::ProviderId::Youtube);
-        assert_eq!(reference.title, "Song");
-        assert_eq!(reference.author, "Artist");
-        assert_eq!(reference.album, "Album");
-        assert_eq!(reference.duration, "3:00");
     }
 }

@@ -135,7 +135,7 @@ impl PlayerState {
                     if matches!(e, PlayError::DecoderError(_)) {
                         // Cleaning the file
 
-                        if let Err(error) = DATABASE.remove_video(&video) {
+                        if let Err(error) = DATABASE.remove_video(&video.key()) {
                             error!("could not remove video from database: {error}");
                         }
                         handle_error(
@@ -183,7 +183,8 @@ impl PlayerState {
         let new_ids: Vec<String> = to_download.iter().map(|v| v.video_id.clone()).collect();
         if new_ids != self.last_download_list {
             self.last_download_list = new_ids;
-            DOWNLOAD_MANAGER.set_download_list(to_download);
+            DOWNLOAD_MANAGER
+                .set_download_list(to_download.iter().map(provider_youtube::track_from_ref));
         }
     }
 

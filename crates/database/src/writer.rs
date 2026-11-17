@@ -1,7 +1,7 @@
 use std::{io::Write, path::Path};
 
 use varuint::WriteVarint;
-use ytpapi2::YoutubeMusicVideoRef;
+use ytermusicd_core::Track;
 
 use crate::{DatabaseError, YTLocalDatabase, reader::MAGIC, reader::VERSION};
 
@@ -110,7 +110,7 @@ impl YTLocalDatabase {
                 }
             };
             // Check if the file is a valid json file
-            let video = match serde_json::from_str::<YoutubeMusicVideoRef>(&content) {
+            let video = match serde_json::from_str::<Track>(&content) {
                 Ok(parsed) => parsed,
                 Err(error) => {
                     quarantine_sidecar(
@@ -124,7 +124,7 @@ impl YTLocalDatabase {
             // Check if the video file exists next to its sidecar, in
             // the flat layout or in a provider subdirectory.
             let video_dir = path.parent().unwrap_or(&cache_folder);
-            let video_file = video_dir.join(format!("{}.mp4", video.video_id));
+            let video_file = video_dir.join(format!("{}.mp4", video.track_id));
             if !video_file.exists() {
                 quarantine_sidecar(&self.cache_dir, &path, "the video file does not exist");
                 continue;
@@ -198,11 +198,11 @@ fn has_ftyp_header(path: &Path) -> std::io::Result<bool> {
 }
 
 /// Writes a video to a file
-pub fn write_video(buffer: &mut impl Write, video: &YoutubeMusicVideoRef) -> std::io::Result<()> {
+pub fn write_video(buffer: &mut impl Write, video: &Track) -> std::io::Result<()> {
     write_str(buffer, &video.title)?;
     write_str(buffer, &video.author)?;
     write_str(buffer, &video.album)?;
-    write_str(buffer, &video.video_id)?;
+    write_str(buffer, &video.track_id)?;
     write_str(buffer, &video.duration)?;
     write_str(buffer, video.provider.as_str())
 }
@@ -232,15 +232,14 @@ mod tests {
         0, 0, 0, 24, b'f', b't', b'y', b'p', b'd', b'a', b's', b'h', 0, 0, 0, 0,
     ];
 
-    fn video(id: &str) -> YoutubeMusicVideoRef {
-        YoutubeMusicVideoRef {
+    fn video(id: &str) -> Track {
+        Track {
+            provider: ProviderId::Youtube,
+            track_id: id.to_string(),
             title: format!("Title {id}"),
             author: "Artist".to_string(),
             album: "Album".to_string(),
-            video_id: id.to_string(),
             duration: "3:00".to_string(),
-            provider: ProviderId::Youtube,
-            set_video_id: None,
         }
     }
 
@@ -250,16 +249,16 @@ mod tests {
         downloads
     }
 
-    fn write_sidecar(downloads: &std::path::Path, video: &YoutubeMusicVideoRef, header: &[u8]) {
+    fn write_sidecar(downloads: &std::path::Path, video: &Track, header: &[u8]) {
         std::fs::write(
-            downloads.join(format!("{}.json", video.video_id)),
+            downloads.join(format!("{}.json", video.track_id)),
             serde_json::to_string(video).unwrap(),
         )
         .unwrap();
-        std::fs::write(downloads.join(format!("{}.mp4", video.video_id)), header).unwrap();
+        std::fs::write(downloads.join(format!("{}.mp4", video.track_id)), header).unwrap();
     }
 
-    fn library(cache_dir: &std::path::Path) -> Vec<YoutubeMusicVideoRef> {
+    fn library(cache_dir: &std::path::Path) -> Vec<Track> {
         let db = YTLocalDatabase::new(cache_dir.to_path_buf());
         db.fix_db();
         db.write().unwrap();
@@ -275,8 +274,8 @@ mod tests {
 
         let videos = library(dir.path());
         assert_eq!(videos.len(), 2);
-        assert!(videos.iter().any(|v| v.video_id == "video-m4a"));
-        assert!(videos.iter().any(|v| v.video_id == "video-dash"));
+        assert!(videos.iter().any(|v| v.track_id == "video-m4a"));
+        assert!(videos.iter().any(|v| v.track_id == "video-dash"));
     }
 
     #[test]

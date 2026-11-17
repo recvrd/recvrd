@@ -158,7 +158,7 @@ impl SoundAction {
                 }
 
                 // manage deleting physically
-                if let Err(error) = DATABASE.remove_video(&video) {
+                if let Err(error) = DATABASE.remove_video(&video.key()) {
                     error!("could not remove video from database: {error}");
                 }
 

@@ -2,7 +2,7 @@ use std::io::{Cursor, Read};
 
 use common_structs::ProviderId;
 use varuint::ReadVarint;
-use ytpapi2::YoutubeMusicVideoRef;
+use ytermusicd_core::Track;
 
 use crate::{DatabaseError, YTLocalDatabase};
 
@@ -41,7 +41,7 @@ impl YTLocalDatabase {
     /// A corrupt file returns an error instead of an empty library, so the
     /// caller can tell a missing file from a damaged one.
     /// Version 0 files read each entry as `provider = "youtube"`.
-    pub fn read(&self) -> Result<Option<Vec<YoutubeMusicVideoRef>>, DatabaseError> {
+    pub fn read(&self) -> Result<Option<Vec<Track>>, DatabaseError> {
         let path = self.cache_dir.join("db.bin");
         let bytes = match std::fs::read(&path) {
             Ok(bytes) => bytes,
@@ -76,7 +76,7 @@ impl YTLocalDatabase {
     /// Read the library for a display lookup. Log any error and return an
     /// empty list, so a corrupt database shows an empty library instead of
     /// crashing the caller.
-    pub fn read_or_empty(&self) -> Vec<YoutubeMusicVideoRef> {
+    pub fn read_or_empty(&self) -> Vec<Track> {
         match self.read() {
             Ok(videos) => videos.unwrap_or_default(),
             Err(error) => {
@@ -89,35 +89,33 @@ impl YTLocalDatabase {
 
 /// Reads a version 0 video from the cursor: five strings, no provider.
 /// The provider is always YouTube for these entries.
-fn read_video_v0(buffer: &mut Cursor<Vec<u8>>) -> Result<YoutubeMusicVideoRef, DatabaseError> {
-    Ok(YoutubeMusicVideoRef {
+fn read_video_v0(buffer: &mut Cursor<Vec<u8>>) -> Result<Track, DatabaseError> {
+    Ok(Track {
         title: read_str(buffer)?,
         author: read_str(buffer)?,
         album: read_str(buffer)?,
-        video_id: read_str(buffer)?,
+        track_id: read_str(buffer)?,
         duration: read_str(buffer)?,
         provider: ProviderId::Youtube,
-        set_video_id: None,
     })
 }
 
 /// Reads a version 1 video from the cursor: the five version 0 strings
 /// plus the provider name.
-fn read_video_v1(buffer: &mut Cursor<Vec<u8>>) -> Result<YoutubeMusicVideoRef, DatabaseError> {
-    let video = YoutubeMusicVideoRef {
+fn read_video_v1(buffer: &mut Cursor<Vec<u8>>) -> Result<Track, DatabaseError> {
+    let video = Track {
         title: read_str(buffer)?,
         author: read_str(buffer)?,
         album: read_str(buffer)?,
-        video_id: read_str(buffer)?,
+        track_id: read_str(buffer)?,
         duration: read_str(buffer)?,
         provider: ProviderId::Youtube,
-        set_video_id: None,
     };
     let provider = read_str(buffer)?;
     let provider = provider.parse().map_err(|_| DatabaseError::InvalidData {
         message: format!("unknown provider {provider:?} in database record"),
     })?;
-    Ok(YoutubeMusicVideoRef { provider, ..video })
+    Ok(Track { provider, ..video })
 }
 
 /// Reads a string from the cursor

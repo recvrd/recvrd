@@ -33,7 +33,7 @@ pub fn spawn_api_task(updater_s: Sender<ManagerMessage>) {
             error!("no auth available; API task disabled");
             return;
         };
-        let client = auth.create_client().await;
+        let client = provider_youtube::connect(&auth).await;
         match client {
             Ok(api) => {
                 let api = Arc::new(api);

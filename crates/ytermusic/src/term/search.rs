@@ -106,7 +106,7 @@ impl Screen for Search {
             .filter(|x| {
                 x.title.to_lowercase().contains(&text) || x.author.to_lowercase().contains(&text)
             })
-            .cloned()
+            .map(provider_youtube::ref_from_track)
             .map(|video| {
                 (
                     format!(" {} ", to_bidi_string(&video.to_string())),
@@ -136,7 +136,7 @@ impl Screen for Search {
                             let id = video.video_id.clone();
                             item.push((
                                 format!(" {} ", to_bidi_string(&video.to_string())),
-                                if DATABASE.read_or_empty().iter().any(|x| x.video_id == id) {
+                                if DATABASE.read_or_empty().iter().any(|x| x.track_id == id) {
                                     Status::Local(video)
                                 } else {
                                     Status::Unknown(video)
@@ -226,7 +226,7 @@ impl Search {
             goto: Screens::MusicPlayer,
             search_handle: None,
             api: if let Some(auth) = try_get_auth() {
-                auth.create_client().await.ok().map(Arc::new)
+                provider_youtube::connect(&auth).await.ok().map(Arc::new)
             } else {
                 None
             },
@@ -242,7 +242,7 @@ impl Search {
                     .unwrap();
                 DOWNLOAD_MANAGER.start_task_unary(
                     download_manager_handler(self.action_sender.clone()),
-                    e,
+                    provider_youtube::track_from_ref(&e),
                     ShutdownSignal,
                 );
                 if modifiers.contains(KeyModifiers::CONTROL) {

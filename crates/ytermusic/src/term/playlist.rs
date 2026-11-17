@@ -63,7 +63,7 @@ pub fn format_playlist(name: &str, videos: &[YoutubeMusicVideoRef]) -> String {
     let db = DATABASE.read_or_empty();
     let local_videos = videos
         .iter()
-        .filter(|x| db.iter().any(|y| x.video_id == y.video_id))
+        .filter(|x| db.iter().any(|y| x.video_id == y.track_id))
         .count();
     format!(
         "{}     ({}/{} {}%)",

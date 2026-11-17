@@ -24,32 +24,6 @@ impl Track {
     }
 }
 
-impl From<ytpapi2::YoutubeMusicVideoRef> for Track {
-    fn from(value: ytpapi2::YoutubeMusicVideoRef) -> Self {
-        Self {
-            provider: value.provider,
-            track_id: value.video_id,
-            title: value.title,
-            author: value.author,
-            album: value.album,
-            duration: value.duration,
-        }
-    }
-}
-
-impl From<&ytpapi2::YoutubeMusicVideoRef> for Track {
-    fn from(value: &ytpapi2::YoutubeMusicVideoRef) -> Self {
-        Self {
-            provider: value.provider,
-            track_id: value.video_id.clone(),
-            title: value.title.clone(),
-            author: value.author.clone(),
-            album: value.album.clone(),
-            duration: value.duration.clone(),
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum PlaybackStatus {

@@ -175,6 +175,7 @@ just test
 - `crates/ytmc` — terminal client (`ytmc`)
 - `crates/ytermusic` — legacy TUI client
 - `crates/ytpapi2` — YouTube Music API client
+- `crates/provider-youtube` — YouTube Music provider: API client, cover fetcher and downloads
 - `crates/player` — audio playback
 - `crates/database` — local download database
 - `crates/download-manager` — download queue

@@ -5,7 +5,6 @@ use std::{
     path::{Path, PathBuf},
 };
 use thiserror::Error;
-use ytpapi2::{COOKIE, HeaderMap, HeaderValue, USER_AGENT};
 
 const DEFAULT_USER_AGENT: &str =
     "Mozilla/5.0 (X11; Linux x86_64; rv:108.0) Gecko/20100101 Firefox/108.0";
@@ -96,10 +95,12 @@ impl Auth {
         let cookie = cookie.ok_or_else(|| AuthError::MissingCookie {
             path: path.to_path_buf(),
         })?;
-        HeaderValue::from_str(&cookie).map_err(|error| AuthError::InvalidCookie {
-            path: path.to_path_buf(),
-            message: error.to_string(),
-        })?;
+        if !valid_header_value(&cookie) {
+            return Err(AuthError::InvalidCookie {
+                path: path.to_path_buf(),
+                message: "invalid header value".to_string(),
+            });
+        }
 
         let sapisid =
             cookie_value(&cookie, "SAPISID").ok_or_else(|| AuthError::MissingSapisid {
@@ -113,10 +114,12 @@ impl Auth {
             );
             DEFAULT_USER_AGENT.to_string()
         });
-        HeaderValue::from_str(&user_agent).map_err(|error| AuthError::InvalidUserAgent {
-            path: path.to_path_buf(),
-            message: error.to_string(),
-        })?;
+        if !valid_header_value(&user_agent) {
+            return Err(AuthError::InvalidUserAgent {
+                path: path.to_path_buf(),
+                message: "invalid header value".to_string(),
+            });
+        }
 
         Ok(Self {
             cookie,
@@ -141,27 +144,14 @@ impl Auth {
     pub fn account_id(&self) -> Option<&str> {
         self.account_id.as_deref()
     }
+}
 
-    /// Build the request headers expected by `ytpapi2`.
-    pub fn headers(&self) -> HeaderMap {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            COOKIE,
-            HeaderValue::from_str(&self.cookie).expect("cookie was validated"),
-        );
-        headers.insert(
-            USER_AGENT,
-            HeaderValue::from_str(&self.user_agent).expect("user agent was validated"),
-        );
-        headers
-    }
-
-    /// Construct a YouTube Music client with these credentials.
-    pub async fn create_client(
-        &self,
-    ) -> Result<ytpapi2::YoutubeMusicInstance, ytpapi2::YoutubeMusicError> {
-        ytpapi2::YoutubeMusicInstance::new(self.headers(), self.account_id.clone()).await
-    }
+/// Check a header value the same way the HTTP client does: visible
+/// ASCII plus tab, no other control characters.
+fn valid_header_value(value: &str) -> bool {
+    value
+        .bytes()
+        .all(|byte| byte == b'\t' || (0x20..=0x7e).contains(&byte))
 }
 
 fn cookie_value(cookie: &str, name: &str) -> Option<String> {

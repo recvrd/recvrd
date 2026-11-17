@@ -32,6 +32,7 @@ SIGINT/SIGTERM. State is owned by the daemon, not by an individual client.
 | `crates/ytermusicd-client` | Current | HTTP and SSE client shared by the terminal client and MCP |
 | `crates/ytmc` | Current | Terminal client (`ytmc`) |
 | `crates/ytpapi2` | Current | YouTube Music API client |
+| `crates/provider-youtube` | Current | YouTube Music provider: API client, cover fetcher, downloads |
 | `crates/player` | Current | Audio decoding/playback |
 | `crates/database` | Current | Local download database |
 | `crates/download-manager` | Current | Download queue |

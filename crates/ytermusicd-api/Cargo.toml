@@ -6,6 +6,7 @@ license = "Apache-2.0"
 description = "Shared HTTP/SSE DTOs for ytermusicd"
 
 [dependencies]
+async-trait = "0.1"
 common-structs.workspace = true
 schemars = { version = "1.2", optional = true }
 serde = { version = "1", features = ["derive"] }

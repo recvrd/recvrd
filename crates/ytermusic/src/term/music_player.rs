@@ -108,7 +108,8 @@ impl Screen for PlayerState {
                         }
                     });
                 // Download them
-                DOWNLOAD_MANAGER.add_to_download_list(musics);
+                DOWNLOAD_MANAGER
+                    .add_to_download_list(musics.iter().map(provider_youtube::track_from_ref));
                 EventResponse::None
             }
             KeyCode::Char('f') => ManagerMessage::SearchFrom(Screens::MusicPlayer).event(),
