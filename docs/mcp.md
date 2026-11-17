@@ -75,12 +75,15 @@ from the shared `ytermusicd-api` DTOs.
 
 ## Errors
 
-The proxy maps daemon errors to MCP errors:
+The proxy maps daemon errors to MCP errors. The daemon code travels in the
+error data as `{"code": "<daemon code>"}`.
 
-- A stopped daemon returns `Cannot reach the daemon at <url>. Start it with:
-  ytermusicd serve`.
-- An upstream failure keeps the daemon message and the error code.
-- An unknown playlist or video ID returns an invalid-parameter error.
+- A bad request or an unknown playlist or video ID returns an
+  invalid-parameter error. The daemon message stays in the error message.
+- An upstream failure returns an internal error. The daemon message and the
+  daemon code stay in the error message and in the error data.
+- A stopped daemon returns an internal error with `Cannot reach the daemon at
+  <url>. Start it with: ytermusicd serve`.
 - A bad volume returns an invalid-parameter error before the request.
 
 The proxy does not crash on daemon errors. The client shows the message.
