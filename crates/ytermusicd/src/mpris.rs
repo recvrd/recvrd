@@ -168,6 +168,9 @@ fn update_controls(
     if let Err(error) = controls.set_playback(playback) {
         log::warn!("MPRIS playback update failed: {error:?}");
     }
+    if let Err(error) = controls.set_volume(volume_fraction(snapshot.volume)) {
+        log::warn!("MPRIS volume update failed: {error:?}");
+    }
 }
 
 /// Build a `file://` URL for MPRIS cover art.
@@ -201,6 +204,11 @@ pub fn media_playback(snapshot: &PlaybackSnapshot) -> MediaPlayback {
         PlaybackStatus::Playing => MediaPlayback::Playing { progress },
         PlaybackStatus::Paused => MediaPlayback::Paused { progress },
     }
+}
+
+/// Convert a 0-100 volume value to the MPRIS 0.0-1.0 range.
+fn volume_fraction(volume: u8) -> f64 {
+    volume as f64 / 100.0
 }
 
 pub fn map_event(event: MediaControlEvent) -> Option<PlaybackCommand> {
@@ -319,6 +327,14 @@ mod tests {
             } => assert_eq!(position, Duration::from_secs(12)),
             _ => panic!("expected paused progress"),
         }
+    }
+
+    #[test]
+    fn volume_conversion_maps_percent_to_fraction() {
+        assert_eq!(volume_fraction(0), 0.0);
+        assert_eq!(volume_fraction(20), 0.2);
+        assert_eq!(volume_fraction(50), 0.5);
+        assert_eq!(volume_fraction(100), 1.0);
     }
 
     #[test]
