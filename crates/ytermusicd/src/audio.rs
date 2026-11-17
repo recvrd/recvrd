@@ -1,4 +1,4 @@
-use player::{Player, PlayerOptions};
+use player::{PlayError, Player, PlayerOptions};
 use std::{
     path::Path,
     sync::{
@@ -34,6 +34,15 @@ pub struct RodioSink {
     duration: Arc<Mutex<Option<Duration>>>,
 }
 
+/// Drain queued player errors from the channel.
+///
+/// The player reports async seek errors through this channel. The audio
+/// thread calls this function on each loop turn, so a queued error reaches
+/// the log instead of sitting unread.
+fn drain_player_errors(receiver: &flume::Receiver<PlayError>) -> Vec<PlayError> {
+    receiver.try_iter().collect()
+}
+
 impl RodioSink {
     pub fn spawn() -> Self {
         let (tx, rx) = mpsc::channel();
@@ -45,7 +54,7 @@ impl RodioSink {
         thread::Builder::new()
             .name("ytermusicd-audio".to_string())
             .spawn(move || {
-                let (error_tx, _error_rx) = flume::unbounded();
+                let (error_tx, error_rx) = flume::unbounded();
                 let mut volume = 50u8;
                 let mut player = match Player::new(error_tx.clone(), PlayerOptions::new(volume)) {
                     Ok(player) => Some(player),
@@ -57,6 +66,9 @@ impl RodioSink {
                 let mut playing = false;
 
                 loop {
+                    for error in drain_player_errors(&error_rx) {
+                        log::warn!("async player error: {error:?}");
+                    }
                     match rx.recv_timeout(Duration::from_millis(250)) {
                         Ok(AudioCommand::Play { path, reply }) => {
                             if player.is_none() {
@@ -221,5 +233,33 @@ impl AudioSink for RodioSink {
 
     fn is_finished(&self) -> bool {
         self.finished.load(Ordering::SeqCst)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn drain_player_errors_returns_queued_errors() {
+        let (sender, receiver) = flume::unbounded();
+        sender
+            .send(PlayError::Io(std::io::Error::other("seek failed")))
+            .unwrap();
+        sender
+            .send(PlayError::Io(std::io::Error::other("second error")))
+            .unwrap();
+
+        let drained = drain_player_errors(&receiver);
+        assert_eq!(drained.len(), 2);
+
+        assert!(drain_player_errors(&receiver).is_empty());
+    }
+
+    #[test]
+    fn drain_player_errors_returns_empty_for_an_empty_channel() {
+        let (_sender, receiver) = flume::unbounded::<PlayError>();
+
+        assert!(drain_player_errors(&receiver).is_empty());
     }
 }
