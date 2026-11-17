@@ -9,6 +9,8 @@
 [Roadmap](https://github.com/suorcd/ytermusicd/issues/25) ·
 [Issues](https://github.com/suorcd/ytermusicd/issues)
 
+![Web UI now-playing view with cover art and playback controls](assets/screenshots/web-player.png)
+
 ## What it is
 
 `ytermusicd` keeps YouTube Music playback, queue and downloads in a long-running
