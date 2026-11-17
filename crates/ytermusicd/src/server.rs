@@ -25,11 +25,12 @@ use tokio::{
 };
 use ytermusicd_api::{
     AddPlaylistTracksRequest, AddRssFeedRequest, ApiError, AuthState, AuthStatus as ApiAuthStatus,
-    CreatePlaylistRequest, DownloadStatus, DownloadSummary, ErrorEnvelope, Event, EventKind,
-    MovePlaylistTrackRequest, MusicApi, OkResponse, PlayNextRequest, PlayPlaylistRequest,
-    PlayTrackRequest, PlaybackSnapshot as ApiPlaybackSnapshot, PlaybackState, Playlist,
-    PlaylistDetail, PlaylistEditError, ProviderInfo, Queue as ApiQueue, QueueItem as ApiQueueItem,
-    QueueRequest, RemovePlaylistTracksRequest, RemoveQueueRequest, ReorderQueueRequest,
+    CacheCleanRequest, CacheCleanResult, CacheScope, CacheSizes, CreatePlaylistRequest,
+    DownloadStatus, DownloadSummary, ErrorEnvelope, Event, EventKind, MovePlaylistTrackRequest,
+    MusicApi, OkResponse, PlayNextRequest, PlayPlaylistRequest, PlayTrackRequest,
+    PlaybackSnapshot as ApiPlaybackSnapshot, PlaybackState, Playlist, PlaylistDetail,
+    PlaylistEditError, ProviderInfo, Queue as ApiQueue, QueueItem as ApiQueueItem, QueueRequest,
+    RemovePlaylistTracksRequest, RemoveQueueRequest, ReorderQueueRequest,
     RepeatMode as ApiRepeatMode, RepeatRequest, RetryDownloadRequest, RssFeed, SearchResults,
     SeekRequest, ShuffleRequest, Status, Track, UpdatePlaylistRequest, VolumeRequest,
 };
@@ -39,7 +40,7 @@ use ytermusicd_core::{
     RepeatMode as CoreRepeatMode,
 };
 
-use crate::{artwork::ArtworkCache, downloads::DownloadControl};
+use crate::{artwork::ArtworkCache, cache::CacheService, downloads::DownloadControl};
 use provider_rss::RssProvider;
 
 pub struct AppState<S: AudioSink + Send + 'static> {
@@ -50,6 +51,7 @@ pub struct AppState<S: AudioSink + Send + 'static> {
     events: EventBus,
     downloads: Arc<dyn DownloadControl>,
     artwork: Arc<ArtworkCache>,
+    cache: Arc<CacheService>,
     rss: Arc<RssProvider>,
 }
 
@@ -63,12 +65,14 @@ impl<S: AudioSink + Send + 'static> Clone for AppState<S> {
             events: self.events.clone(),
             downloads: self.downloads.clone(),
             artwork: self.artwork.clone(),
+            cache: self.cache.clone(),
             rss: self.rss.clone(),
         }
     }
 }
 
 impl<S: AudioSink + Send + 'static> AppState<S> {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         auth: AuthStatus,
         music: Arc<dyn MusicApi>,
@@ -76,6 +80,7 @@ impl<S: AudioSink + Send + 'static> AppState<S> {
         events: EventBus,
         downloads: Arc<dyn DownloadControl>,
         artwork: Arc<ArtworkCache>,
+        cache: Arc<CacheService>,
         rss: Arc<RssProvider>,
     ) -> Self {
         Self {
@@ -86,6 +91,7 @@ impl<S: AudioSink + Send + 'static> AppState<S> {
             events,
             downloads,
             artwork,
+            cache,
             rss,
         }
     }
@@ -178,6 +184,8 @@ pub fn router<S: AudioSink + Send + 'static>(state: AppState<S>) -> Router {
         .route("/api/shuffle", post(shuffle))
         .route("/api/repeat", post(repeat))
         .route("/api/downloads/retry", post(retry_download))
+        .route("/api/cache", get(cache_status))
+        .route("/api/cache/clean", post(cache_clean))
         .route("/api/rss/feeds", get(list_rss_feeds).post(add_rss_feed))
         .route("/api/rss/feeds/refresh", post(refresh_rss_feeds))
         .route("/api/rss/feeds/{id}", delete(remove_rss_feed))
@@ -836,6 +844,51 @@ async fn retry_download<S: AudioSink + Send + 'static>(
     }
 }
 
+/// Report the sizes of the download and cover caches, from disk.
+async fn cache_status<S: AudioSink + Send + 'static>(
+    State(state): State<AppState<S>>,
+) -> Json<CacheSizes> {
+    Json(state.cache.sizes())
+}
+
+/// Delete cached files for the requested scope and reset the queue
+/// download statuses. Active downloads stop before their files are
+/// deleted. The file of the current track is kept, and the track is
+/// queued again when its file is missing, so a download in progress
+/// resumes and the current track keeps playing. Playlists, the
+/// queue, the playback state and the settings are kept.
+async fn cache_clean<S: AudioSink + Send + 'static>(
+    State(state): State<AppState<S>>,
+    Json(request): Json<CacheCleanRequest>,
+) -> Json<CacheCleanResult> {
+    let scope = request.scope;
+    let cleans_downloads = scope == CacheScope::Downloads || scope == CacheScope::All;
+    let current_track = {
+        let playback = state.playback.lock().await;
+        let snapshot = playback.queue_snapshot();
+        snapshot
+            .current
+            .and_then(|index| snapshot.items.get(index))
+            .map(|item| item.track.clone())
+    };
+    let current_key = current_track.as_ref().map(|track| track.key());
+    if cleans_downloads {
+        state.downloads.stop_all_downloads();
+    }
+    let result = state.cache.clean(scope, current_key.as_ref());
+    if cleans_downloads {
+        state.downloads.reset_statuses();
+        {
+            let mut playback = state.playback.lock().await;
+            playback.reset_download_statuses(current_key.as_ref());
+        }
+        if let Some(track) = current_track {
+            state.downloads.queue_tracks(std::slice::from_ref(&track));
+        }
+    }
+    Json(result)
+}
+
 async fn queue_clear<S: AudioSink + Send + 'static>(
     State(state): State<AppState<S>>,
 ) -> Result<Json<ApiQueue>, ApiFailure> {
@@ -979,6 +1032,7 @@ pub async fn serve<S: AudioSink + Send + 'static>(
     playback: Arc<Mutex<PlaybackService<S>>>,
     downloads: Arc<dyn DownloadControl>,
     artwork: Arc<ArtworkCache>,
+    cache: Arc<CacheService>,
     commands: UnboundedSender<PlaybackCommand>,
     dbus: bool,
     rss: Arc<RssProvider>,
@@ -1004,7 +1058,9 @@ pub async fn serve<S: AudioSink + Send + 'static>(
     let local_addr = listener.local_addr()?;
     println!("ytermusicd listening on http://{local_addr}");
 
-    let state = AppState::new(auth, music, playback, events, downloads, artwork, rss);
+    let state = AppState::new(
+        auth, music, playback, events, downloads, artwork, cache, rss,
+    );
     axum::serve(listener, router(state))
         .with_graceful_shutdown(shutdown_signal())
         .await
@@ -1193,8 +1249,8 @@ mod tests {
     use async_trait::async_trait;
     use futures_util::StreamExt;
     use std::{
-        path::Path,
-        sync::atomic::{AtomicUsize, Ordering},
+        path::{Path, PathBuf},
+        sync::atomic::{AtomicBool, AtomicUsize, Ordering},
     };
     use ytermusicd_core::{CoverFetcher, Track as CoreTrack};
 
@@ -1421,6 +1477,18 @@ mod tests {
         playlists: std::sync::Mutex<Vec<Vec<String>>>,
         queued: std::sync::Mutex<Vec<String>>,
         retryable: bool,
+        stopped: AtomicBool,
+        resets: AtomicUsize,
+    }
+
+    impl MockDownloads {
+        fn stopped(&self) -> bool {
+            self.stopped.load(Ordering::SeqCst)
+        }
+
+        fn resets(&self) -> usize {
+            self.resets.load(Ordering::SeqCst)
+        }
     }
 
     impl DownloadControl for MockDownloads {
@@ -1444,6 +1512,14 @@ mod tests {
 
         fn summary(&self) -> download_manager::DownloadSummary {
             download_manager::DownloadSummary::default()
+        }
+
+        fn stop_all_downloads(&self) {
+            self.stopped.store(true, Ordering::SeqCst);
+        }
+
+        fn reset_statuses(&self) {
+            self.resets.fetch_add(1, Ordering::SeqCst);
         }
     }
 
@@ -1507,13 +1583,11 @@ mod tests {
         let service = PlaybackService::new(MockSink, "/tmp/ytermusicd-test", 50);
         let events = service.events();
         let playback = Arc::new(Mutex::new(service));
-        // A fresh store per test state, so feed tests never share
-        // state with each other.
-        static RSS_COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-        let id = RSS_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let rss = Arc::new(RssProvider::new(
-            std::env::temp_dir().join(format!("ytermusicd-test-rss-{id}.json")),
+        let cache = Arc::new(CacheService::new(
+            PathBuf::from("/tmp/ytermusicd-test/downloads"),
+            PathBuf::from("/tmp/ytermusicd-test/covers"),
         ));
+        let rss = fresh_rss();
         AppState::new(
             AuthStatus::ok("/tmp/headers.txt"),
             music,
@@ -1521,6 +1595,58 @@ mod tests {
             events,
             downloads,
             artwork,
+            cache,
+            rss,
+        )
+    }
+
+    /// Build a fresh RSS provider with its own store file, so feed
+    /// tests never share state with each other.
+    fn fresh_rss() -> Arc<RssProvider> {
+        static RSS_COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let id = RSS_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Arc::new(RssProvider::new(
+            std::env::temp_dir().join(format!("ytermusicd-test-rss-{id}.json")),
+        ))
+    }
+
+    /// Build test state with the playback service and the cache
+    /// service sharing one cache root, so the current track file
+    /// and the cache directories agree.
+    fn test_state_in(cache_root: &Path) -> AppState<MockSink> {
+        test_state_in_with(
+            cache_root,
+            Arc::new(MockMusicApi::default()),
+            Arc::new(MockDownloads::default()),
+        )
+    }
+
+    fn test_state_in_with(
+        cache_root: &Path,
+        music: Arc<dyn MusicApi>,
+        downloads: Arc<dyn DownloadControl>,
+    ) -> AppState<MockSink> {
+        let artwork = Arc::new(ArtworkCache::with_fetcher(
+            cache_root.join("covers"),
+            0,
+            Arc::new(FakeCovers::new()),
+        ));
+        let cache = Arc::new(CacheService::new(
+            cache_root.join("downloads"),
+            cache_root.join("covers"),
+        ));
+        let rss = fresh_rss();
+        let service = PlaybackService::new(MockSink, cache_root.to_path_buf(), 50);
+        let events = service.events();
+        let playback = Arc::new(Mutex::new(service));
+        AppState::new(
+            AuthStatus::ok("/tmp/headers.txt"),
+            music,
+            playback,
+            events,
+            downloads,
+            artwork,
+            cache,
             rss,
         )
     }
@@ -1806,6 +1932,216 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(unknown_search.status().as_u16(), 400);
+        server.abort();
+    }
+
+    fn write_cache_file(path: &Path, bytes: &[u8]) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    fn seed_cache(root: &Path) {
+        write_cache_file(
+            &root.join("downloads/youtube/abcdefghijk.mp4"),
+            b"video-data",
+        );
+        write_cache_file(&root.join("downloads/youtube/abcdefghijk.json"), b"{}");
+        write_cache_file(
+            &root.join("downloads/youtube/zyxwvutsrqp.mp4"),
+            b"other-video",
+        );
+        write_cache_file(&root.join("downloads/youtube/zyxwvutsrqp.json"), b"{}");
+        write_cache_file(&root.join("covers/youtube/abcdefghijk.jpg"), b"jpeg-data");
+        write_cache_file(&root.join("covers/youtube/zyxwvutsrqp.jpg"), b"other-jpeg");
+    }
+
+    async fn play_and_queue_tracks(base: &str) {
+        let client = reqwest::Client::new();
+        let first = serde_json::json!({"track": track("abcdefghijk")});
+        client
+            .post(format!("{base}/api/play/track"))
+            .json(&first)
+            .send()
+            .await
+            .unwrap();
+        let second = serde_json::json!({"track": track("zyxwvutsrqp")});
+        client
+            .post(format!("{base}/api/queue/add"))
+            .json(&second)
+            .send()
+            .await
+            .unwrap();
+    }
+
+    async fn mark_downloaded(state: &AppState<MockSink>, ids: &[&str]) {
+        let mut playback = state.playback.lock().await;
+        for id in ids {
+            playback.set_download_status(
+                &TrackKey::youtube(*id),
+                common_structs::MusicDownloadStatus::Downloaded,
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn cache_status_reports_sizes_from_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        seed_cache(dir.path());
+        let (base, server) = start_server(test_state_in(dir.path())).await;
+        let client = reqwest::Client::new();
+
+        let sizes: serde_json::Value = client
+            .get(format!("{base}/api/cache"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(sizes["downloads_files"], 4);
+        assert_eq!(sizes["downloads_bytes"], 10 + 2 + 11 + 2);
+        assert_eq!(sizes["covers_files"], 2);
+        assert_eq!(sizes["covers_bytes"], 9 + 10);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn cache_clean_deletes_downloads_and_resets_queue_statuses() {
+        let dir = tempfile::tempdir().unwrap();
+        seed_cache(dir.path());
+        let downloads = Arc::new(MockDownloads::default());
+        let state = test_state_in_with(
+            dir.path(),
+            Arc::new(MockMusicApi::default()),
+            downloads.clone(),
+        );
+        let (base, server) = start_server(state.clone()).await;
+        play_and_queue_tracks(&base).await;
+        mark_downloaded(&state, &["abcdefghijk", "zyxwvutsrqp"]).await;
+
+        let client = reqwest::Client::new();
+        let result: serde_json::Value = client
+            .post(format!("{base}/api/cache/clean"))
+            .json(&serde_json::json!({"scope": "downloads"}))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(result["scope"], "downloads");
+        assert_eq!(result["downloads_deleted_files"], 2);
+        assert_eq!(result["downloads_freed_bytes"], 11 + 2);
+        assert_eq!(result["covers_deleted_files"], 0);
+        assert_eq!(result["freed_bytes"], 13);
+        assert!(
+            dir.path()
+                .join("downloads/youtube/abcdefghijk.mp4")
+                .exists()
+        );
+        assert!(
+            !dir.path()
+                .join("downloads/youtube/zyxwvutsrqp.mp4")
+                .exists()
+        );
+        assert!(dir.path().join("covers/youtube/abcdefghijk.jpg").exists());
+
+        assert!(downloads.stopped());
+        assert_eq!(downloads.resets(), 1);
+        assert!(
+            downloads
+                .queued
+                .lock()
+                .unwrap()
+                .contains(&"abcdefghijk".to_string()),
+            "the current track is queued again after the clean"
+        );
+
+        let queue: serde_json::Value = client
+            .get(format!("{base}/api/queue"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(queue["items"][0]["download"]["state"], "downloaded");
+        assert_eq!(queue["items"][1]["download"]["state"], "not_downloaded");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn cache_clean_keeps_the_current_track_file() {
+        let dir = tempfile::tempdir().unwrap();
+        seed_cache(dir.path());
+        let state = test_state_in(dir.path());
+        let (base, server) = start_server(state.clone()).await;
+        play_and_queue_tracks(&base).await;
+
+        let client = reqwest::Client::new();
+        let result: serde_json::Value = client
+            .post(format!("{base}/api/cache/clean"))
+            .json(&serde_json::json!({"scope": "all"}))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(result["downloads_deleted_files"], 2);
+        assert_eq!(result["covers_deleted_files"], 1);
+        assert!(
+            dir.path()
+                .join("downloads/youtube/abcdefghijk.mp4")
+                .exists()
+        );
+        assert!(
+            dir.path()
+                .join("downloads/youtube/abcdefghijk.json")
+                .exists()
+        );
+        assert!(dir.path().join("covers/youtube/abcdefghijk.jpg").exists());
+        assert!(
+            !dir.path()
+                .join("downloads/youtube/zyxwvutsrqp.mp4")
+                .exists()
+        );
+        assert!(!dir.path().join("covers/youtube/zyxwvutsrqp.jpg").exists());
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn cache_clean_covers_only_leaves_downloads() {
+        let dir = tempfile::tempdir().unwrap();
+        seed_cache(dir.path());
+        let downloads = Arc::new(MockDownloads::default());
+        let state = test_state_in_with(
+            dir.path(),
+            Arc::new(MockMusicApi::default()),
+            downloads.clone(),
+        );
+        let (base, server) = start_server(state).await;
+
+        let client = reqwest::Client::new();
+        let result: serde_json::Value = client
+            .post(format!("{base}/api/cache/clean"))
+            .json(&serde_json::json!({"scope": "covers"}))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(result["covers_deleted_files"], 2);
+        assert_eq!(result["downloads_deleted_files"], 0);
+        assert!(
+            dir.path()
+                .join("downloads/youtube/abcdefghijk.mp4")
+                .exists()
+        );
+        assert!(!dir.path().join("covers/youtube").exists());
+        assert!(!downloads.stopped());
+        assert_eq!(downloads.resets(), 0);
         server.abort();
     }
 

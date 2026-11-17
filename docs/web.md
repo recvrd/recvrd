@@ -77,6 +77,11 @@ web UI stores the choice in `localStorage`.
 The track table and the now-playing bar show cover art from
 `/api/tracks/{provider}/{track_id}/cover`. A missing image leaves the placeholder visible.
 
+The sidebar has a Cache section. It shows the download and cover cache sizes
+from `GET /api/cache`. The scope selector picks `all`, `downloads`, or
+`covers`, and the Clean button asks for confirmation before it calls
+`POST /api/cache/clean`.
+
 ## Playlist editing
 
 The library has a *New playlist* action. Enter a name and click *Create*.

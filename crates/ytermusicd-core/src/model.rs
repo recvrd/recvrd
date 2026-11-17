@@ -428,6 +428,24 @@ impl Queue {
         }
     }
 
+    /// Mark every queued track as not downloaded, except the kept
+    /// track. Call this after the cached files are gone, so the
+    /// queue no longer claims deleted downloads are complete.
+    pub fn reset_download_statuses(&mut self, keep: Option<&TrackKey>) {
+        for item in &mut self.items {
+            if Some(&item.track.key()) != keep {
+                item.download = MusicDownloadStatus::NotDownloaded;
+            }
+        }
+        if let Some(original) = &mut self.original {
+            for item in original {
+                if Some(&item.track.key()) != keep {
+                    item.download = MusicDownloadStatus::NotDownloaded;
+                }
+            }
+        }
+    }
+
     pub fn snapshot(&self) -> QueueSnapshot {
         QueueSnapshot {
             items: self.items.clone(),
@@ -578,6 +596,42 @@ mod tests {
             MusicDownloadStatus::Downloaded,
         );
         assert_eq!(queue.items()[1].download, MusicDownloadStatus::Downloaded);
+    }
+
+    #[test]
+    fn reset_download_statuses_keeps_the_kept_track() {
+        let mut queue = Queue::new();
+        queue.replace(tracks(3));
+        for id in ["video-0", "video-1", "video-2"] {
+            queue.set_download_status(&TrackKey::youtube(id), MusicDownloadStatus::Downloaded);
+        }
+        queue.reset_download_statuses(Some(&TrackKey::youtube("video-1")));
+        assert_eq!(
+            queue.items()[0].download,
+            MusicDownloadStatus::NotDownloaded
+        );
+        assert_eq!(queue.items()[1].download, MusicDownloadStatus::Downloaded);
+        assert_eq!(
+            queue.items()[2].download,
+            MusicDownloadStatus::NotDownloaded
+        );
+    }
+
+    #[test]
+    fn reset_download_statuses_without_a_kept_track_resets_all() {
+        let mut queue = Queue::new();
+        queue.replace(tracks(2));
+        queue.set_download_status(
+            &TrackKey::youtube("video-0"),
+            MusicDownloadStatus::Downloaded,
+        );
+        queue.reset_download_statuses(None);
+        assert!(
+            queue
+                .items()
+                .iter()
+                .all(|item| item.download == MusicDownloadStatus::NotDownloaded)
+        );
     }
 
     #[test]

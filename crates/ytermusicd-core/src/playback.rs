@@ -434,6 +434,14 @@ impl<S: AudioSink> PlaybackService<S> {
         }
     }
 
+    /// Mark every queued track as not downloaded, except the kept
+    /// track, and publish the new queue. Call this after the cached
+    /// files are gone.
+    pub fn reset_download_statuses(&mut self, keep: Option<&TrackKey>) {
+        self.queue.reset_download_statuses(keep);
+        self.publish_queue();
+    }
+
     pub fn set_download_status(
         &mut self,
         key: &TrackKey,

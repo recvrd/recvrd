@@ -322,6 +322,62 @@ pub struct DownloadSummary {
 }
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS, Default)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum CacheScope {
+    Downloads,
+    Covers,
+    #[default]
+    All,
+}
+
+/// Sizes of the daemon cache, in bytes and files. Sizes come from
+/// the cache directories on disk.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS, Default)]
+#[ts(export)]
+pub struct CacheSizes {
+    #[ts(type = "number")]
+    pub downloads_bytes: u64,
+    #[ts(type = "number")]
+    pub downloads_files: u64,
+    #[ts(type = "number")]
+    pub covers_bytes: u64,
+    #[ts(type = "number")]
+    pub covers_files: u64,
+}
+
+/// Request body for `POST /api/cache/clean`. The scope defaults to
+/// `all` when it is missing.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS, Default)]
+#[ts(export)]
+pub struct CacheCleanRequest {
+    #[serde(default)]
+    pub scope: CacheScope,
+}
+
+/// Result of `POST /api/cache/clean`. `freed_bytes` is the sum of
+/// the download and cover bytes freed.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct CacheCleanResult {
+    pub scope: CacheScope,
+    #[ts(type = "number")]
+    pub downloads_freed_bytes: u64,
+    #[ts(type = "number")]
+    pub downloads_deleted_files: u64,
+    #[ts(type = "number")]
+    pub covers_freed_bytes: u64,
+    #[ts(type = "number")]
+    pub covers_deleted_files: u64,
+    #[ts(type = "number")]
+    pub freed_bytes: u64,
+}
+
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct Status {
