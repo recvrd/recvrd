@@ -74,6 +74,11 @@ Every non-2xx response uses one envelope:
 | POST | `/api/shuffle` | Enable/disable shuffle |
 | POST | `/api/repeat` | Set repeat mode (`off`, `one`, `all`) |
 | POST | `/api/downloads/retry` | Retry a failed download (`{provider, track_id}`) |
+| GET | `/api/rss/feeds` | RSS feeds the daemon follows |
+| POST | `/api/rss/feeds` | Add an RSS feed (`{url}`) |
+| POST | `/api/rss/feeds/refresh` | Refresh every RSS feed |
+| DELETE | `/api/rss/feeds/{id}` | Remove an RSS feed and its episodes |
+| POST | `/api/rss/feeds/{id}/refresh` | Refresh one RSS feed |
 | GET | `/api/events` | SSE snapshot and live events |
 
 Command endpoints return the updated `Status` or `Queue` so clients can render
@@ -112,7 +117,7 @@ curl http://127.0.0.1:8080/api/status
     "retrying": 0,
     "failed": 0
   },
-  "providers": ["youtube"],
+  "providers": ["youtube", "rss"],
   "default_provider": "youtube"
 }
 ```
@@ -150,6 +155,7 @@ curl http://127.0.0.1:8080/api/providers
 `GET /api/providers` lists every provider the daemon knows. Each entry
 names the provider, marks the default, lists the actions it supports, and
 reports its auth state. Clients hide actions a provider does not support.
+RSS needs no auth, so its auth state is always `ok` with no source.
 
 Library and search requests take an optional `provider` parameter. A missing
 value means the default provider. An unknown name returns 400 with
@@ -160,6 +166,39 @@ value means the default provider. An unknown name returns 400 with
 curl 'http://127.0.0.1:8080/api/playlists?provider=youtube'
 curl 'http://127.0.0.1:8080/api/search?provider=youtube&q=civilization'
 ```
+
+### RSS feeds
+
+The RSS provider follows RSS 2.0 and Atom feeds. A feed is a playlist and
+its episodes are tracks, so feeds work through the library, search, queue
+and playback endpoints with `provider=rss`. Feed URLs persist in
+`rss-feeds.json` in the data directory. A feed refresh uses a conditional
+GET (ETag and Last-Modified) and never duplicates episodes: an episode
+keeps its track ID across refreshes.
+
+```sh
+curl http://127.0.0.1:8080/api/rss/feeds
+curl -X POST http://127.0.0.1:8080/api/rss/feeds \
+  -H 'content-type: application/json' \
+  -d '{"url": "https://example.com/feed.xml"}'
+curl -X POST http://127.0.0.1:8080/api/rss/feeds/0123456789abcdef/refresh
+curl -X DELETE http://127.0.0.1:8080/api/rss/feeds/0123456789abcdef
+```
+
+An added feed returns 201 with the feed, including its episode count:
+
+```json
+{
+  "id": "0123456789abcdef",
+  "url": "https://example.com/feed.xml",
+  "title": "Test Tones",
+  "episode_count": 2,
+  "last_fetched": 1763400000
+}
+```
+
+A bad feed URL returns 400. A feed that cannot be fetched or parsed
+returns 502. An unknown feed ID returns 404 on refresh and remove.
 
 ### Library and search
 

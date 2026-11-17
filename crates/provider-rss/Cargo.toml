@@ -1,0 +1,24 @@
+[package]
+name = "provider-rss"
+version = "0.5.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "RSS and Atom music provider for ytermusicd"
+
+[dependencies]
+async-trait = "0.1"
+common-structs.workspace = true
+download-manager.workspace = true
+log = "0.4"
+quick-xml = "0.42"
+reqwest = { version = "0.11", default-features = false, features = ["rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.11"
+tokio = { version = "1", features = ["fs", "io-util", "sync"] }
+ytermusicd-api.workspace = true
+ytermusicd-core.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net"] }

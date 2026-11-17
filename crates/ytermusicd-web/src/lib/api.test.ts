@@ -117,6 +117,39 @@ describe('api client', () => {
     });
   });
 
+  it('calls the RSS feed endpoints', async () => {
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        new Response('[]', {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const api = createApi();
+
+    await api.rssFeeds();
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/rss/feeds');
+
+    await api.addRssFeed('https://example.com/feed.xml');
+    expect(fetchMock.mock.calls[1][0]).toBe('/api/rss/feeds');
+    expect(fetchMock.mock.calls[1][1]).toMatchObject({
+      method: 'POST',
+      body: JSON.stringify({ url: 'https://example.com/feed.xml' }),
+    });
+
+    await api.refreshRssFeed('0123456789abcdef');
+    expect(fetchMock.mock.calls[2][0]).toBe('/api/rss/feeds/0123456789abcdef/refresh');
+    expect(fetchMock.mock.calls[2][1]).toMatchObject({ method: 'POST' });
+
+    await api.refreshRssFeeds();
+    expect(fetchMock.mock.calls[3][0]).toBe('/api/rss/feeds/refresh');
+
+    await api.removeRssFeed('0123456789abcdef');
+    expect(fetchMock.mock.calls[4][0]).toBe('/api/rss/feeds/0123456789abcdef');
+    expect(fetchMock.mock.calls[4][1]).toMatchObject({ method: 'DELETE' });
+  });
+
   it('maps error envelopes to ApiError', async () => {
     vi.stubGlobal(
       'fetch',

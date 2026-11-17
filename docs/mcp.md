@@ -75,6 +75,11 @@ your-mcp-client --server "ytermusicd mcp"
 | `queue_clear` | none | Updated queue |
 | `retry_download` | `provider`, `track_id` | `{ok: true}` |
 | `download_status` | `provider`, `track_id` (optional) | Download summary and queue tracks |
+| `rss_list_feeds` | none | RSS feeds the daemon follows |
+| `rss_add_feed` | `url` | Added feed with episode count |
+| `rss_remove_feed` | `feed_id` | `{ok: true}` |
+| `rss_refresh_feed` | `feed_id` | Refreshed feed |
+| `rss_refresh_feeds` | none | Refreshed feeds |
 
 `track` is the object from `search` or `get_playlist`:
 `provider`, `track_id`, `title`, `artist`, `album` and `duration`.
@@ -99,7 +104,7 @@ The proxy does not crash on daemon errors. The client shows the message.
 
 ## Scope
 
-The proxy has the 27 tools above. These items are post-v1:
+The proxy has the 33 tools above. These items are post-v1:
 
 - lyrics;
 - streamable HTTP MCP transport;
@@ -113,7 +118,7 @@ cargo test -p ytermusicd --test mcp_stdio
 ```
 
 The unit tests use an in-process mock daemon. The stdio test starts the real
-binary, performs the MCP handshake, lists 27 tools, calls `now_playing` and
+binary, performs the MCP handshake, lists 33 tools, calls `now_playing` and
 checks that the process exits when stdin closes. The playlist tool tests cover
 the create, rename, delete, add, remove and move calls. The new tool tests
 cover seek, shuffle, repeat, queue remove, queue reorder, queue play next,

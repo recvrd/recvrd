@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Atom Tones</title>
+  <link rel="alternate" href="https://example.com/atom" />
+  <icon>https://example.com/atom.jpg</icon>
+  <entry>
+    <title>Atom Song</title>
+    <id>atom-episode-1</id>
+    <author><name>Atom Artist</name></author>
+    <published>2026-11-01T00:00:00Z</published>
+    <link rel="enclosure" type="audio/ogg" href="https://example.com/atom.ogg" />
+    <link rel="alternate" href="https://example.com/atom-ep1" />
+  </entry>
+</feed>

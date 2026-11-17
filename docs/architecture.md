@@ -33,6 +33,7 @@ SIGINT/SIGTERM. State is owned by the daemon, not by an individual client.
 | `crates/ytmc` | Current | Terminal client (`ytmc`) |
 | `crates/ytpapi2` | Current | YouTube Music API client |
 | `crates/provider-youtube` | Current | YouTube Music provider: API client, cover fetcher, downloads |
+| `crates/provider-rss` | Current | RSS provider: feed parser, store, fetcher, downloader |
 | `crates/player` | Current | Audio decoding/playback |
 | `crates/database` | Current | Local download database |
 | `crates/download-manager` | Current | Download queue |
@@ -65,8 +66,12 @@ routing fallback. See [docs/web.md](web.md).
 - **Config**: `config.toml` under the XDG config directory.
 - **Auth**: `headers.txt` (`Cookie` + `User-Agent`) and optional
   `account_id.txt`; never committed or logged.
-- **Cache**: downloaded `<video-id>.mp4` and `<video-id>.json` files,
-  `covers/<video-id>.jpg` cover art and `db.bin`.
+- **Cache**: downloaded audio and `<id>.json` files, `covers/<id>.jpg` cover
+  art and `db.bin`. Audio files are provider-scoped: `downloads/<provider>/`
+  and `covers/<provider>/`. A download keeps the extension its backend
+  reports: `mp4` for YouTube, `mp3`, `m4a`, `ogg` or `flac` for RSS.
+- **RSS feeds**: `rss-feeds.json` in the data directory. It holds feed URLs,
+  ETags, Last-Modified values and the episode index.
 - Runtime state: queue, current index, position, volume, shuffle/repeat,
   written atomically after commands, periodically while the daemon runs and on
   shutdown, then restored on startup (invalid state is quarantined as
@@ -98,6 +103,20 @@ returns the new track list.
 The API rejects invalid titles, video IDs and indices before it sends an
 upstream request. An expired session or a rate limit returns an actionable
 message. A failed upstream edit does not change local playback state.
+
+## RSS provider
+
+`crates/provider-rss` follows RSS 2.0 and Atom feeds with the `rss`
+provider ID. A feed is a playlist and its episodes are tracks. The
+provider parses feeds with `quick-xml`, stores feed URLs with ETags and
+Last-Modified values in `rss-feeds.json`, and refreshes with conditional
+GETs. An episode ID is the first 32 hex characters of the SHA-256 hash
+of its GUID or enclosure URL, so a refresh never duplicates an episode.
+Enclosures download through the same manager as YouTube tracks, with
+the extension from the enclosure MIME type or URL suffix: `mp3`, `m4a`,
+`ogg` or `flac`. Playback decodes them with rodio. RSS feeds are
+read-only: playlist edits stay on YouTube. The daemon refreshes all
+feeds at startup and exposes feed management at `/api/rss/feeds`.
 
 ## API
 
@@ -152,9 +171,9 @@ display name `ytermusicd`. `playerctl -l` lists it while the daemon runs.
 ## MCP
 
 `ytermusicd mcp` is a stdio proxy to the REST API. It uses `rmcp` and holds no
-playback state. The proxy has 27 tools: search, playlists, playlist edits,
+playback state. The proxy has 33 tools: search, playlists, playlist edits,
 playback transport, seek, shuffle, repeat, queue management, queue add, now
-playing, volume and download status. It reads
+playing, volume, download status and RSS feed management. It reads
 the daemon URL from `--url` or `YTERMUSICD_URL`, applies a 30-second timeout, and
 exits when stdin closes. See [docs/mcp.md](mcp.md). Lyrics and HTTP transport
 are post-v1.

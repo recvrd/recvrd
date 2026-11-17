@@ -42,7 +42,9 @@ impl Default for YoutubeCoverFetcher {
 #[async_trait]
 impl CoverFetcher for YoutubeCoverFetcher {
     async fn fetch(&self, key: &TrackKey) -> Option<Vec<u8>> {
-        let ProviderId::Youtube = key.provider;
+        if key.provider != ProviderId::Youtube {
+            return None;
+        }
         let video_id = &key.id;
         for url in cover_urls(video_id) {
             let Ok(response) = self.client.get(url).send().await else {

@@ -19,6 +19,7 @@ mod downloads;
 mod mcp;
 mod mpris;
 mod music;
+mod providers;
 mod server;
 mod web;
 
@@ -27,14 +28,16 @@ use crate::{
     audio::RodioSink,
     downloads::{DownloadControl, DownloadService},
     music::UnavailableMusicApi,
+    providers::{CompositeCoverFetcher, CompositeDownloader, CompositeMusicApi},
 };
+use provider_rss::RssProvider;
 use provider_youtube::{YoutubeCoverFetcher, YoutubeDownloader, YoutubeMusicApi, connect};
 
 #[derive(Debug, Parser)]
 #[command(
     name = "ytermusicd",
     version,
-    about = "Headless YouTube Music daemon with a web UI, MPRIS and MCP"
+    about = "Headless music daemon with a web UI, MPRIS and MCP"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -181,18 +184,39 @@ fn run_serve(
         .build()?;
 
     runtime.block_on(async move {
+        let rss = Arc::new(RssProvider::new(paths.rss_feeds_file()));
+        for (id, result) in rss.refresh_all().await {
+            match result {
+                Ok(feed) => log::info!(
+                    "refreshed RSS feed {} ({} episodes)",
+                    feed.title,
+                    feed.episode_count
+                ),
+                Err(error) => log::warn!("could not refresh RSS feed {id}: {error}"),
+            }
+        }
+
         let music: Arc<dyn MusicApi> = match auth {
             Some(auth) => match connect(&auth).await {
                 Ok(client) => {
                     log::info!("YouTube Music client ready");
-                    Arc::new(YoutubeMusicApi::new(client))
+                    Arc::new(CompositeMusicApi::new(
+                        Arc::new(YoutubeMusicApi::new(client)),
+                        rss.clone(),
+                    ))
                 }
                 Err(error) => {
                     log::error!("could not create YouTube Music client: {error:?}");
-                    Arc::new(UnavailableMusicApi)
+                    Arc::new(CompositeMusicApi::new(
+                        Arc::new(UnavailableMusicApi),
+                        rss.clone(),
+                    ))
                 }
             },
-            None => Arc::new(UnavailableMusicApi),
+            None => Arc::new(CompositeMusicApi::new(
+                Arc::new(UnavailableMusicApi),
+                rss.clone(),
+            )),
         };
 
         let sink = RodioSink::spawn(config.initial_volume);
@@ -217,7 +241,11 @@ fn run_serve(
             service.set_wait_for_downloads(true);
         }
 
-        let downloads = DownloadService::new(cache_dir, parallel_downloads, Arc::new(downloader));
+        let downloads = DownloadService::new(
+            cache_dir,
+            parallel_downloads,
+            Arc::new(CompositeDownloader::new(Arc::new(downloader), rss.clone())),
+        );
         downloads.spawn(playback.clone());
         let restored_tracks: Vec<ytermusicd_core::Track> = playback
             .lock()
@@ -234,7 +262,10 @@ fn run_serve(
         let artwork = Arc::new(ArtworkCache::new(
             covers_dir,
             cover_cache_bytes,
-            Arc::new(YoutubeCoverFetcher::new()),
+            Arc::new(CompositeCoverFetcher::new(
+                Arc::new(YoutubeCoverFetcher::new()),
+                rss.clone(),
+            )),
         ));
 
         let (commands, mut command_rx) = mpsc::unbounded_channel();
@@ -283,6 +314,7 @@ fn run_serve(
             artwork,
             commands,
             dbus,
+            rss,
         )
         .await;
         if let Err(error) = playback.lock().await.save_state(&state_path) {

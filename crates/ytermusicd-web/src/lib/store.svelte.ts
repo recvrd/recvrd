@@ -6,6 +6,7 @@ import type { ProviderId } from '@api/ProviderId';
 import type { ProviderInfo } from '@api/ProviderInfo';
 import type { Queue } from '@api/Queue';
 import type { RepeatMode } from '@api/RepeatMode';
+import type { RssFeed } from '@api/RssFeed';
 import type { SearchResults } from '@api/SearchResults';
 import type { Status } from '@api/Status';
 import type { Track } from '@api/Track';
@@ -116,6 +117,7 @@ export class AppStore {
   providers = $state<ProviderInfo[]>([]);
   activeProvider = $state<ProviderId>('youtube');
   playlists = $state<Playlist[]>([]);
+  rssFeeds = $state<RssFeed[]>([]);
   playlist = $state<PlaylistDetail | null>(null);
   playlistsLoading = $state(false);
   playlistLoading = $state(false);
@@ -205,6 +207,10 @@ export class AppStore {
 
   get canCreatePlaylist(): boolean {
     return this.activeProviderInfo?.capabilities.playlist_create ?? true;
+  }
+
+  get isRssProvider(): boolean {
+    return this.activeProvider === 'rss';
   }
 
   get canEditPlaylist(): boolean {
@@ -307,10 +313,75 @@ export class AppStore {
     this.playlistsLoading = true;
     try {
       this.playlists = await this.api.playlists(this.activeProvider);
+      if (this.activeProvider === 'rss') {
+        this.rssFeeds = await this.api.rssFeeds();
+      }
     } catch (error) {
       this.error = describeError(error, this.activeProviderName);
     } finally {
       this.playlistsLoading = false;
+    }
+  }
+
+  async loadRssFeeds(): Promise<void> {
+    try {
+      this.rssFeeds = await this.api.rssFeeds();
+    } catch (error) {
+      this.report(error);
+    }
+  }
+
+  async addRssFeed(url: string): Promise<boolean> {
+    try {
+      const feed = await this.api.addRssFeed(url);
+      this.rssFeeds = [...this.rssFeeds, feed];
+      await this.loadPlaylists();
+      this.notify('success', `Added “${feed.title}”.`);
+      return true;
+    } catch (error) {
+      this.report(error);
+      return false;
+    }
+  }
+
+  async removeRssFeed(id: string): Promise<boolean> {
+    try {
+      await this.api.removeRssFeed(id);
+      this.rssFeeds = this.rssFeeds.filter((feed) => feed.id !== id);
+      if (this.view.kind === 'playlist' && this.view.id === id) {
+        this.openLibrary();
+      }
+      await this.loadPlaylists();
+      this.notify('success', 'Feed removed.');
+      return true;
+    } catch (error) {
+      this.report(error);
+      return false;
+    }
+  }
+
+  async refreshRssFeed(id: string): Promise<boolean> {
+    try {
+      const feed = await this.api.refreshRssFeed(id);
+      this.rssFeeds = this.rssFeeds.map((known) => (known.id === id ? feed : known));
+      await this.loadPlaylists();
+      this.notify('success', `Refreshed “${feed.title}”.`);
+      return true;
+    } catch (error) {
+      this.report(error);
+      return false;
+    }
+  }
+
+  async refreshRssFeeds(): Promise<boolean> {
+    try {
+      this.rssFeeds = await this.api.refreshRssFeeds();
+      await this.loadPlaylists();
+      this.notify('success', 'Feeds refreshed.');
+      return true;
+    } catch (error) {
+      this.report(error);
+      return false;
     }
   }
 

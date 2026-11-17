@@ -121,22 +121,35 @@ impl YTLocalDatabase {
                     continue;
                 }
             };
-            // Check if the video file exists next to its sidecar, in
-            // the flat layout or in a provider subdirectory.
+            // Check if the audio file exists next to its sidecar, in
+            // the flat layout or in a provider subdirectory. Any
+            // supported audio extension counts.
             let video_dir = path.parent().unwrap_or(&cache_folder);
-            let video_file = video_dir.join(format!("{}.mp4", video.track_id));
-            if !video_file.exists() {
-                quarantine_sidecar(&self.cache_dir, &path, "the video file does not exist");
+            let Some((audio_file, extension)) =
+                common_structs::AUDIO_EXTENSIONS
+                    .iter()
+                    .find_map(|extension| {
+                        let file = video_dir.join(format!("{}.{extension}", video.track_id));
+                        file.exists().then_some((file, *extension))
+                    })
+            else {
+                quarantine_sidecar(&self.cache_dir, &path, "the audio file does not exist");
+                continue;
+            };
+            // Check the header for container formats that carry one.
+            // MP4 and M4A start with an ftyp box. Other formats have
+            // no such header, so their presence is enough.
+            if !matches!(extension, "mp4" | "m4a") {
+                db.push(video);
                 continue;
             }
-            // Check if the video file starts with an ftyp box
-            match has_ftyp_header(&video_file) {
+            match has_ftyp_header(&audio_file) {
                 Ok(true) => {}
                 Ok(false) => {
                     quarantine_sidecar(
                         &self.cache_dir,
                         &path,
-                        "the video file does not contain an ftyp header",
+                        "the audio file does not contain an ftyp header",
                     );
                     continue;
                 }
@@ -144,7 +157,7 @@ impl YTLocalDatabase {
                     quarantine_sidecar(
                         &self.cache_dir,
                         &path,
-                        &format!("the video file is not readable: {error:?}"),
+                        &format!("the audio file is not readable: {error:?}"),
                     );
                     continue;
                 }
@@ -332,6 +345,35 @@ mod tests {
                 .join("video-gone.json")
                 .exists()
         );
+    }
+
+    #[test]
+    fn fix_db_keeps_mp3_downloads_without_an_ftyp_header() {
+        let dir = tempdir().unwrap();
+        let downloads = downloads_dir(dir.path());
+        let track = Track {
+            provider: ProviderId::Rss,
+            track_id: "0123456789abcdef0123456789abcdef".to_string(),
+            title: "Song".to_string(),
+            author: "Artist".to_string(),
+            album: "Album".to_string(),
+            duration: "3:00".to_string(),
+        };
+        std::fs::write(
+            downloads.join(format!("{}.json", track.track_id)),
+            serde_json::to_string(&track).unwrap(),
+        )
+        .unwrap();
+        // An MP3 frame header, not an ftyp box.
+        std::fs::write(
+            downloads.join(format!("{}.mp3", track.track_id)),
+            [0xff, 0xfb, 0x90, 0x00, 0x00, 0x00, 0x00, 0x00],
+        )
+        .unwrap();
+
+        let videos = library(dir.path());
+        assert_eq!(videos.len(), 1);
+        assert_eq!(videos[0].track_id, track.track_id);
     }
 
     #[test]

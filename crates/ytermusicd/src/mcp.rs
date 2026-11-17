@@ -11,8 +11,8 @@ use rmcp::{
 use serde::{Deserialize, Serialize};
 use ytermusicd_api::{
     CreatePlaylistRequest, DownloadSummary, OkResponse, Playlist, PlaylistDetail, PlaylistPrivacy,
-    ProviderId, ProviderInfo, Queue, QueueItem, RepeatMode, SearchResults, Status, Track, TrackKey,
-    UpdatePlaylistRequest,
+    ProviderId, ProviderInfo, Queue, QueueItem, RepeatMode, RssFeed, SearchResults, Status, Track,
+    TrackKey, UpdatePlaylistRequest,
 };
 use ytermusicd_client::DaemonClient;
 
@@ -185,6 +185,18 @@ pub struct DownloadStatusArgs {
     /// Optional track ID. Omit it to list all queue downloads.
     #[serde(default)]
     pub track_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct RssAddFeedArgs {
+    /// Feed URL to add.
+    pub url: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct RssFeedArgs {
+    /// Feed ID from rss_list_feeds.
+    pub feed_id: String,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
@@ -547,6 +559,61 @@ impl McpServer {
             tracks,
         }))
     }
+
+    /// List the RSS feeds the daemon follows.
+    #[tool(description = "List the RSS feeds the daemon follows")]
+    async fn rss_list_feeds(&self) -> Result<Json<Vec<RssFeed>>, McpError> {
+        self.client.rss_feeds().await.map(Json).map_err(to_mcp)
+    }
+
+    /// Add an RSS feed URL. The daemon fetches it at once.
+    #[tool(description = "Add an RSS feed URL and fetch its episodes")]
+    async fn rss_add_feed(
+        &self,
+        Parameters(args): Parameters<RssAddFeedArgs>,
+    ) -> Result<Json<RssFeed>, McpError> {
+        self.client
+            .add_rss_feed(&args.url)
+            .await
+            .map(Json)
+            .map_err(to_mcp)
+    }
+
+    /// Remove an RSS feed and drop its episodes from the index.
+    #[tool(description = "Remove an RSS feed and its episodes")]
+    async fn rss_remove_feed(
+        &self,
+        Parameters(args): Parameters<RssFeedArgs>,
+    ) -> Result<Json<OkResponse>, McpError> {
+        self.client
+            .remove_rss_feed(&args.feed_id)
+            .await
+            .map(Json)
+            .map_err(to_mcp)
+    }
+
+    /// Refresh one RSS feed by its ID.
+    #[tool(description = "Refresh one RSS feed by its ID")]
+    async fn rss_refresh_feed(
+        &self,
+        Parameters(args): Parameters<RssFeedArgs>,
+    ) -> Result<Json<RssFeed>, McpError> {
+        self.client
+            .refresh_rss_feed(&args.feed_id)
+            .await
+            .map(Json)
+            .map_err(to_mcp)
+    }
+
+    /// Refresh every RSS feed. A feed that fails keeps its old episodes.
+    #[tool(description = "Refresh every RSS feed")]
+    async fn rss_refresh_feeds(&self) -> Result<Json<Vec<RssFeed>>, McpError> {
+        self.client
+            .refresh_rss_feeds()
+            .await
+            .map(Json)
+            .map_err(to_mcp)
+    }
 }
 
 #[tool_handler]
@@ -580,7 +647,7 @@ mod tests {
         extract::{Path, State},
         http::StatusCode,
         response::{IntoResponse, Response},
-        routing::{get, post},
+        routing::{delete, get, post},
     };
     use rmcp::model::ErrorCode;
     use serde_json::json;
@@ -702,6 +769,13 @@ mod tests {
             .route("/api/repeat", post(mock_status_op))
             .route("/api/downloads/retry", post(mock_retry_download))
             .route("/api/volume", post(mock_volume))
+            .route(
+                "/api/rss/feeds",
+                get(mock_rss_feeds).post(mock_rss_add_feed),
+            )
+            .route("/api/rss/feeds/refresh", post(mock_rss_refresh_feeds))
+            .route("/api/rss/feeds/{id}", delete(mock_rss_remove_feed))
+            .route("/api/rss/feeds/{id}/refresh", post(mock_rss_refresh_feed))
             .with_state(state);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -976,6 +1050,70 @@ mod tests {
         StatusCode::OK
     }
 
+    fn rss_feed() -> RssFeed {
+        RssFeed {
+            id: "0123456789abcdef".to_string(),
+            url: "https://example.com/feed.xml".to_string(),
+            title: "Test Tones".to_string(),
+            episode_count: 2,
+            last_fetched: Some(100),
+        }
+    }
+
+    async fn mock_rss_feeds(State(state): State<MockState>) -> AxumJson<Vec<RssFeed>> {
+        state
+            .calls
+            .lock()
+            .unwrap()
+            .push("GET /api/rss/feeds".to_string());
+        AxumJson(vec![rss_feed()])
+    }
+
+    async fn mock_rss_add_feed(
+        State(state): State<MockState>,
+        AxumJson(request): AxumJson<serde_json::Value>,
+    ) -> (StatusCode, AxumJson<RssFeed>) {
+        state
+            .calls
+            .lock()
+            .unwrap()
+            .push(format!("POST /api/rss/feeds {}", request["url"]));
+        (StatusCode::CREATED, AxumJson(rss_feed()))
+    }
+
+    async fn mock_rss_remove_feed(
+        State(state): State<MockState>,
+        Path(id): Path<String>,
+    ) -> AxumJson<OkResponse> {
+        state
+            .calls
+            .lock()
+            .unwrap()
+            .push(format!("DELETE /api/rss/feeds/{id}"));
+        AxumJson(OkResponse { ok: true })
+    }
+
+    async fn mock_rss_refresh_feed(
+        State(state): State<MockState>,
+        Path(id): Path<String>,
+    ) -> AxumJson<RssFeed> {
+        state
+            .calls
+            .lock()
+            .unwrap()
+            .push(format!("POST /api/rss/feeds/{id}/refresh"));
+        AxumJson(rss_feed())
+    }
+
+    async fn mock_rss_refresh_feeds(State(state): State<MockState>) -> AxumJson<Vec<RssFeed>> {
+        state
+            .calls
+            .lock()
+            .unwrap()
+            .push("POST /api/rss/feeds/refresh".to_string());
+        AxumJson(vec![rss_feed()])
+    }
+
     async fn mock_volume(
         State(state): State<MockState>,
         AxumJson(request): AxumJson<serde_json::Value>,
@@ -1037,6 +1175,11 @@ mod tests {
                 "repeat",
                 "resume",
                 "retry_download",
+                "rss_add_feed",
+                "rss_list_feeds",
+                "rss_refresh_feed",
+                "rss_refresh_feeds",
+                "rss_remove_feed",
                 "search",
                 "seek",
                 "shuffle",
@@ -1246,6 +1389,48 @@ mod tests {
         let (server, _state, handle) = server().await;
         let error = expect_error(server.volume(Parameters(VolumeArgs { volume: 101 })).await);
         assert!(error.message.contains("0 and 100"));
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn rss_tools_call_the_daemon() {
+        let (server, state, handle) = server().await;
+
+        let Json(feeds) = server.rss_list_feeds().await.unwrap();
+        assert_eq!(feeds.len(), 1);
+        assert_eq!(feeds[0].title, "Test Tones");
+
+        let Json(added) = server
+            .rss_add_feed(Parameters(RssAddFeedArgs {
+                url: "https://example.com/feed.xml".to_string(),
+            }))
+            .await
+            .unwrap();
+        assert_eq!(added.episode_count, 2);
+
+        let Json(refreshed) = server
+            .rss_refresh_feed(Parameters(RssFeedArgs {
+                feed_id: "0123456789abcdef".to_string(),
+            }))
+            .await
+            .unwrap();
+        assert_eq!(refreshed.id, "0123456789abcdef");
+
+        let Json(all) = server.rss_refresh_feeds().await.unwrap();
+        assert_eq!(all.len(), 1);
+
+        let Json(removed) = server
+            .rss_remove_feed(Parameters(RssFeedArgs {
+                feed_id: "0123456789abcdef".to_string(),
+            }))
+            .await
+            .unwrap();
+        assert!(removed.ok);
+
+        let calls = state.calls.lock().unwrap();
+        assert!(calls.contains(&"GET /api/rss/feeds".to_string()));
+        assert!(calls.contains(&"POST /api/rss/feeds/refresh".to_string()));
+        assert!(calls.contains(&"DELETE /api/rss/feeds/0123456789abcdef".to_string()));
         handle.abort();
     }
 

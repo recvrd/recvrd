@@ -13,8 +13,8 @@ use std::{
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-/// A music provider. YouTube Music is the only provider today.
-/// New providers add a variant here.
+/// A music provider. YouTube Music is the default provider.
+/// RSS feeds are the second provider. New providers add a variant here.
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(
     Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, TS,
@@ -23,14 +23,15 @@ use ts_rs::TS;
 pub enum ProviderId {
     #[default]
     Youtube,
+    Rss,
 }
 
 impl ProviderId {
     /// All providers the daemon knows, in display order.
-    /// YouTube Music is the only provider today. New providers
-    /// add a variant here and an entry in this list.
+    /// YouTube Music is the default provider. RSS feeds are second.
+    /// New providers add a variant here and an entry in this list.
     pub const fn all() -> &'static [Self] {
-        &[Self::Youtube]
+        &[Self::Youtube, Self::Rss]
     }
 
     /// The default provider for a fresh install.
@@ -42,6 +43,7 @@ impl ProviderId {
     pub const fn display_name(&self) -> &'static str {
         match self {
             Self::Youtube => "YouTube Music",
+            Self::Rss => "RSS",
         }
     }
 
@@ -49,11 +51,14 @@ impl ProviderId {
     pub const fn as_str(&self) -> &'static str {
         match self {
             Self::Youtube => "youtube",
+            Self::Rss => "rss",
         }
     }
 
     /// Check that a track ID is safe to use for this provider.
     /// A YouTube Music track ID has 11 characters from `[A-Za-z0-9_-]`.
+    /// An RSS track ID has 32 lowercase hexadecimal characters: the
+    /// first 32 characters of the SHA-256 hash of the episode identity.
     /// Any other value can escape the cache directory when it is
     /// joined into a path, so callers must reject it.
     pub fn validate_id(&self, id: &str) -> bool {
@@ -64,6 +69,7 @@ impl ProviderId {
                         .bytes()
                         .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
             }
+            Self::Rss => id.len() == 32 && id.bytes().all(|byte| byte.is_ascii_hexdigit()),
         }
     }
 }
@@ -80,10 +86,17 @@ impl FromStr for ProviderId {
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
             "youtube" => Ok(Self::Youtube),
+            "rss" => Ok(Self::Rss),
             _ => Err(UnknownProvider),
         }
     }
 }
+
+/// The audio file extensions the daemon can download and play.
+/// YouTube tracks use `mp4`. RSS enclosures use the extension of
+/// the enclosure. The download manager and the playback service
+/// both use this list, so they agree on the file for a track.
+pub const AUDIO_EXTENSIONS: [&str; 5] = ["mp4", "mp3", "m4a", "ogg", "flac"];
 
 /// Error for a provider name that has no variant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -116,6 +129,14 @@ impl TrackKey {
         }
     }
 
+    /// Build a key for the RSS provider.
+    pub fn rss(id: impl Into<String>) -> Self {
+        Self {
+            provider: ProviderId::Rss,
+            id: id.into(),
+        }
+    }
+
     /// Build a key for any provider.
     pub fn new(provider: ProviderId, id: impl Into<String>) -> Self {
         Self {
@@ -136,6 +157,16 @@ impl TrackKey {
         downloads_dir
             .join(self.provider.as_str())
             .join(format!("{}.{extension}", self.id))
+    }
+
+    /// The downloaded audio file for this track, in any supported
+    /// extension. The download manager keeps at most one extension
+    /// per track, so the first file that exists is the track.
+    pub fn existing_audio_file(&self, downloads_dir: &Path) -> Option<PathBuf> {
+        AUDIO_EXTENSIONS
+            .iter()
+            .map(|extension| self.download_file(downloads_dir, extension))
+            .find(|path| path.is_file())
     }
 
     /// The cover file for this track below the covers directory:
@@ -160,9 +191,10 @@ mod tests {
 
     #[test]
     fn provider_list_has_youtube_as_the_default() {
-        assert_eq!(ProviderId::all(), &[ProviderId::Youtube]);
+        assert_eq!(ProviderId::all(), &[ProviderId::Youtube, ProviderId::Rss]);
         assert_eq!(ProviderId::default_provider(), ProviderId::Youtube);
         assert_eq!(ProviderId::Youtube.display_name(), "YouTube Music");
+        assert_eq!(ProviderId::Rss.display_name(), "RSS");
     }
 
     #[test]
@@ -175,11 +207,21 @@ mod tests {
     }
 
     #[test]
+    fn rss_accepts_32_hex_char_ids() {
+        assert!(ProviderId::Rss.validate_id("0123456789abcdef0123456789abcdef"));
+        assert!(!ProviderId::Rss.validate_id("0123456789abcdef0123456789abcdeg"));
+        assert!(!ProviderId::Rss.validate_id("0123456789abcdef"));
+        assert!(!ProviderId::Rss.validate_id("../3456789abcdef0123456789abcdef"));
+        assert!(!ProviderId::Rss.validate_id(""));
+    }
+
+    #[test]
     fn provider_parses_from_its_name() {
         assert_eq!(
             "youtube".parse::<ProviderId>().unwrap(),
             ProviderId::Youtube
         );
+        assert_eq!("rss".parse::<ProviderId>().unwrap(), ProviderId::Rss);
         assert!("tidal".parse::<ProviderId>().is_err());
     }
 
@@ -218,6 +260,11 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<ProviderId>("\"youtube\"").unwrap(),
             ProviderId::Youtube
+        );
+        assert_eq!(serde_json::to_string(&ProviderId::Rss).unwrap(), "\"rss\"");
+        assert_eq!(
+            serde_json::from_str::<ProviderId>("\"rss\"").unwrap(),
+            ProviderId::Rss
         );
         assert!(serde_json::from_str::<ProviderId>("\"tidal\"").is_err());
     }
