@@ -566,6 +566,9 @@ impl App {
             DaemonEvent::Cover { video_id, art } => {
                 if self.cover_for.as_deref() == Some(video_id.as_str()) {
                     self.cover = art;
+                    if self.cover.is_none() {
+                        self.cover_for = None;
+                    }
                 }
                 Vec::new()
             }
@@ -1997,6 +2000,23 @@ mod tests {
         playback.current = Some(track("v2"));
         let commands = app.handle_daemon_event(DaemonEvent::Playback(playback));
         assert!(matches!(commands.first(), Some(Command::LoadCover(id)) if id == "v2"));
+    }
+
+    #[test]
+    fn failed_cover_fetch_retries_on_the_next_playback_event() {
+        let mut app = App::new("http://localhost");
+        app.handle_daemon_event(DaemonEvent::Snapshot {
+            status: status(),
+            queue: queue(),
+        });
+        let commands = app.handle_daemon_event(DaemonEvent::Cover {
+            video_id: "v1".to_string(),
+            art: None,
+        });
+        assert!(commands.is_empty());
+        let playback = status().playback;
+        let commands = app.handle_daemon_event(DaemonEvent::Playback(playback));
+        assert!(matches!(commands.first(), Some(Command::LoadCover(id)) if id == "v1"));
     }
 
     #[test]
