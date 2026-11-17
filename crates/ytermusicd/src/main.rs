@@ -7,14 +7,15 @@ use std::{
     time::Duration,
 };
 use tokio::sync::{Mutex as AsyncMutex, mpsc};
-use ytermusicd_api::MusicApi;
+use ytermusicd_api::{CacheCleanRequest, CacheCleanResult, CacheScope, MusicApi};
 use ytermusicd_core::{
-    AuthStatus, DaemonConfig, Downloader as ConfigDownloader, Paths, PlaybackService,
-    is_loopback_bind, resolve_auth,
+    AuthStatus, DaemonConfig, Downloader as ConfigDownloader, Paths, PersistedState,
+    PlaybackService, is_loopback_bind, resolve_auth,
 };
 
 mod artwork;
 mod audio;
+mod cache;
 mod downloads;
 mod mcp;
 mod mpris;
@@ -26,6 +27,7 @@ mod web;
 use crate::{
     artwork::ArtworkCache,
     audio::RodioSink,
+    cache::CacheService,
     downloads::{DownloadControl, DownloadService},
     music::UnavailableMusicApi,
     providers::{CompositeCoverFetcher, CompositeDownloader, CompositeMusicApi},
@@ -67,6 +69,44 @@ enum Command {
         #[arg(long, env = "YTERMUSICD_URL")]
         url: Option<String>,
     },
+    /// Manage the daemon cache
+    Cache {
+        #[command(subcommand)]
+        command: CacheCommand,
+    },
+}
+
+/// Cache actions.
+#[derive(Debug, Subcommand)]
+enum CacheCommand {
+    /// Delete cached downloads and cover art
+    Clean {
+        /// What to delete
+        #[arg(long, value_enum, default_value_t = CliCacheScope::All)]
+        scope: CliCacheScope,
+        /// Base URL of the running daemon
+        #[arg(long, env = "YTERMUSICD_URL")]
+        url: Option<String>,
+    },
+}
+
+/// Cache scope for the `cache clean` command.
+#[derive(Debug, Clone, Copy, Default, clap::ValueEnum)]
+enum CliCacheScope {
+    Downloads,
+    Covers,
+    #[default]
+    All,
+}
+
+impl CliCacheScope {
+    fn api_scope(self) -> CacheScope {
+        match self {
+            Self::Downloads => CacheScope::Downloads,
+            Self::Covers => CacheScope::Covers,
+            Self::All => CacheScope::All,
+        }
+    }
 }
 
 fn main() -> ExitCode {
@@ -91,6 +131,15 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        Command::Cache { command } => match command {
+            CacheCommand::Clean { scope, url } => match run_cache_clean(scope, url) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    eprintln!("ytermusicd cache clean failed: {error}");
+                    ExitCode::FAILURE
+                }
+            },
+        },
     }
 }
 
@@ -99,6 +148,107 @@ fn run_mcp(url: Option<String>) -> std::io::Result<()> {
         .enable_all()
         .build()?;
     runtime.block_on(mcp::run(url))
+}
+
+/// Clean the cache. When the daemon answers, the daemon cleans it:
+/// it stops active downloads, keeps the current track, and resets
+/// the queue statuses. When the daemon does not answer, the files
+/// are cleaned directly from disk instead.
+fn run_cache_clean(scope: CliCacheScope, url: Option<String>) -> std::io::Result<()> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    runtime.block_on(cache_clean(scope, url))
+}
+
+async fn cache_clean(scope: CliCacheScope, url: Option<String>) -> std::io::Result<()> {
+    let url = url.unwrap_or_else(|| "http://127.0.0.1:8080".to_string());
+    let api_url = format!("{}/api/cache/clean", url.trim_end_matches('/'));
+    let client = reqwest::Client::new();
+    let request = CacheCleanRequest {
+        scope: scope.api_scope(),
+    };
+    match client.post(&api_url).json(&request).send().await {
+        Ok(response) => {
+            if response.status().is_success() {
+                let result: CacheCleanResult = response.json().await.map_err(|error| {
+                    std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string())
+                })?;
+                print_clean_result(&result);
+                Ok(())
+            } else {
+                let status = response.status();
+                let body = response.text().await.unwrap_or_default();
+                Err(std::io::Error::other(format!(
+                    "the daemon refused the clean: {status} {body}"
+                )))
+            }
+        }
+        Err(_) => {
+            eprintln!(
+                "The daemon did not answer at {url}. The files are cleaned \
+                 directly. Active downloads are not stopped, so stop the \
+                 daemon first for a full clean."
+            );
+            clean_cache_on_disk(scope.api_scope())
+        }
+    }
+}
+
+/// Clean the cache files directly from disk. The current track from
+/// the saved playback state is kept when the state names one.
+fn clean_cache_on_disk(scope: CacheScope) -> std::io::Result<()> {
+    let paths = Paths::discover()
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::NotFound, error.to_string()))?;
+    let keep = PersistedState::load(&paths.state_file())
+        .ok()
+        .and_then(|state| {
+            state
+                .current
+                .and_then(|index| state.tracks.get(index))
+                .map(|track| track.key())
+        });
+    let cache = CacheService::new(paths.cache_dir.join("downloads"), paths.covers_dir());
+    let result = cache.clean(scope, keep.as_ref());
+    print_clean_result(&result);
+    Ok(())
+}
+
+/// Print the freed bytes and deleted file counts.
+fn print_clean_result(result: &CacheCleanResult) {
+    println!(
+        "Cache cleaned: freed {} ({} {}, {} {}).",
+        format_bytes(result.freed_bytes),
+        result.downloads_deleted_files,
+        plural(result.downloads_deleted_files, "download file"),
+        result.covers_deleted_files,
+        plural(result.covers_deleted_files, "cover file"),
+    );
+}
+
+/// The singular or plural form of a file count noun.
+fn plural(count: u64, singular: &str) -> String {
+    if count == 1 {
+        singular.to_string()
+    } else {
+        format!("{singular}s")
+    }
+}
+
+/// Format a byte count for display.
+fn format_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
 }
 
 fn run_serve(
@@ -260,12 +410,16 @@ fn run_serve(
         }
         let downloads: Arc<dyn DownloadControl> = Arc::new(downloads);
         let artwork = Arc::new(ArtworkCache::new(
-            covers_dir,
+            covers_dir.clone(),
             cover_cache_bytes,
             Arc::new(CompositeCoverFetcher::new(
                 Arc::new(YoutubeCoverFetcher::new()),
                 rss.clone(),
             )),
+        ));
+        let cache = Arc::new(CacheService::new(
+            paths.cache_dir.join("downloads"),
+            covers_dir,
         ));
 
         let (commands, mut command_rx) = mpsc::unbounded_channel();
@@ -312,6 +466,7 @@ fn run_serve(
             serve_playback,
             downloads,
             artwork,
+            cache,
             commands,
             dbus,
             rss,
@@ -600,5 +755,68 @@ mod tests {
     #[test]
     fn rejects_unknown_subcommand() {
         assert!(Cli::try_parse_from(["ytermusicd", "wat"]).is_err());
+    }
+
+    #[test]
+    fn parses_cache_clean() {
+        let cli = Cli::try_parse_from(["ytermusicd", "cache", "clean"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Cache {
+                command: CacheCommand::Clean {
+                    scope: CliCacheScope::All,
+                    url: None
+                }
+            }
+        ));
+    }
+
+    #[test]
+    fn parses_cache_clean_scope_and_url() {
+        let cli = Cli::try_parse_from([
+            "ytermusicd",
+            "cache",
+            "clean",
+            "--scope",
+            "downloads",
+            "--url",
+            "http://127.0.0.1:9000",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Cache {
+                command: CacheCommand::Clean {
+                    scope: CliCacheScope::Downloads,
+                    url: Some(url),
+                }
+            } if url == "http://127.0.0.1:9000"
+        ));
+    }
+
+    #[test]
+    fn rejects_cache_without_subcommand() {
+        assert!(Cli::try_parse_from(["ytermusicd", "cache"]).is_err());
+    }
+
+    #[test]
+    fn rejects_unknown_cache_scope() {
+        assert!(Cli::try_parse_from(["ytermusicd", "cache", "clean", "--scope", "music"]).is_err());
+    }
+
+    #[test]
+    fn cache_scope_maps_to_api_scope() {
+        assert_eq!(CliCacheScope::Downloads.api_scope(), CacheScope::Downloads);
+        assert_eq!(CliCacheScope::Covers.api_scope(), CacheScope::Covers);
+        assert_eq!(CliCacheScope::All.api_scope(), CacheScope::All);
+    }
+
+    #[test]
+    fn format_bytes_uses_binary_units() {
+        assert_eq!(format_bytes(0), "0 B");
+        assert_eq!(format_bytes(512), "512 B");
+        assert_eq!(format_bytes(1024), "1.0 KiB");
+        assert_eq!(format_bytes(1536), "1.5 KiB");
+        assert_eq!(format_bytes(2 * 1024 * 1024), "2.0 MiB");
     }
 }

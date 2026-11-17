@@ -1,4 +1,5 @@
 import { vi } from 'vitest';
+import type { CacheScope } from '@api/CacheScope';
 import type { DownloadStatus } from '@api/DownloadStatus';
 import type { Playlist } from '@api/Playlist';
 import type { PlaylistDetail } from '@api/PlaylistDetail';
@@ -282,6 +283,20 @@ export function makeApi(
       return { ...feed };
     }),
     refreshRssFeeds: vi.fn(async () => feeds),
+    cache: vi.fn(async () => ({
+      downloads_bytes: 1024,
+      downloads_files: 2,
+      covers_bytes: 512,
+      covers_files: 1,
+    })),
+    cleanCache: vi.fn(async (scope: CacheScope) => ({
+      scope,
+      downloads_freed_bytes: scope === 'covers' ? 0 : 1024,
+      downloads_deleted_files: scope === 'covers' ? 0 : 2,
+      covers_freed_bytes: scope === 'downloads' ? 0 : 512,
+      covers_deleted_files: scope === 'downloads' ? 0 : 1,
+      freed_bytes: scope === 'all' ? 1536 : scope === 'downloads' ? 1024 : 512,
+    })),
     ...overrides,
   };
 

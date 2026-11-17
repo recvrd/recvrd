@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ApiError, coverUrl, createApi, durationSeconds, formatDuration } from './api';
+import { ApiError, coverUrl, createApi, durationSeconds, formatBytes, formatDuration } from './api';
 import { makeStatus, makeTrack } from '../test/fixtures';
 
 afterEach(() => {
@@ -25,6 +25,14 @@ describe('duration helpers', () => {
     expect(formatDuration(0)).toBe('0:00');
     expect(formatDuration(65)).toBe('1:05');
     expect(formatDuration(3723)).toBe('1:02:03');
+  });
+
+  it('formats byte counts', () => {
+    expect(formatBytes(0)).toBe('0 B');
+    expect(formatBytes(512)).toBe('512 B');
+    expect(formatBytes(1024)).toBe('1.0 KiB');
+    expect(formatBytes(1536)).toBe('1.5 KiB');
+    expect(formatBytes(2 * 1024 * 1024)).toBe('2.0 MiB');
   });
 });
 
@@ -219,5 +227,43 @@ describe('api client', () => {
       method: 'POST',
       body: JSON.stringify({ track }),
     });
+  });
+
+  it('reads cache sizes', async () => {
+    const sizes = {
+      downloads_bytes: 2048,
+      downloads_files: 3,
+      covers_bytes: 512,
+      covers_files: 1,
+    };
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify(sizes), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const api = createApi();
+
+    await expect(api.cache()).resolves.toEqual(sizes);
+    expect(fetchMock).toHaveBeenCalledWith('/api/cache', expect.anything());
+  });
+
+  it('posts the clean scope and returns the freed bytes', async () => {
+    const result = {
+      scope: 'downloads',
+      downloads_freed_bytes: 2048,
+      downloads_deleted_files: 3,
+      covers_freed_bytes: 0,
+      covers_deleted_files: 0,
+      freed_bytes: 2048,
+    };
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify(result), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const api = createApi();
+
+    await expect(api.cleanCache('downloads')).resolves.toEqual(result);
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/cache/clean',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ scope: 'downloads' }),
+      }),
+    );
   });
 });

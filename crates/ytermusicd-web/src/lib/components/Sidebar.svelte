@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { AppStore } from '../store.svelte';
+  import CacheSection from './CacheSection.svelte';
 
   let { store }: { store: AppStore } = $props();
 
@@ -106,6 +107,8 @@
       {/if}
     </span>
   </div>
+
+  <CacheSection {store} />
 </aside>
 
 <style>

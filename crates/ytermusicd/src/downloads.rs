@@ -22,11 +22,19 @@ pub trait DownloadControl: Send + Sync {
     fn queue_tracks(&self, tracks: &[Track]);
     fn retry(&self, key: &TrackKey) -> bool;
     fn summary(&self) -> ManagerSummary;
+    /// Stop every active download and clear the queue. Workers restart
+    /// idle, so later downloads still run. A no-op before `spawn`.
+    fn stop_all_downloads(&self);
+    /// Forget every recorded download status.
+    fn reset_statuses(&self);
 }
 
 struct Inner {
     manager: &'static DownloadManager,
     tracks: Mutex<HashMap<TrackKey, Track>>,
+    /// The status handler installed by `spawn`. It is needed to
+    /// restart the workers after `stop_all_downloads`.
+    handler: Mutex<Option<MessageHandler>>,
 }
 
 /// Owns the daemon's download manager. It remembers track metadata so a failed
@@ -54,6 +62,7 @@ impl DownloadService {
             inner: Arc::new(Inner {
                 manager,
                 tracks: Mutex::new(HashMap::new()),
+                handler: Mutex::new(None),
             }),
         }
     }
@@ -70,6 +79,7 @@ impl DownloadService {
                 let _ = sender.send((key, status));
             }
         });
+        *self.inner.handler.lock().unwrap() = Some(handler.clone());
         self.inner.manager.spawn_system(Never, handler);
 
         tokio::spawn(async move {
@@ -120,6 +130,16 @@ impl DownloadControl for DownloadService {
 
     fn summary(&self) -> ManagerSummary {
         self.inner.manager.summary()
+    }
+
+    fn stop_all_downloads(&self) {
+        if let Some(handler) = self.inner.handler.lock().unwrap().clone() {
+            self.inner.manager.clean(Never, handler);
+        }
+    }
+
+    fn reset_statuses(&self) {
+        self.inner.manager.reset_statuses();
     }
 }
 

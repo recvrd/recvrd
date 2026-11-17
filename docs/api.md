@@ -74,6 +74,8 @@ Every non-2xx response uses one envelope:
 | POST | `/api/shuffle` | Enable/disable shuffle |
 | POST | `/api/repeat` | Set repeat mode (`off`, `one`, `all`) |
 | POST | `/api/downloads/retry` | Retry a failed download (`{provider, track_id}`) |
+| GET | `/api/cache` | Download and cover cache sizes |
+| POST | `/api/cache/clean` | Delete cached files (`{scope}`) |
 | GET | `/api/rss/feeds` | RSS feeds the daemon follows |
 | POST | `/api/rss/feeds` | Add an RSS feed (`{url}`) |
 | POST | `/api/rss/feeds/refresh` | Refresh every RSS feed |
@@ -251,6 +253,35 @@ ID or a failed fetch returns 404 with the normal error envelope.
 Set `cover_cache_mb` in `config.toml` to limit the cache size. The default is
 100 MiB. A value of 0 disables the limit. This endpoint does not change the
 JSON `Track` shape.
+
+### Cache
+
+```sh
+curl http://127.0.0.1:8080/api/cache
+curl -X POST http://127.0.0.1:8080/api/cache/clean -d '{"scope": "all"}'
+```
+
+`GET /api/cache` reports the sizes of the download and cover caches from
+disk, in bytes and files. `POST /api/cache/clean` deletes cached files for
+one scope: `downloads`, `covers`, or `all` (the default). The response
+reports the freed bytes and deleted file counts per scope.
+
+Cleaning downloads stops active downloads first, then deletes the files and
+resets the queue download statuses to not downloaded. Playlists, the queue,
+the playback state, and the settings are kept. The file of the current track
+is kept, and the track is queued again when its file is missing, so a
+download in progress resumes and the current track keeps playing.
+
+The headless command does the same clean:
+
+```sh
+ytermusicd cache clean --scope downloads
+```
+
+When the daemon answers, the command uses the API. When the daemon does not
+answer, the command cleans the files directly from disk and keeps the
+current track from the saved playback state. Active downloads are not
+stopped in that case, so stop the daemon first for a full clean.
 
 ### Playlist edits
 

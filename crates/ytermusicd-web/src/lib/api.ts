@@ -1,3 +1,6 @@
+import type { CacheCleanResult } from '@api/CacheCleanResult';
+import type { CacheScope } from '@api/CacheScope';
+import type { CacheSizes } from '@api/CacheSizes';
 import type { CreatePlaylistRequest } from '@api/CreatePlaylistRequest';
 import type { DownloadStatus } from '@api/DownloadStatus';
 import type { ErrorEnvelope } from '@api/ErrorEnvelope';
@@ -57,6 +60,8 @@ export interface YtermusicdApi {
   setShuffle(enabled: boolean): Promise<Status>;
   setRepeat(repeat: RepeatMode): Promise<Status>;
   retryDownload(track: Track): Promise<void>;
+  cache(): Promise<CacheSizes>;
+  cleanCache(scope: CacheScope): Promise<CacheCleanResult>;
   rssFeeds(): Promise<RssFeed[]>;
   addRssFeed(url: string): Promise<RssFeed>;
   removeRssFeed(id: string): Promise<OkResponse>;
@@ -200,6 +205,9 @@ export function createApi(baseUrl = ''): YtermusicdApi {
         provider: track.provider,
         track_id: track.track_id,
       }),
+    cache: () => request<CacheSizes>('/api/cache'),
+    cleanCache: (scope) =>
+      post<CacheCleanResult>('/api/cache/clean', { scope }),
   };
 }
 
@@ -227,6 +235,18 @@ export function formatDuration(seconds: number): string {
   return `${minutes}:${String(secs).padStart(2, '0')}`;
 }
 
+export function formatBytes(bytes: number): string {
+  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  if (unit === 0) return `${bytes} B`;
+  return `${value.toFixed(1)} ${units[unit]}`;
+}
+
 export function downloadLabel(status: DownloadStatus): string {
   switch (status.state) {
     case 'downloading':
@@ -242,4 +262,4 @@ export function downloadLabel(status: DownloadStatus): string {
   }
 }
 
-export type { PlaybackSnapshot, Playlist, PlaylistDetail, ProviderCapabilities, ProviderId, ProviderInfo, Queue, RepeatMode, RssFeed, SearchResults, Status, Track };
+export type { CacheCleanResult, CacheScope, CacheSizes, PlaybackSnapshot, Playlist, PlaylistDetail, ProviderCapabilities, ProviderId, ProviderInfo, Queue, RepeatMode, RssFeed, SearchResults, Status, Track };

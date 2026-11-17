@@ -158,6 +158,14 @@ impl DownloadManager {
         self.in_download.lock().unwrap().remove(key);
     }
 
+    /// Forget every recorded download status. Call this after the
+    /// cached files are gone, so the summary no longer counts
+    /// deleted downloads as complete. A later download re-checks
+    /// the files on disk and records a fresh status.
+    pub fn reset_statuses(&self) {
+        self.statuses.lock().unwrap().clear();
+    }
+
     fn take(&self) -> Option<Track> {
         self.download_list.lock().unwrap().pop_front()
     }

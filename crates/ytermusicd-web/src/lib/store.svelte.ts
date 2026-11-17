@@ -1,3 +1,5 @@
+import type { CacheScope } from '@api/CacheScope';
+import type { CacheSizes } from '@api/CacheSizes';
 import type { DownloadStatus } from '@api/DownloadStatus';
 import type { EventKind } from '@api/EventKind';
 import type { Playlist } from '@api/Playlist';
@@ -10,7 +12,7 @@ import type { RssFeed } from '@api/RssFeed';
 import type { SearchResults } from '@api/SearchResults';
 import type { Status } from '@api/Status';
 import type { Track } from '@api/Track';
-import { ApiError, createApi, describeError, type YtermusicdApi } from './api';
+import { ApiError, createApi, describeError, formatBytes, type YtermusicdApi } from './api';
 import { EventStream, type ConnectionState, type EventSourceLike } from './sse';
 
 export type View =
@@ -116,6 +118,8 @@ export class AppStore {
   queue = $state<Queue | null>(null);
   providers = $state<ProviderInfo[]>([]);
   activeProvider = $state<ProviderId>('youtube');
+  cache = $state<CacheSizes | null>(null);
+  cacheLoading = $state(false);
   playlists = $state<Playlist[]>([]);
   rssFeeds = $state<RssFeed[]>([]);
   playlist = $state<PlaylistDetail | null>(null);
@@ -176,6 +180,7 @@ export class AppStore {
       this.loadProviders(),
       this.refreshStatus(),
       this.loadPlaylists(),
+      this.loadCache(),
     ]);
     if (this.view.kind === 'playlist') {
       await this.openPlaylist(this.view.id, this.view.name);
@@ -382,6 +387,27 @@ export class AppStore {
     } catch (error) {
       this.report(error);
       return false;
+    }
+  }
+
+  async loadCache(): Promise<void> {
+    this.cacheLoading = true;
+    try {
+      this.cache = await this.api.cache();
+    } catch (error) {
+      this.error = describeError(error, this.activeProviderName);
+    } finally {
+      this.cacheLoading = false;
+    }
+  }
+
+  async cleanCache(scope: CacheScope): Promise<void> {
+    try {
+      const result = await this.api.cleanCache(scope);
+      this.notify('success', `Cache cleaned: freed ${formatBytes(result.freed_bytes)}.`);
+      await Promise.all([this.loadCache(), this.refreshStatus(), this.refreshQueue()]);
+    } catch (error) {
+      this.error = describeError(error, this.activeProviderName);
     }
   }
 
