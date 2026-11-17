@@ -212,6 +212,7 @@ impl<S: AudioSink> PlaybackService<S> {
                 .iter()
                 .map(|item| item.track.clone())
                 .collect(),
+            original_tracks: self.queue.original_tracks(),
             current: self.queue.current_index(),
             repeat: self.queue.repeat(),
             shuffle: self.queue.shuffle(),
@@ -233,6 +234,7 @@ impl<S: AudioSink> PlaybackService<S> {
     pub fn restore_state(&mut self, state: &PersistedState) -> Result<(), PlaybackError> {
         self.queue.restore(
             state.tracks.clone(),
+            state.original_tracks.clone(),
             state.current,
             state.repeat,
             state.shuffle,
@@ -731,6 +733,47 @@ mod tests {
     }
 
     #[test]
+    fn shuffle_survives_save_and_restore() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.toml");
+        let mut first = service();
+        first.play_playlist(tracks(6)).unwrap();
+        let original: Vec<_> = first
+            .queue_snapshot()
+            .items
+            .iter()
+            .map(|item| item.track.video_id.clone())
+            .collect();
+        first.set_shuffle_with_seed(true, 42);
+        let shuffled: Vec<_> = first
+            .queue_snapshot()
+            .items
+            .iter()
+            .map(|item| item.track.video_id.clone())
+            .collect();
+        assert_ne!(original, shuffled);
+        first.save_state(&path).unwrap();
+
+        let mut restored = service();
+        restored.load_state(&path).unwrap();
+        let loaded: Vec<_> = restored
+            .queue_snapshot()
+            .items
+            .iter()
+            .map(|item| item.track.video_id.clone())
+            .collect();
+        assert_eq!(loaded, shuffled);
+        restored.set_shuffle(false);
+        let unshuffled: Vec<_> = restored
+            .queue_snapshot()
+            .items
+            .iter()
+            .map(|item| item.track.video_id.clone())
+            .collect();
+        assert_eq!(unshuffled, original);
+    }
+
+    #[test]
     fn download_failure_skips_current() {
         let mut service = service();
         service.play_playlist(tracks(2)).unwrap();
@@ -914,6 +957,7 @@ mod tests {
         let state = PersistedState {
             version: STATE_VERSION,
             tracks: tracks(1),
+            original_tracks: Vec::new(),
             current: Some(0),
             repeat: RepeatMode::All,
             shuffle: false,

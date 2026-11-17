@@ -231,9 +231,21 @@ impl Queue {
             Some(current) => current + 1,
             None => 0,
         };
+        // Keep the unshuffled order in step: insert after the current
+        // track there, not at the end.
+        let original_index = self.current.and_then(|current| {
+            let current_id = self.items.get(current)?.track.video_id.clone();
+            self.original.as_ref().and_then(|original| {
+                original
+                    .iter()
+                    .position(|entry| entry.track.video_id == current_id)
+                    .map(|position| position + 1)
+            })
+        });
         self.items.insert(index, item.clone());
         if let Some(original) = &mut self.original {
-            original.push(item);
+            let at = original_index.unwrap_or(original.len());
+            original.insert(at.min(original.len()), item);
         }
         self.current = Some(index);
     }
@@ -303,10 +315,21 @@ impl Queue {
         self.current = None;
     }
 
+    /// The unshuffled order, when shuffle is enabled.
+    pub fn original_tracks(&self) -> Vec<Track> {
+        self.original
+            .as_ref()
+            .map(|items| items.iter().map(|item| item.track.clone()).collect())
+            .unwrap_or_default()
+    }
+
     /// Restore a previously persisted queue in its saved playback order.
+    /// `original_tracks` holds the unshuffled order when the saved queue
+    /// was shuffled, so disabling shuffle restores it after a restart.
     pub fn restore(
         &mut self,
         tracks: Vec<Track>,
+        original_tracks: Vec<Track>,
         current: Option<usize>,
         repeat: RepeatMode,
         shuffle: bool,
@@ -318,7 +341,19 @@ impl Queue {
                 download: MusicDownloadStatus::NotDownloaded,
             })
             .collect();
-        self.original = None;
+        self.original = if shuffle && !original_tracks.is_empty() {
+            Some(
+                original_tracks
+                    .into_iter()
+                    .map(|track| QueueItem {
+                        track,
+                        download: MusicDownloadStatus::NotDownloaded,
+                    })
+                    .collect(),
+            )
+        } else {
+            None
+        };
         self.current = current
             .filter(|index| *index < self.items.len())
             .or_else(|| (!self.items.is_empty()).then_some(0));
@@ -553,5 +588,66 @@ mod tests {
         queue.replace(tracks(2));
         queue.set_download_status("video-1", MusicDownloadStatus::Downloaded);
         assert_eq!(queue.items()[1].download, MusicDownloadStatus::Downloaded);
+    }
+
+    fn video_ids(queue: &Queue) -> Vec<String> {
+        queue
+            .items()
+            .iter()
+            .map(|item| item.track.video_id.clone())
+            .collect()
+    }
+
+    #[test]
+    fn restore_keeps_unshuffled_order() {
+        let mut queue = Queue::new();
+        queue.replace(tracks(6));
+        let original = tracks(6);
+        queue.set_shuffle_with_seed(true, 42);
+        let shuffled: Vec<Track> = queue
+            .items()
+            .iter()
+            .map(|item| item.track.clone())
+            .collect();
+        assert_ne!(shuffled, original);
+
+        let mut restored = Queue::new();
+        restored.restore(shuffled, original.clone(), Some(0), RepeatMode::Off, true);
+        restored.set_shuffle(false);
+        let expected: Vec<String> = original
+            .iter()
+            .map(|track| track.video_id.clone())
+            .collect();
+        assert_eq!(video_ids(&restored), expected);
+    }
+
+    #[test]
+    fn play_now_inserts_after_current_in_unshuffled_order() {
+        let mut queue = Queue::new();
+        queue.replace(tracks(5));
+        queue.set_current(Some(2));
+        queue.set_shuffle_with_seed(true, 7);
+        let new_track = Track {
+            video_id: "video-new".to_string(),
+            title: "New".to_string(),
+            author: "Artist".to_string(),
+            album: "Album".to_string(),
+            duration: "3:00".to_string(),
+        };
+        queue.play_now(new_track);
+        assert_eq!(queue.current_track().unwrap().video_id, "video-new");
+
+        queue.set_shuffle(false);
+        assert_eq!(
+            video_ids(&queue),
+            [
+                "video-0",
+                "video-1",
+                "video-2",
+                "video-new",
+                "video-3",
+                "video-4",
+            ]
+        );
     }
 }
