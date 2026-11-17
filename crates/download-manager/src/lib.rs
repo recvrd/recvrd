@@ -28,6 +28,17 @@ fn is_complete_download(mp4: &Path, json: &Path) -> bool {
             .unwrap_or(false)
 }
 
+/// Check that a video ID is safe to use in a file name.
+/// A YouTube video ID has 11 characters from `[A-Za-z0-9_-]`.
+/// Any other value can escape the downloads directory when it is
+/// joined into a path, so the download manager rejects it.
+pub fn is_valid_video_id(video_id: &str) -> bool {
+    video_id.len() == 11
+        && video_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum DownloadManagerMessage {
     VideoStatusUpdate(String, MusicDownloadStatus),
@@ -213,6 +224,15 @@ impl DownloadManager {
     }
 
     pub async fn start_download(&self, song: YoutubeMusicVideoRef, s: MessageHandler) -> bool {
+        if !is_valid_video_id(&song.video_id) {
+            log::error!("refused download with invalid video ID {}", song.video_id);
+            self.set_status(&song.video_id, MusicDownloadStatus::DownloadFailed);
+            s(DownloadManagerMessage::VideoStatusUpdate(
+                song.video_id.clone(),
+                MusicDownloadStatus::DownloadFailed,
+            ));
+            return false;
+        }
         {
             let mut downloads = self.in_download.lock().unwrap();
             if downloads.contains(&song.video_id) {
@@ -441,11 +461,14 @@ mod tests {
         let (manager, downloads) = manager(&dir, path, 0);
         let (handler, messages) = collector();
 
-        assert!(manager.start_download(song("v1"), handler).await);
-        assert!(downloads.join("v1.mp4").exists());
-        assert!(downloads.join("v1.json").exists());
-        assert!(!downloads.join("v1.part").exists());
-        assert_eq!(manager.status("v1"), Some(MusicDownloadStatus::Downloaded));
+        assert!(manager.start_download(song("dQw4w9WgXcQ"), handler).await);
+        assert!(downloads.join("dQw4w9WgXcQ.mp4").exists());
+        assert!(downloads.join("dQw4w9WgXcQ.json").exists());
+        assert!(!downloads.join("dQw4w9WgXcQ.part").exists());
+        assert_eq!(
+            manager.status("dQw4w9WgXcQ"),
+            Some(MusicDownloadStatus::Downloaded)
+        );
         assert_eq!(manager.active_downloads(), 0);
         assert_eq!(manager.summary().completed, 1);
 
@@ -468,12 +491,12 @@ mod tests {
         let (manager, downloads) = manager(&dir, path, 0);
         let (handler, _messages) = collector();
 
-        assert!(!manager.start_download(song("v1"), handler).await);
-        assert!(!downloads.join("v1.mp4").exists());
-        assert!(!downloads.join("v1.json").exists());
-        assert!(!downloads.join("v1.part").exists());
+        assert!(!manager.start_download(song("dQw4w9WgXcQ"), handler).await);
+        assert!(!downloads.join("dQw4w9WgXcQ.mp4").exists());
+        assert!(!downloads.join("dQw4w9WgXcQ.json").exists());
+        assert!(!downloads.join("dQw4w9WgXcQ.part").exists());
         assert_eq!(
-            manager.status("v1"),
+            manager.status("dQw4w9WgXcQ"),
             Some(MusicDownloadStatus::DownloadFailed)
         );
         assert_eq!(manager.active_downloads(), 0);
@@ -493,9 +516,12 @@ mod tests {
         let (manager, downloads) = manager(&dir, path, 1);
         let (handler, messages) = collector();
 
-        assert!(manager.start_download(song("v1"), handler).await);
-        assert!(downloads.join("v1.mp4").exists());
-        assert_eq!(manager.status("v1"), Some(MusicDownloadStatus::Downloaded));
+        assert!(manager.start_download(song("dQw4w9WgXcQ"), handler).await);
+        assert!(downloads.join("dQw4w9WgXcQ.mp4").exists());
+        assert_eq!(
+            manager.status("dQw4w9WgXcQ"),
+            Some(MusicDownloadStatus::Downloaded)
+        );
         assert_eq!(manager.active_downloads(), 0);
         let messages = messages.lock().unwrap();
         assert!(messages.iter().any(|message| matches!(
@@ -512,13 +538,37 @@ mod tests {
         let body = format!("touch {}", marker.display());
         let path = script(dir.path(), &body);
         let (manager, downloads) = manager(&dir, path, 0);
-        fs::write(downloads.join("v1.json"), "{}").unwrap();
-        fs::write(downloads.join("v1.mp4"), "fake-audio").unwrap();
+        fs::write(downloads.join("dQw4w9WgXcQ.json"), "{}").unwrap();
+        fs::write(downloads.join("dQw4w9WgXcQ.mp4"), "fake-audio").unwrap();
         let (handler, _messages) = collector();
 
-        assert!(manager.start_download(song("v1"), handler).await);
+        assert!(manager.start_download(song("dQw4w9WgXcQ"), handler).await);
         assert!(!marker.exists());
-        assert_eq!(manager.status("v1"), Some(MusicDownloadStatus::Downloaded));
+        assert_eq!(
+            manager.status("dQw4w9WgXcQ"),
+            Some(MusicDownloadStatus::Downloaded)
+        );
+        assert_eq!(manager.active_downloads(), 0);
+    }
+
+    #[tokio::test]
+    async fn invalid_video_id_is_rejected_without_starting_a_download() {
+        let _guard = serial().await;
+        let dir = tempdir().unwrap();
+        let marker = dir.path().join("invoked");
+        let body = format!("touch {}", marker.display());
+        let path = script(dir.path(), &body);
+        let (manager, _downloads) = manager(&dir, path, 0);
+        let (handler, _messages) = collector();
+
+        assert!(!manager.start_download(song("../../evil"), handler).await);
+        assert!(!marker.exists());
+        assert!(!dir.path().join("evil.mp4").exists());
+        assert!(!dir.path().join("evil.json").exists());
+        assert_eq!(
+            manager.status("../../evil"),
+            Some(MusicDownloadStatus::DownloadFailed)
+        );
         assert_eq!(manager.active_downloads(), 0);
     }
 
@@ -528,13 +578,16 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = script(dir.path(), &success_script(false));
         let (manager, downloads) = manager(&dir, path, 0);
-        fs::write(downloads.join("v1.json"), "{}").unwrap();
+        fs::write(downloads.join("dQw4w9WgXcQ.json"), "{}").unwrap();
         let (handler, _messages) = collector();
 
-        assert!(manager.start_download(song("v1"), handler).await);
-        assert!(downloads.join("v1.mp4").exists());
-        assert!(downloads.join("v1.mp4").metadata().unwrap().len() > 0);
-        assert_eq!(manager.status("v1"), Some(MusicDownloadStatus::Downloaded));
+        assert!(manager.start_download(song("dQw4w9WgXcQ"), handler).await);
+        assert!(downloads.join("dQw4w9WgXcQ.mp4").exists());
+        assert!(downloads.join("dQw4w9WgXcQ.mp4").metadata().unwrap().len() > 0);
+        assert_eq!(
+            manager.status("dQw4w9WgXcQ"),
+            Some(MusicDownloadStatus::Downloaded)
+        );
         assert_eq!(manager.active_downloads(), 0);
     }
 
@@ -544,13 +597,16 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = script(dir.path(), &success_script(false));
         let (manager, downloads) = manager(&dir, path, 0);
-        fs::write(downloads.join("v1.json"), "{}").unwrap();
-        fs::write(downloads.join("v1.mp4"), "").unwrap();
+        fs::write(downloads.join("dQw4w9WgXcQ.json"), "{}").unwrap();
+        fs::write(downloads.join("dQw4w9WgXcQ.mp4"), "").unwrap();
         let (handler, _messages) = collector();
 
-        assert!(manager.start_download(song("v1"), handler).await);
-        assert!(downloads.join("v1.mp4").metadata().unwrap().len() > 0);
-        assert_eq!(manager.status("v1"), Some(MusicDownloadStatus::Downloaded));
+        assert!(manager.start_download(song("dQw4w9WgXcQ"), handler).await);
+        assert!(downloads.join("dQw4w9WgXcQ.mp4").metadata().unwrap().len() > 0);
+        assert_eq!(
+            manager.status("dQw4w9WgXcQ"),
+            Some(MusicDownloadStatus::Downloaded)
+        );
         assert_eq!(manager.active_downloads(), 0);
     }
 
@@ -562,7 +618,7 @@ mod tests {
         let (manager, _downloads) = manager(&dir, path, 0);
         let (handler, _messages) = collector();
 
-        let mut future = Box::pin(manager.start_download(song("v1"), handler));
+        let mut future = Box::pin(manager.start_download(song("dQw4w9WgXcQ"), handler));
         tokio::select! {
             _ = &mut future => panic!("download unexpectedly completed"),
             _ = tokio::time::sleep(Duration::from_millis(100)) => {}

@@ -519,6 +519,12 @@ async fn play_track<S: AudioSink + Send + 'static>(
     State(state): State<AppState<S>>,
     Json(request): Json<PlayTrackRequest>,
 ) -> Result<Json<Status>, ApiFailure> {
+    if !is_video_id(&request.track.video_id) {
+        return Err(ApiFailure::bad_request(format!(
+            "invalid video ID {}",
+            request.track.video_id
+        )));
+    }
     let track = core_track(request.track);
     state.downloads.queue_tracks(std::slice::from_ref(&track));
     let mut playback = state.playback.lock().await;
@@ -534,6 +540,12 @@ async fn queue_add<S: AudioSink + Send + 'static>(
     State(state): State<AppState<S>>,
     Json(request): Json<QueueRequest>,
 ) -> Result<Json<ApiQueue>, ApiFailure> {
+    if !is_video_id(&request.track.video_id) {
+        return Err(ApiFailure::bad_request(format!(
+            "invalid video ID {}",
+            request.track.video_id
+        )));
+    }
     let track = core_track(request.track);
     state.downloads.queue_tracks(std::slice::from_ref(&track));
     let mut playback = state.playback.lock().await;
@@ -1519,7 +1531,9 @@ mod tests {
             .unwrap();
         let added: serde_json::Value = client
             .post(format!("{base}/api/queue"))
-            .json(&QueueRequest { track: track("v3") })
+            .json(&QueueRequest {
+                track: track("9bZkp7q19f0"),
+            })
             .send()
             .await
             .unwrap()
@@ -1537,7 +1551,7 @@ mod tests {
             .json()
             .await
             .unwrap();
-        assert_eq!(played_next["items"][1]["track"]["video_id"], "v3");
+        assert_eq!(played_next["items"][1]["track"]["video_id"], "9bZkp7q19f0");
 
         let reordered: serde_json::Value = client
             .post(format!("{base}/api/queue/reorder"))
@@ -1548,7 +1562,7 @@ mod tests {
             .json()
             .await
             .unwrap();
-        assert_eq!(reordered["items"][0]["track"]["video_id"], "v3");
+        assert_eq!(reordered["items"][0]["track"]["video_id"], "9bZkp7q19f0");
 
         let removed: serde_json::Value = client
             .post(format!("{base}/api/queue/remove"))
@@ -1580,7 +1594,9 @@ mod tests {
 
         let started: serde_json::Value = client
             .post(format!("{base}/api/play/track"))
-            .json(&PlayTrackRequest { track: track("v9") })
+            .json(&PlayTrackRequest {
+                track: track("dQw4w9WgXcQ"),
+            })
             .send()
             .await
             .unwrap()
@@ -1588,7 +1604,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(started["playback"]["state"], "playing");
-        assert_eq!(started["playback"]["current"]["video_id"], "v9");
+        assert_eq!(started["playback"]["current"]["video_id"], "dQw4w9WgXcQ");
 
         let seeked: serde_json::Value = client
             .post(format!("{base}/api/seek"))
@@ -1648,6 +1664,39 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resumed["playback"]["state"], "playing");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn play_track_and_queue_add_reject_invalid_video_ids() {
+        let (base, server) = start_server(test_state()).await;
+        let client = reqwest::Client::new();
+
+        for video_id in ["../../x", "too-short", ""] {
+            let response = client
+                .post(format!("{base}/api/play/track"))
+                .json(&PlayTrackRequest {
+                    track: track(video_id),
+                })
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+            let body: serde_json::Value = response.json().await.unwrap();
+            assert_eq!(body["error"]["code"], "bad_request");
+
+            let response = client
+                .post(format!("{base}/api/queue"))
+                .json(&QueueRequest {
+                    track: track(video_id),
+                })
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+            let body: serde_json::Value = response.json().await.unwrap();
+            assert_eq!(body["error"]["code"], "bad_request");
+        }
         server.abort();
     }
 
@@ -1789,20 +1838,24 @@ mod tests {
 
         client
             .post(format!("{base}/api/queue"))
-            .json(&QueueRequest { track: track("v3") })
+            .json(&QueueRequest {
+                track: track("9bZkp7q19f0"),
+            })
             .send()
             .await
             .unwrap();
         client
             .post(format!("{base}/api/play/track"))
-            .json(&PlayTrackRequest { track: track("v9") })
+            .json(&PlayTrackRequest {
+                track: track("dQw4w9WgXcQ"),
+            })
             .send()
             .await
             .unwrap();
 
         let queued = downloads.queued.lock().unwrap().clone();
-        assert!(queued.contains(&"v3".to_string()));
-        assert!(queued.contains(&"v9".to_string()));
+        assert!(queued.contains(&"9bZkp7q19f0".to_string()));
+        assert!(queued.contains(&"dQw4w9WgXcQ".to_string()));
         server.abort();
     }
 
