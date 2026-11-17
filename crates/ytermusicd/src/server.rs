@@ -608,13 +608,16 @@ async fn seek<S: AudioSink + Send + 'static>(
     State(state): State<AppState<S>>,
     Json(request): Json<SeekRequest>,
 ) -> Result<Json<Status>, ApiFailure> {
-    if request.position_secs < 0.0 {
-        return Err(ApiFailure::bad_request("position must be >= 0"));
-    }
+    let position = match Duration::try_from_secs_f64(request.position_secs) {
+        Ok(position) => position,
+        Err(_) => {
+            return Err(ApiFailure::bad_request(
+                "position must be a finite number of seconds >= 0",
+            ));
+        }
+    };
     let mut playback = state.playback.lock().await;
-    playback
-        .seek(Duration::from_secs_f64(request.position_secs))
-        .map_err(playback_failure)?;
+    playback.seek(position).map_err(playback_failure)?;
     Ok(Json(status_from_parts(
         &state,
         &playback.snapshot(),
@@ -1000,6 +1003,7 @@ fn playback_failure(error: PlaybackError) -> ApiFailure {
     match error {
         PlaybackError::NoCurrentTrack => ApiFailure::bad_request("no current track"),
         PlaybackError::IndexOutOfBounds => ApiFailure::bad_request("queue index out of bounds"),
+        PlaybackError::InvalidPosition => ApiFailure::bad_request("invalid seek position"),
         PlaybackError::Sink(message) => ApiFailure::internal(message),
     }
 }
@@ -1694,6 +1698,49 @@ mod tests {
         assert_eq!(idle_pause.status(), reqwest::StatusCode::OK);
         let idle_status: serde_json::Value = idle_pause.json().await.unwrap();
         assert_eq!(idle_status["playback"]["state"], "stopped");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn seek_rejects_non_finite_and_overflowing_positions() {
+        let (base, server) = start_server(test_state()).await;
+        let client = reqwest::Client::new();
+
+        // 1e999 parses to positive infinity, and 1e300 is finite but
+        // overflows a Duration. Both panicked the handler before the fix.
+        // A raw body is needed here: a typed SeekRequest cannot hold
+        // either value through serde_json.
+        // 1e999 never reaches the handler: serde_json rejects the
+        // out-of-range number during extraction, so the daemon answers
+        // a bare 400. That is still a 400, not a panic.
+        let response = client
+            .post(format!("{base}/api/seek"))
+            .header("Content-Type", "application/json")
+            .body("{\"position_secs\":1e999}")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+
+        let response = client
+            .post(format!("{base}/api/seek"))
+            .header("Content-Type", "application/json")
+            .body("{\"position_secs\":1e300}")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+        let body: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(body["error"]["code"], "bad_request");
+
+        let valid = client
+            .post(format!("{base}/api/seek"))
+            .header("Content-Type", "application/json")
+            .body("{\"position_secs\":42.5}")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(valid.status(), reqwest::StatusCode::OK);
         server.abort();
     }
 
