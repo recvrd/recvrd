@@ -328,26 +328,20 @@ impl YoutubeMusicInstance {
         }: &Continuation,
     ) -> Result<String> {
         trace!("Browse continuation {continuation}");
-        let url = format!(
-            "https://music.youtube.com/youtubei/v1/browse?ctoken={continuation}&continuation={continuation}&type=next&itct={click_tracking_params}&key={}&prettyPrint=false",
-            self.innertube_api_key
-        );
-        // let body = format!(
-        //     r#"{{"context":{{"client":{{"clientName":"WEB_REMIX","clientVersion":"{}"}}}}}}"#,
-        //     self.client_version
-        // );
-        let body = match &self.account_id {
-            Some(id) => format!(
-                r#"{{"context":{{"client":{{"clientName":"WEB_REMIX","clientVersion":"{}"}},"user":{{"onBehalfOfUser":"{id}"}}}}}}"#,
-                self.client_version
-            ),
-            None => format!(
-                r#"{{"context":{{"client":{{"clientName":"WEB_REMIX","clientVersion":"{}"}}}}}}"#,
-                self.client_version
-            ),
-        };
+        let url = innertube_url(
+            "browse",
+            &[
+                ("ctoken", continuation),
+                ("continuation", continuation),
+                ("type", "next"),
+                ("itct", click_tracking_params),
+                ("key", &self.innertube_api_key),
+                ("prettyPrint", "false"),
+            ],
+        )?;
+        let body = json!({ "context": self.context() });
         self.client
-            .post(&url)
+            .post(url)
             .header("Content-Type", "application/json")
             .header(
                 "Authorization",
@@ -355,7 +349,7 @@ impl YoutubeMusicInstance {
             )
             .header("X-Origin", "https://music.youtube.com")
             .header("Cookie", &self.cookies)
-            .body(body)
+            .body(body.to_string())
             .send()
             .await
             .map_err(YoutubeMusicError::RequestError)?
@@ -370,22 +364,13 @@ impl YoutubeMusicInstance {
         endpoint_param: &str,
     ) -> Result<String> {
         trace!("Browse {endpoint_route}");
-        let url = format!(
-            "https://music.youtube.com/youtubei/v1/{endpoint_route}?key={}&prettyPrint=false",
-            self.innertube_api_key
-        );
-        let body = match &self.account_id {
-            Some(id) => format!(
-                r#"{{"context":{{"client":{{"clientName":"WEB_REMIX","clientVersion":"{}"}},"user":{{"onBehalfOfUser":"{id}"}}}},"{endpoint_key}":"{endpoint_param}"}}"#,
-                self.client_version
-            ),
-            None => format!(
-                r#"{{"context":{{"client":{{"clientName":"WEB_REMIX","clientVersion":"{}"}}}},"{endpoint_key}":"{endpoint_param}"}}"#,
-                self.client_version
-            ),
-        };
+        let url = innertube_url(
+            endpoint_route,
+            &[("key", &self.innertube_api_key), ("prettyPrint", "false")],
+        )?;
+        let body = self.browse_body(endpoint_key, endpoint_param);
         self.client
-            .post(&url)
+            .post(url)
             .header("Content-Type", "application/json")
             .header(
                 "Authorization",
@@ -393,7 +378,7 @@ impl YoutubeMusicInstance {
             )
             .header("X-Origin", "https://music.youtube.com")
             .header("Cookie", &self.cookies)
-            .body(body)
+            .body(body.to_string())
             .send()
             .await
             .map_err(YoutubeMusicError::RequestError)?
@@ -567,6 +552,16 @@ impl YoutubeMusicInstance {
         Ok(SearchResults { playlists, videos })
     }
 
+    /// Build a browse request body with `serde_json`, so a search query
+    /// or playlist ID with quotes or backslashes cannot break out of
+    /// the JSON string.
+    fn browse_body(&self, endpoint_key: &str, endpoint_param: &str) -> Value {
+        let mut body = json!({});
+        body["context"] = self.context();
+        body[endpoint_key] = Value::String(endpoint_param.to_string());
+        body
+    }
+
     fn context(&self) -> Value {
         let client = json!({
             "clientName": "WEB_REMIX",
@@ -702,6 +697,20 @@ impl PlaylistPrivacy {
             Self::Unlisted => "UNLISTED",
         }
     }
+}
+
+/// Build an InnerTube request URL with percent-encoded query pairs,
+/// so a continuation token or API key cannot change the query string.
+fn innertube_url(route: &str, query: &[(&str, &str)]) -> Result<reqwest::Url> {
+    let mut url = reqwest::Url::parse(&format!("{YTM_DOMAIN}/youtubei/v1/{route}"))
+        .map_err(|error| YoutubeMusicError::Other(error.to_string()))?;
+    {
+        let mut pairs = url.query_pairs_mut();
+        for (key, value) in query {
+            pairs.append_pair(key, value);
+        }
+    }
+    Ok(url)
 }
 
 fn edit_playlist_id(playlist_id: &str) -> Result<&str> {
@@ -1084,5 +1093,52 @@ mod continuation_tests {
         assert!(!consume_continuation(&mut remaining));
         assert_eq!(remaining, 0);
         assert!(!consume_continuation(&mut remaining));
+    }
+}
+
+#[cfg(test)]
+mod browse_tests {
+    use super::*;
+
+    fn instance(account_id: Option<String>) -> YoutubeMusicInstance {
+        YoutubeMusicInstance::for_test(
+            "http://127.0.0.1:9".to_string(),
+            "test-key".to_string(),
+            "1.0".to_string(),
+            "SAPISID=x".to_string(),
+            account_id,
+        )
+    }
+
+    #[test]
+    fn browse_body_escapes_search_queries() {
+        let query = "a \"quoted\" query \\ with a newline\ninside";
+        let body = instance(None).browse_body("query", query);
+        assert_eq!(body["query"], query);
+        assert_eq!(body["context"]["client"]["clientName"], "WEB_REMIX");
+        assert_eq!(body["context"]["client"]["clientVersion"], "1.0");
+        let text = body.to_string();
+        let parsed: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(parsed["query"], query);
+        assert!(parsed.get("context").is_some());
+    }
+
+    #[test]
+    fn browse_body_escapes_account_ids() {
+        let body = instance(Some("a\"b\\c".to_string())).browse_body("browseId", "FEmusic_home");
+        assert_eq!(body["browseId"], "FEmusic_home");
+        assert_eq!(body["context"]["user"]["onBehalfOfUser"], "a\"b\\c");
+        let text = body.to_string();
+        let parsed: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(parsed["context"]["user"]["onBehalfOfUser"], "a\"b\\c");
+    }
+
+    #[test]
+    fn innertube_url_percent_encodes_query_values() {
+        let url = innertube_url("browse", &[("ctoken", "a&b=c+d"), ("key", "test-key")]).unwrap();
+        assert_eq!(
+            url.as_str(),
+            "https://music.youtube.com/youtubei/v1/browse?ctoken=a%26b%3Dc%2Bd&key=test-key"
+        );
     }
 }
