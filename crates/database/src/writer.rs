@@ -1,23 +1,50 @@
-use std::{fs::OpenOptions, io::Write};
+use std::io::Write;
 
 use varuint::WriteVarint;
 use ytpapi2::YoutubeMusicVideoRef;
 
-use crate::YTLocalDatabase;
+use crate::{DatabaseError, YTLocalDatabase};
 
 impl YTLocalDatabase {
-    pub fn write(&self) {
+    /// Write the whole library atomically. Records go into a buffer first,
+    /// then into a temporary file in the same directory, then the temporary
+    /// file replaces db.bin. A failed write leaves the old file in place.
+    pub fn write(&self) -> Result<(), DatabaseError> {
+        let path = self.cache_dir.join("db.bin");
         let db = self.references.read().unwrap();
-        let mut file = OpenOptions::new()
-            .write(true)
-            .append(false)
-            .create(true)
-            .truncate(true)
-            .open(self.cache_dir.join("db.bin"))
-            .unwrap();
+        let mut buffer = Vec::new();
         for video in db.iter() {
-            write_video(&mut file, video)
+            write_video(&mut buffer, video).map_err(|source| DatabaseError::Io {
+                path: path.clone(),
+                source,
+            })?;
         }
+        drop(db);
+
+        let tmp = path.with_extension("tmp");
+        std::fs::write(&tmp, buffer).map_err(|source| DatabaseError::Io {
+            path: tmp.clone(),
+            source,
+        })?;
+        if let Err(error) = std::fs::rename(&tmp, &path) {
+            // Windows refuses to replace an existing file with rename.
+            if path.exists() {
+                std::fs::remove_file(&path).map_err(|source| DatabaseError::Io {
+                    path: path.clone(),
+                    source,
+                })?;
+                std::fs::rename(&tmp, &path).map_err(|source| DatabaseError::Io {
+                    path: path.clone(),
+                    source,
+                })?;
+            } else {
+                return Err(DatabaseError::Io {
+                    path: path.clone(),
+                    source: error,
+                });
+            }
+        }
+        Ok(())
     }
 }
 impl YTLocalDatabase {
@@ -127,21 +154,21 @@ impl YTLocalDatabase {
 }
 
 /// Writes a video to a file
-pub fn write_video(buffer: &mut impl Write, video: &YoutubeMusicVideoRef) {
-    write_str(buffer, &video.title);
-    write_str(buffer, &video.author);
-    write_str(buffer, &video.album);
-    write_str(buffer, &video.video_id);
-    write_str(buffer, &video.duration);
+pub fn write_video(buffer: &mut impl Write, video: &YoutubeMusicVideoRef) -> std::io::Result<()> {
+    write_str(buffer, &video.title)?;
+    write_str(buffer, &video.author)?;
+    write_str(buffer, &video.album)?;
+    write_str(buffer, &video.video_id)?;
+    write_str(buffer, &video.duration)
 }
 
 /// Writes a string from the cursor
-fn write_str(cursor: &mut impl Write, value: &str) {
-    write_u32(cursor, value.len() as u32);
-    cursor.write_all(value.as_bytes()).unwrap();
+fn write_str(cursor: &mut impl Write, value: &str) -> std::io::Result<()> {
+    write_u32(cursor, value.len() as u32)?;
+    cursor.write_all(value.as_bytes())
 }
 
 /// Writes a u32 from the cursor
-fn write_u32(cursor: &mut impl Write, value: u32) {
-    cursor.write_varint(value).unwrap();
+fn write_u32(cursor: &mut impl Write, value: u32) -> std::io::Result<()> {
+    cursor.write_varint(value).map(|_| ())
 }

@@ -86,7 +86,10 @@ fn main() {
             }
             "--fix-db" => {
                 DATABASE.fix_db();
-                DATABASE.write();
+                if let Err(error) = DATABASE.write() {
+                    eprintln!("[ERROR] Could not save database: {error}");
+                    return;
+                }
                 println!("[INFO] Database fixed");
                 return;
             }

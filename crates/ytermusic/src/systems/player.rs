@@ -135,7 +135,9 @@ impl PlayerState {
                     if matches!(e, PlayError::DecoderError(_)) {
                         // Cleaning the file
 
-                        DATABASE.remove_video(&video);
+                        if let Err(error) = DATABASE.remove_video(&video) {
+                            error!("could not remove video from database: {error}");
+                        }
                         handle_error(
                             &self.updater,
                             "invalid cleaning MP4",
@@ -149,7 +151,9 @@ impl PlayerState {
                             ),
                         );
                         self.current = 0;
-                        DATABASE.write();
+                        if let Err(error) = DATABASE.write() {
+                            error!("could not save database: {error}");
+                        }
                     } else {
                         self.updater
                             .send(ManagerMessage::PassTo(
