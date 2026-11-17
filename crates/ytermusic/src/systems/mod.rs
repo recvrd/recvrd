@@ -1,5 +1,8 @@
-use download_manager::{DownloadManager, Downloader};
+use std::sync::Arc;
+
+use download_manager::DownloadManager;
 use once_cell::sync::Lazy;
+use provider_youtube::{YoutubeBackend, YoutubeDownloader};
 
 use crate::{
     DATABASE,
@@ -11,20 +14,20 @@ pub mod logger;
 pub mod player;
 
 pub static DOWNLOAD_MANAGER: Lazy<DownloadManager> = Lazy::new(|| {
-    let downloader = match CONFIG.global.downloader {
-        DownloaderConfig::Ytdlp => Downloader::YtDlp,
+    let backend = match CONFIG.global.downloader {
+        DownloaderConfig::Ytdlp => YoutubeBackend::YtDlp,
         #[cfg(feature = "rusty-ytdl-backend")]
-        DownloaderConfig::RustyYtdl => Downloader::RustyYtdl,
+        DownloaderConfig::RustyYtdl => YoutubeBackend::RustyYtdl,
         #[cfg(not(feature = "rusty-ytdl-backend"))]
         DownloaderConfig::RustyYtdl => {
             log::warn!("rusty-ytdl-backend not compiled, using yt-dlp");
-            Downloader::YtDlp
+            YoutubeBackend::YtDlp
         }
     };
     DownloadManager::new(
         CACHE_DIR.to_path_buf(),
         &DATABASE,
         CONFIG.global.parallel_downloads,
-        downloader,
+        Arc::new(YoutubeDownloader::new().with_backend(backend)),
     )
 });

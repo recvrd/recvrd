@@ -62,8 +62,8 @@ root `headers.txt` is already gitignored.
 
 ### Fixtures and mocks
 
-Current offline coverage is in `crates/ytpapi2`, `crates/ytermusicd-core`,
-`crates/ytermusicd` and `crates/ytermusicd-web`:
+Current offline coverage is in `crates/ytpapi2`, `crates/provider-youtube`,
+`crates/ytermusicd-core`, `crates/ytermusicd` and `crates/ytermusicd-web`:
 
 - `string_utils` tests cover cookie/header parsing helpers.
 - `json_extractor` tests cover search, playlist, continuation, album and
@@ -71,6 +71,8 @@ Current offline coverage is in `crates/ytpapi2`, `crates/ytermusicd-core`,
   item `setVideoId` parsing.
 - `ytpapi2` tests cover the playlist edit request bodies, ID normalization and
   auth/rate-limit response mapping.
+- `provider-youtube` tests cover the DTO conversions, playlist error mapping,
+  cover URLs and the yt-dlp invocation with a fake script.
 - `ytermusicd-core` tests cover auth/config/paths, queue transitions,
   repeat/shuffle restoration, download-failure handling, playback position and
   event-bus replay using a mock audio sink.

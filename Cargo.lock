@@ -1539,7 +1539,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "varuint",
- "ytpapi2",
+ "ytermusicd-core",
 ]
 
 [[package]]
@@ -1748,17 +1748,17 @@ checksum = "75b325c5dbd37f80359721ad39aca5a29fb04c89279657cffdda8736d0c0b9d2"
 name = "download-manager"
 version = "0.5.0"
 dependencies = [
+ "async-trait",
  "common-structs",
  "database",
  "flume",
  "log",
  "once_cell",
- "rusty_ytdl",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
- "ytpapi2",
+ "ytermusicd-core",
 ]
 
 [[package]]
@@ -4065,6 +4065,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8fd00f0bb2e90d81d1044c2b32617f68fcb9fa3bb7640c23e9c748e53fb30934"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "provider-youtube"
+version = "0.5.0"
+dependencies = [
+ "async-trait",
+ "common-structs",
+ "download-manager",
+ "log",
+ "reqwest 0.11.27",
+ "rusty_ytdl",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "ytermusicd-api",
+ "ytermusicd-core",
+ "ytpapi2",
 ]
 
 [[package]]
@@ -7035,6 +7053,7 @@ dependencies = [
  "mimalloc",
  "once_cell",
  "player",
+ "provider-youtube",
  "rand 0.8.5",
  "ratatui 0.26.3",
  "raw-window-handle",
@@ -7069,6 +7088,7 @@ dependencies = [
  "log",
  "mime_guess",
  "player",
+ "provider-youtube",
  "reqwest 0.11.27",
  "rmcp",
  "rust-embed",
@@ -7082,13 +7102,13 @@ dependencies = [
  "ytermusicd-api",
  "ytermusicd-client",
  "ytermusicd-core",
- "ytpapi2",
 ]
 
 [[package]]
 name = "ytermusicd-api"
 version = "0.5.0"
 dependencies = [
+ "async-trait",
  "common-structs",
  "schemars",
  "serde",
@@ -7114,6 +7134,7 @@ dependencies = [
 name = "ytermusicd-core"
 version = "0.5.0"
 dependencies = [
+ "async-trait",
  "common-structs",
  "directories",
  "fastrand 2.3.0",
@@ -7124,7 +7145,6 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "toml",
- "ytpapi2",
 ]
 
 [[package]]

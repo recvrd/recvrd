@@ -4,13 +4,14 @@ mod error;
 mod reader;
 mod writer;
 
+use common_structs::TrackKey;
 pub use error::DatabaseError;
 pub use writer::write_video;
-use ytpapi2::YoutubeMusicVideoRef;
+use ytermusicd_core::Track;
 
 pub struct YTLocalDatabase {
     cache_dir: PathBuf,
-    references: RwLock<Vec<YoutubeMusicVideoRef>>,
+    references: RwLock<Vec<Track>>,
 }
 
 impl YTLocalDatabase {
@@ -21,13 +22,13 @@ impl YTLocalDatabase {
         }
     }
 
-    pub fn clone_from(&self, videos: &Vec<YoutubeMusicVideoRef>) {
+    pub fn clone_from(&self, videos: &Vec<Track>) {
         self.references.write().unwrap().clone_from(videos);
     }
 
-    pub fn remove_video(&self, video: &YoutubeMusicVideoRef) -> Result<(), DatabaseError> {
+    pub fn remove_video(&self, key: &TrackKey) -> Result<(), DatabaseError> {
         let mut database = self.references.write().unwrap();
-        database.retain(|v| v.key() != video.key());
+        database.retain(|video| video.key() != *key);
         drop(database);
         self.write()
     }
@@ -40,7 +41,6 @@ impl YTLocalDatabase {
     /// entries missing from the file are kept, not dropped.
     pub fn upgrade(&self) -> Result<(), DatabaseError> {
         use crate::reader::{VERSION, file_version};
-        use common_structs::TrackKey;
         use std::collections::HashSet;
 
         let path = self.cache_dir.join("db.bin");
@@ -75,7 +75,7 @@ impl YTLocalDatabase {
         self.write()
     }
 
-    pub fn append(&self, video: YoutubeMusicVideoRef) -> Result<(), DatabaseError> {
+    pub fn append(&self, video: Track) -> Result<(), DatabaseError> {
         use crate::reader::{MAGIC, VERSION};
 
         self.upgrade()?;
@@ -115,15 +115,14 @@ mod tests {
     use tempfile::tempdir;
     use varuint::WriteVarint;
 
-    fn video(id: &str) -> YoutubeMusicVideoRef {
-        YoutubeMusicVideoRef {
+    fn video(id: &str) -> Track {
+        Track {
+            provider: ProviderId::Youtube,
+            track_id: id.to_string(),
             title: format!("Title {id}"),
             author: "Artist".to_string(),
             album: "Album".to_string(),
-            video_id: id.to_string(),
             duration: "3:00".to_string(),
-            provider: ProviderId::Youtube,
-            set_video_id: None,
         }
     }
 
@@ -136,7 +135,7 @@ mod tests {
 
         let videos = db.read().unwrap().unwrap();
         assert_eq!(videos.len(), 2);
-        assert_eq!(videos[0].video_id, "video-1");
+        assert_eq!(videos[0].track_id, "video-1");
         assert_eq!(videos[1].title, "Title video-2");
     }
 
@@ -160,7 +159,7 @@ mod tests {
 
         let videos = db.read().unwrap().unwrap();
         assert_eq!(videos.len(), 2);
-        assert_eq!(videos[1].video_id, "video-2");
+        assert_eq!(videos[1].track_id, "video-2");
     }
 
     #[test]
@@ -170,11 +169,11 @@ mod tests {
         db.append(video("video-1")).unwrap();
         db.append(video("video-2")).unwrap();
 
-        db.remove_video(&video("video-1")).unwrap();
+        db.remove_video(&video("video-1").key()).unwrap();
 
         let videos = db.read().unwrap().unwrap();
         assert_eq!(videos.len(), 1);
-        assert_eq!(videos[0].video_id, "video-2");
+        assert_eq!(videos[0].track_id, "video-2");
     }
 
     #[test]
@@ -256,7 +255,7 @@ mod tests {
         let db = YTLocalDatabase::new(dir.path().to_path_buf());
         let videos = db.read().unwrap().unwrap();
         assert_eq!(videos.len(), 1);
-        assert_eq!(videos[0].video_id, "video-1");
+        assert_eq!(videos[0].track_id, "video-1");
         assert_eq!(videos[0].provider, ProviderId::Youtube);
     }
 
@@ -327,6 +326,6 @@ mod tests {
         let videos = db.read().unwrap().unwrap();
         assert_eq!(videos.len(), 2);
         assert_eq!(videos[0].provider, ProviderId::Youtube);
-        assert_eq!(videos[1].video_id, "video-2");
+        assert_eq!(videos[1].track_id, "video-2");
     }
 }

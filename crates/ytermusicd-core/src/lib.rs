@@ -3,6 +3,7 @@
 
 pub mod auth;
 pub mod config;
+pub mod cover;
 pub mod events;
 pub mod model;
 pub mod paths;
@@ -11,6 +12,7 @@ pub mod state;
 
 pub use auth::{Auth, AuthError, AuthState, AuthStatus, LoadedAuth, resolve_auth};
 pub use config::{ConfigError, DaemonConfig, Downloader, is_loopback_bind};
+pub use cover::CoverFetcher;
 pub use events::{CoreEvent, EventBus, EventEnvelope, Snapshot};
 pub use model::{
     PlaybackSnapshot, PlaybackStatus, Queue, QueueItem, QueueSnapshot, RepeatMode, Track,

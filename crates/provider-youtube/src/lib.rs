@@ -1,0 +1,10 @@
+//! YouTube Music provider for ytermusicd: API client, cover fetcher,
+//! downloader and the legacy TUI conversion helpers.
+
+mod api;
+mod cover;
+mod download;
+
+pub use api::{YoutubeMusicApi, connect, playlist_dto, ref_from_track, track_dto, track_from_ref};
+pub use cover::{YoutubeCoverFetcher, cover_urls};
+pub use download::{YoutubeBackend, YoutubeDownloader};

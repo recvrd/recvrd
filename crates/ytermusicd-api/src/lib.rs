@@ -3,7 +3,10 @@
 //! These types are the API contract. The web UI and MCP proxy should consume
 //! the generated TypeScript bindings rather than duplicating shapes.
 
+pub mod music;
+
 pub use common_structs::{ProviderId, TrackKey};
+pub use music::{MusicApi, PlaylistEditError};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 

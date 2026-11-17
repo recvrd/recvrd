@@ -7,6 +7,7 @@ use std::{
     time::Duration,
 };
 use tokio::sync::{Mutex as AsyncMutex, mpsc};
+use ytermusicd_api::MusicApi;
 use ytermusicd_core::{
     AuthStatus, DaemonConfig, Downloader as ConfigDownloader, Paths, PlaybackService,
     is_loopback_bind, resolve_auth,
@@ -25,8 +26,9 @@ use crate::{
     artwork::ArtworkCache,
     audio::RodioSink,
     downloads::{DownloadControl, DownloadService},
-    music::{MusicApi, UnavailableMusicApi, YoutubeMusicApi},
+    music::UnavailableMusicApi,
 };
+use provider_youtube::{YoutubeCoverFetcher, YoutubeDownloader, YoutubeMusicApi, connect};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -150,10 +152,10 @@ fn run_serve(
     let parallel_downloads = config.parallel_downloads;
     let cover_cache_bytes = config.cover_cache_mb.saturating_mul(1024 * 1024);
     let downloader = match config.downloader {
-        ConfigDownloader::Ytdlp => download_manager::Downloader::YtDlp,
+        ConfigDownloader::Ytdlp => YoutubeDownloader::new(),
         ConfigDownloader::RustyYtdl => {
             log::warn!("rusty-ytdl backend requested but not compiled; using yt-dlp");
-            download_manager::Downloader::YtDlp
+            YoutubeDownloader::new()
         }
     };
     let cache_dir = paths.cache_dir.clone();
@@ -180,7 +182,7 @@ fn run_serve(
 
     runtime.block_on(async move {
         let music: Arc<dyn MusicApi> = match auth {
-            Some(auth) => match auth.create_client().await {
+            Some(auth) => match connect(&auth).await {
                 Ok(client) => {
                     log::info!("YouTube Music client ready");
                     Arc::new(YoutubeMusicApi::new(client))
@@ -215,7 +217,7 @@ fn run_serve(
             service.set_wait_for_downloads(true);
         }
 
-        let downloads = DownloadService::new(cache_dir, parallel_downloads, downloader);
+        let downloads = DownloadService::new(cache_dir, parallel_downloads, Arc::new(downloader));
         downloads.spawn(playback.clone());
         let restored_tracks: Vec<ytermusicd_core::Track> = playback
             .lock()
@@ -229,7 +231,11 @@ fn run_serve(
             downloads.queue_playlist(&restored_tracks);
         }
         let downloads: Arc<dyn DownloadControl> = Arc::new(downloads);
-        let artwork = Arc::new(ArtworkCache::new(covers_dir, cover_cache_bytes));
+        let artwork = Arc::new(ArtworkCache::new(
+            covers_dir,
+            cover_cache_bytes,
+            Arc::new(YoutubeCoverFetcher::new()),
+        ));
 
         let (commands, mut command_rx) = mpsc::unbounded_channel();
         let command_playback = playback.clone();

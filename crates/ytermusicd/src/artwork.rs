@@ -4,78 +4,10 @@ use std::{
     collections::HashMap,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
-    time::Duration,
 };
 
-use async_trait::async_trait;
-use common_structs::{ProviderId, TrackKey};
-
-/// Largest image the cache accepts.
-const MAX_COVER_BYTES: usize = 5 * 1024 * 1024;
-/// Smallest image the cache accepts. Smaller responses are placeholders.
-const MIN_COVER_BYTES: usize = 1024;
-
-/// Fetch the JPEG bytes for a track.
-#[async_trait]
-#[allow(clippy::double_must_use)]
-pub trait CoverFetcher: Send + Sync {
-    async fn fetch(&self, key: &TrackKey) -> Option<Vec<u8>>;
-}
-
-/// Fetch covers from the public YouTube thumbnail hosts.
-pub struct HttpFetcher {
-    client: reqwest::Client,
-}
-
-impl HttpFetcher {
-    pub fn new() -> Self {
-        let client = reqwest::Client::builder()
-            .user_agent(concat!("ytermusicd/", env!("CARGO_PKG_VERSION")))
-            .timeout(Duration::from_secs(10))
-            .build()
-            .unwrap_or_default();
-        Self { client }
-    }
-}
-
-impl Default for HttpFetcher {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[async_trait]
-impl CoverFetcher for HttpFetcher {
-    async fn fetch(&self, key: &TrackKey) -> Option<Vec<u8>> {
-        let ProviderId::Youtube = key.provider;
-        let video_id = &key.id;
-        for name in ["maxresdefault", "hqdefault"] {
-            let url = format!("https://i.ytimg.com/vi/{video_id}/{name}.jpg");
-            let Ok(response) = self.client.get(url).send().await else {
-                continue;
-            };
-            if !response.status().is_success() {
-                continue;
-            }
-            let image = response
-                .headers()
-                .get(reqwest::header::CONTENT_TYPE)
-                .and_then(|value| value.to_str().ok())
-                .is_some_and(|value| value.starts_with("image/"));
-            if !image {
-                continue;
-            }
-            let Ok(bytes) = response.bytes().await else {
-                continue;
-            };
-            if bytes.len() < MIN_COVER_BYTES || bytes.len() > MAX_COVER_BYTES {
-                continue;
-            }
-            return Some(bytes.to_vec());
-        }
-        None
-    }
-}
+use common_structs::TrackKey;
+use ytermusicd_core::CoverFetcher;
 
 /// Store cover art on disk and limit the cache size.
 #[derive(Clone)]
@@ -87,8 +19,8 @@ pub struct ArtworkCache {
 }
 
 impl ArtworkCache {
-    pub fn new(dir: PathBuf, max_bytes: u64) -> Self {
-        Self::with_fetcher(dir, max_bytes, Arc::new(HttpFetcher::new()))
+    pub fn new(dir: PathBuf, max_bytes: u64, fetcher: Arc<dyn CoverFetcher>) -> Self {
+        Self::with_fetcher(dir, max_bytes, fetcher)
     }
 
     pub fn with_fetcher(dir: PathBuf, max_bytes: u64, fetcher: Arc<dyn CoverFetcher>) -> Self {
@@ -222,6 +154,7 @@ fn evict_oldest(dir: &Path, max_bytes: u64, keep: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::tempdir;
 

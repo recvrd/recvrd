@@ -89,7 +89,7 @@ impl Screen for PlaylistView {
                         .map(|(i, m)| {
                             (
                                 format!("  {}", to_bidi_string(&m.to_string())),
-                                PlayListAction(i, !db.iter().any(|x| x.video_id == m.video_id)),
+                                PlayListAction(i, !db.iter().any(|x| x.track_id == m.video_id)),
                             )
                         })
                         .collect(),

@@ -26,12 +26,12 @@ use tokio::{
 use ytermusicd_api::{
     AddPlaylistTracksRequest, ApiError, AuthState, AuthStatus as ApiAuthStatus,
     CreatePlaylistRequest, DownloadStatus, DownloadSummary, ErrorEnvelope, Event, EventKind,
-    MovePlaylistTrackRequest, OkResponse, PlayNextRequest, PlayPlaylistRequest, PlayTrackRequest,
-    PlaybackSnapshot as ApiPlaybackSnapshot, PlaybackState, Playlist, PlaylistDetail,
-    Queue as ApiQueue, QueueItem as ApiQueueItem, QueueRequest, RemovePlaylistTracksRequest,
-    RemoveQueueRequest, ReorderQueueRequest, RepeatMode as ApiRepeatMode, RepeatRequest,
-    RetryDownloadRequest, SearchResults, SeekRequest, ShuffleRequest, Status, Track,
-    UpdatePlaylistRequest, VolumeRequest,
+    MovePlaylistTrackRequest, MusicApi, OkResponse, PlayNextRequest, PlayPlaylistRequest,
+    PlayTrackRequest, PlaybackSnapshot as ApiPlaybackSnapshot, PlaybackState, Playlist,
+    PlaylistDetail, PlaylistEditError, Queue as ApiQueue, QueueItem as ApiQueueItem, QueueRequest,
+    RemovePlaylistTracksRequest, RemoveQueueRequest, ReorderQueueRequest,
+    RepeatMode as ApiRepeatMode, RepeatRequest, RetryDownloadRequest, SearchResults, SeekRequest,
+    ShuffleRequest, Status, Track, UpdatePlaylistRequest, VolumeRequest,
 };
 use ytermusicd_core::{
     AudioSink, AuthState as CoreAuthState, AuthStatus, CoreEvent, EventBus, PlaybackCommand,
@@ -39,11 +39,7 @@ use ytermusicd_core::{
     RepeatMode as CoreRepeatMode,
 };
 
-use crate::{
-    artwork::ArtworkCache,
-    downloads::DownloadControl,
-    music::{MusicApi, PlaylistEditError, core_track},
-};
+use crate::{artwork::ArtworkCache, downloads::DownloadControl};
 
 pub struct AppState<S: AudioSink + Send + 'static> {
     started_at: Instant,
@@ -416,6 +412,18 @@ fn validate_indices(indices: &[usize]) -> Result<(), ApiFailure> {
         }
     }
     Ok(())
+}
+
+/// Convert an API track to a core track. The fields match one to one.
+fn core_track(track: Track) -> ytermusicd_core::Track {
+    ytermusicd_core::Track {
+        provider: track.provider,
+        track_id: track.track_id,
+        title: track.title,
+        author: track.artist,
+        album: track.album,
+        duration: track.duration,
+    }
 }
 
 fn playlist_failure(error: PlaylistEditError) -> ApiFailure {
@@ -1038,14 +1046,13 @@ fn playback_failure(error: PlaybackError) -> ApiFailure {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::artwork::CoverFetcher;
     use async_trait::async_trait;
     use futures_util::StreamExt;
     use std::{
         path::Path,
         sync::atomic::{AtomicUsize, Ordering},
     };
-    use ytermusicd_core::Track as CoreTrack;
+    use ytermusicd_core::{CoverFetcher, Track as CoreTrack};
 
     #[derive(Default)]
     struct MockSink;

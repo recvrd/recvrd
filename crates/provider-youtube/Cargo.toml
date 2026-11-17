@@ -1,0 +1,28 @@
+[package]
+name = "provider-youtube"
+version = "0.5.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "YouTube Music provider for ytermusicd"
+
+[dependencies]
+async-trait = "0.1"
+common-structs.workspace = true
+download-manager.workspace = true
+log = "0.4"
+reqwest = { version = "0.11", default-features = false, features = ["rustls-tls"] }
+serde_json = "1"
+tokio = { version = "1", features = ["io-util", "process"] }
+ytermusicd-api.workspace = true
+ytermusicd-core.workspace = true
+ytpapi2.workspace = true
+
+# --- YouTube download backend ---
+rusty_ytdl = { git = "https://github.com/Mithronn/rusty_ytdl/", branch = "main", features = ["rustls", "search", "live"], default-features = false, optional = true }
+
+[features]
+rusty-ytdl-backend = ["dep:rusty_ytdl"]
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

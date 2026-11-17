@@ -31,6 +31,9 @@ unicode-bidi = "0.3"
 #  --- Player ---
 player.workspace = true
 
+#  --- Provider ---
+provider-youtube.workspace = true
+
 #  --- Media Control ---
 souvlaki = "0.7.3"
 
@@ -55,7 +58,7 @@ rookie = "0.5.2"
 ctrlc = "3.5.0"
 
 [features]
-rusty-ytdl-backend = ["download-manager/rusty-ytdl-backend"]
+rusty-ytdl-backend = ["provider-youtube/rusty-ytdl-backend"]
 
 [target."cfg(target_os = \"windows\")".dependencies]
 raw-window-handle = "0.4.3"

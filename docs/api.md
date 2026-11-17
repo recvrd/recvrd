@@ -214,7 +214,7 @@ The daemon validates these values before it sends an upstream request:
 An out-of-range track index or move position returns 400. An expired session
 returns 502 with a message that asks the user to sign in again.
 
-`ytpapi2` sends the edits to the authenticated `playlist/create`,
+The YouTube provider sends the edits to the authenticated `playlist/create`,
 `browse/edit_playlist` and `playlist/delete` endpoints. Removal and reordering
 need each item's `setVideoId`. The daemon fetches the playlist before each edit.
 

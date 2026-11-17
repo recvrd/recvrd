@@ -19,6 +19,7 @@ futures-util = "0.3"
 log = "0.4"
 mime_guess = "2"
 player.workspace = true
+provider-youtube.workspace = true
 reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls", "stream"] }
 rmcp = { version = "3.10", features = ["transport-io"] }
 rust-embed = { version = "8", features = ["interpolate-folder-path"] }
@@ -31,7 +32,6 @@ url = "2"
 ytermusicd-api = { workspace = true, features = ["schema"] }
 ytermusicd-client.workspace = true
 ytermusicd-core.workspace = true
-ytpapi2.workspace = true
 
 [dev-dependencies]
 common-structs.workspace = true

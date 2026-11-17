@@ -6,6 +6,7 @@ license = "Apache-2.0"
 description = "Headless core services for ytermusicd"
 
 [dependencies]
+async-trait = "0.1"
 common-structs.workspace = true
 directories = "5.0"
 fastrand = "2"
@@ -14,7 +15,6 @@ serde = { version = "1", features = ["derive"] }
 thiserror = "2"
 tokio = { version = "1", features = ["sync"] }
 toml = "0.8"
-ytpapi2.workspace = true
 
 [dev-dependencies]
 serde_json = "1"
