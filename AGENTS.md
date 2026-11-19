@@ -41,14 +41,14 @@ Do not rewrite unrelated text in a change that has another purpose.
 ## Work in separate worktrees
 
 All work must be done in a separate git worktree, one per issue or PR. Do not
-edit or commit directly in the primary `master` checkout.
+edit or commit directly in the primary `main` checkout.
 
-Create a worktree from an up-to-date `master`:
+Create a worktree from an up-to-date `main`:
 
 ```sh
 git fetch origin
 git worktree add <repo>/issue-<number>-<slug> \
-  -b issue-<number>-<slug> origin/master
+  -b issue-<number>-<slug> origin/main
 ```
 
 - Use a descriptive branch name, for example `issue-6-auth-core`.
@@ -80,7 +80,7 @@ contain them.
 
 ## Pull requests
 
-- Open the PR from the issue branch to `master` (or the parent branch for
+- Open the PR from the issue branch to `main` (or the parent branch for
   stacked work).
 - Reference the issue with `Closes #...` or `Part of #...`.
 - Include the test plan and any manual verification commands.
