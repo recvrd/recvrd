@@ -9,6 +9,7 @@
   import HelpOverlay from './lib/components/HelpOverlay.svelte';
   import LibraryView from './lib/components/LibraryView.svelte';
   import NowPlaying from './lib/components/NowPlaying.svelte';
+  import PlaylistPicker from './lib/components/PlaylistPicker.svelte';
   import QueueView from './lib/components/QueueView.svelte';
   import SearchPalette from './lib/components/SearchPalette.svelte';
   import Sidebar from './lib/components/Sidebar.svelte';
@@ -54,11 +55,29 @@
       },
       openHelp: () => store.toggleHelp(),
       closeOverlays: () => store.closeOverlays(),
+      showLibrary: () => store.openLibrary(),
+      showQueue: () => store.openQueue(),
+      moveFocus: () => store.toggleFocus(),
+      moveQueueItem: (delta) => void store.moveSelectedQueueItem(delta),
+      requestClearQueue: () => store.requestClearQueue(),
+      createPlaylist: () => store.openCreatePlaylist(),
+      renamePlaylist: () => store.openRenamePlaylist(),
+      playSelectedPlaylist: () => void store.playSelectedPlaylist(),
+      addSelectedToPlaylist: () => store.openPlaylistPicker(),
+      retrySelected: () => void store.retrySelected(),
+      toggleShuffle: () => void store.toggleShuffle(),
+      cycleRepeat: () => void store.cycleRepeat(),
+      cycleProvider: () => void store.cycleProvider(),
+      adjustVolume: (delta) => void store.adjustVolume(delta),
+      seekRelative: (delta) => void store.seekRelative(delta),
+      previousTrack: () => void store.previous(),
+      nextTrack: () => void store.next(),
     });
 
     const onKeydown = (event: KeyboardEvent) => {
       keymap.handle(event, {
-        overlayOpen: store.searchOpen || store.helpOpen || store.fullPlayerOpen,
+        overlayOpen:
+          store.searchOpen || store.helpOpen || store.fullPlayerOpen || store.pickerOpen,
       });
     };
     window.addEventListener('keydown', onKeydown);
@@ -156,6 +175,7 @@
   <NowPlaying {store} />
   <FullPlayer {store} />
   <SearchPalette {store} />
+  <PlaylistPicker {store} />
   <HelpOverlay open={store.helpOpen} onclose={() => (store.helpOpen = false)} />
   <ToastHost {store} />
 </div>

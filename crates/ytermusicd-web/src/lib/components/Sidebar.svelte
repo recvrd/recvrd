@@ -13,7 +13,7 @@
   }
 </script>
 
-<aside class="sidebar" aria-label="Library navigation">
+<aside class="sidebar" class:focused={store.focus === 'sidebar'} aria-label="Library navigation">
   <div class="brand">
     <span class="mark" aria-hidden="true">♪</span>
     <span class="name">ytermusicd</span>
@@ -75,14 +75,18 @@
           {store.filter ? 'No playlist matches the filter.' : 'No playlists loaded.'}
         </p>
       {:else}
-        {#each store.filteredPlaylists as playlist (playlist.id)}
+        {#each store.filteredPlaylists as playlist, index (playlist.id)}
           {@const active = store.view.kind === 'playlist' && store.view.id === playlist.id}
           <button
             class="playlist"
             class:active
+            class:selected={store.focus === 'sidebar' && index === store.sidebarSelection}
             aria-current={active ? 'page' : undefined}
             title={`${playlist.name} — ${playlist.subtitle}`}
-            onclick={() => store.openPlaylist(playlist.id, playlist.name)}
+            onclick={() => {
+              store.selectSidebar(index);
+              store.openPlaylist(playlist.id, playlist.name);
+            }}
           >
             <span class="playlist-name">{playlist.name}</span>
             <span class="playlist-sub">
@@ -121,6 +125,10 @@
     border-right: 1px dashed var(--border);
     background: color-mix(in srgb, var(--bg-raised) 33%, transparent);
     backdrop-filter: blur(4px);
+  }
+
+  .sidebar.focused {
+    box-shadow: inset 2px 0 0 var(--accent-2);
   }
 
   .brand {
@@ -262,6 +270,11 @@
 
   .playlist.active {
     background: var(--selection);
+  }
+
+  .playlist.selected:not(.active) {
+    background: color-mix(in srgb, var(--selection) 70%, transparent);
+    box-shadow: inset 2px 0 0 var(--accent-2);
   }
 
   .playlist-name {

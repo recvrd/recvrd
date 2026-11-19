@@ -54,6 +54,29 @@ describe('App shell', () => {
     ).toBeInTheDocument();
   });
 
+  it('handles the new global keys', async () => {
+    const { store } = setup();
+    render(App, { props: { store } });
+
+    await screen.findByRole('heading', { level: 2, name: 'Playlist p1' });
+
+    await fireEvent.keyDown(window, { key: 'Tab' });
+    await tick();
+    expect(store.focus).toBe('sidebar');
+
+    await fireEvent.keyDown(window, { key: '2' });
+    await tick();
+    expect(store.view).toEqual({ kind: 'queue' });
+
+    await fireEvent.keyDown(window, { key: '1' });
+    await tick();
+    expect(store.view).toEqual({ kind: 'library' });
+
+    await fireEvent.keyDown(window, { key: 'Escape' });
+    await tick();
+    expect(store.focus).toBe('main');
+  });
+
   it('opens a playlist and shows its tracks', async () => {
     const { store } = setup();
     render(App, { props: { store } });

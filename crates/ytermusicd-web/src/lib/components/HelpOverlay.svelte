@@ -32,6 +32,16 @@
             <dt><kbd>G</kbd></dt><dd>Last row</dd>
             <dt><kbd>Ctrl</kbd>+<kbd>d</kbd></dt><dd>Half page down</dd>
             <dt><kbd>Ctrl</kbd>+<kbd>u</kbd></dt><dd>Half page up</dd>
+            <dt><kbd>Tab</kbd></dt><dd>Move focus between sidebar and main view</dd>
+          </dl>
+        </section>
+        <section>
+          <h3>Views</h3>
+          <dl>
+            <dt><kbd>1</kbd></dt><dd>Show the library</dd>
+            <dt><kbd>2</kbd></dt><dd>Show the queue</dd>
+            <dt><kbd>J</kbd> / <kbd>K</kbd></dt><dd>Move the selected queue item</dd>
+            <dt><kbd>D</kbd></dt><dd>Clear the queue (asks first)</dd>
           </dl>
         </section>
         <section>
@@ -41,9 +51,25 @@
             <dt><kbd>Space</kbd></dt><dd>Play or pause</dd>
             <dt><kbd>x</kbd></dt><dd>Queue the selected track</dd>
             <dt><kbd>d</kbd><kbd>d</kbd></dt><dd>Remove the selected queue item</dd>
+            <dt><kbd>n</kbd></dt><dd>New playlist</dd>
+            <dt><kbd>r</kbd></dt><dd>Rename the selected playlist</dd>
+            <dt><kbd>p</kbd></dt><dd>Play the selected playlist</dd>
+            <dt><kbd>a</kbd></dt><dd>Add the selected track to a playlist</dd>
+            <dt><kbd>t</kbd></dt><dd>Retry the selected download</dd>
             <dt><kbd>/</kbd> or <kbd>Ctrl</kbd>+<kbd>k</kbd></dt><dd>Open search</dd>
             <dt><kbd>?</kbd></dt><dd>Open this help</dd>
             <dt><kbd>Esc</kbd></dt><dd>Close a panel</dd>
+          </dl>
+        </section>
+        <section>
+          <h3>Playback</h3>
+          <dl>
+            <dt><kbd>s</kbd></dt><dd>Toggle shuffle</dd>
+            <dt><kbd>R</kbd></dt><dd>Cycle repeat</dd>
+            <dt><kbd>o</kbd></dt><dd>Switch the music provider</dd>
+            <dt><kbd>+</kbd> / <kbd>-</kbd></dt><dd>Volume up / down</dd>
+            <dt><kbd>←</kbd> / <kbd>→</kbd></dt><dd>Seek 5 seconds</dd>
+            <dt><kbd>Ctrl</kbd>+<kbd>←</kbd> / <kbd>Ctrl</kbd>+<kbd>→</kbd></dt><dd>Previous / next track</dd>
           </dl>
         </section>
         <section>
