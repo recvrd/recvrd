@@ -1,5 +1,10 @@
 //! Convert JPEG cover art to terminal half-block cells.
+//!
+//! The half-block renderer is the fallback. When the terminal supports a
+//! graphics protocol, the decoded image is handed to `ratatui-image`
+//! instead (see `App::cover_protocol`).
 
+use image::DynamicImage;
 use image::imageops::FilterType;
 use ratatui::style::Color;
 
@@ -33,13 +38,14 @@ impl CoverArt {
     }
 }
 
-/// Decode JPEG bytes and resize the image to the requested cell size.
-pub fn render_jpeg(bytes: &[u8], width: u16, height: u16) -> Option<CoverArt> {
-    let image = image::load_from_memory(bytes).ok()?;
-    Some(render_image(&image, width, height))
+/// Decode JPEG bytes into an image for the graphics-protocol renderer.
+/// Returns `None` when the bytes are not a decodable image.
+pub fn decode_jpeg(bytes: &[u8]) -> Option<DynamicImage> {
+    image::load_from_memory(bytes).ok()
 }
 
-fn render_image(image: &image::DynamicImage, width: u16, height: u16) -> CoverArt {
+/// Resize a decoded image to the requested half-block cell size.
+pub fn render_image(image: &DynamicImage, width: u16, height: u16) -> CoverArt {
     let image = image.to_rgb8();
     let pixel_width = u32::from(width).max(1);
     let pixel_height = u32::from(height).max(1) * 2;

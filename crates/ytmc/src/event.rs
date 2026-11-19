@@ -1,12 +1,11 @@
 //! Events and commands that connect the terminal UI to the daemon.
 
+use image::DynamicImage;
 use ytermusicd_api::{
     ApiError, DownloadStatus, Event, EventKind, PlaybackSnapshot, Playlist, PlaylistDetail,
     ProviderId, ProviderInfo, Queue, RepeatMode, SearchResults, Status, Track, TrackKey,
 };
 use ytermusicd_client::DaemonError;
-
-use crate::cover::CoverArt;
 
 /// A message from the daemon worker to the UI.
 #[derive(Debug)]
@@ -51,10 +50,12 @@ pub enum DaemonEvent {
     },
     /// A search request failed.
     SearchError { query: String, message: String },
-    /// A cover image response.
+    /// A cover image response. The decoded image is `None` when the
+    /// fetch or decode failed; the UI clears the request so the next
+    /// playback event retries it.
     Cover {
         key: TrackKey,
-        art: Option<CoverArt>,
+        image: Option<DynamicImage>,
     },
     /// A user-visible message.
     Toast { level: ToastLevel, message: String },

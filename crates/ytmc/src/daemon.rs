@@ -123,7 +123,7 @@ async fn run_one(
         }
         Err(error) => {
             let event = match failure {
-                Failure::Cover(key) => DaemonEvent::Cover { key, art: None },
+                Failure::Cover(key) => DaemonEvent::Cover { key, image: None },
                 Failure::Playlist(id) => DaemonEvent::PlaylistError {
                     id,
                     message: error.message,
@@ -249,11 +249,11 @@ async fn execute(
         }
         Command::LoadCover(key) => {
             let bytes = client.cover(&key).await?;
-            let art = tokio::task::spawn_blocking(move || cover::render_jpeg(&bytes, 10, 5))
+            let image = tokio::task::spawn_blocking(move || cover::decode_jpeg(&bytes))
                 .await
                 .ok()
                 .flatten();
-            Ok(vec![DaemonEvent::Cover { key, art }])
+            Ok(vec![DaemonEvent::Cover { key, image }])
         }
     }
 }
