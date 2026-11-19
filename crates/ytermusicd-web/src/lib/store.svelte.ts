@@ -169,6 +169,12 @@ export class AppStore {
           this.error = null;
         }
       },
+      // After a reconnect (suspend resume, watchdog, or manual retry),
+      // re-read status and queue so the position matches the daemon.
+      onReconnect: () => {
+        void this.refreshStatus();
+        void this.refreshQueue();
+      },
       onParseError: () => this.notify('warning', 'Received a malformed event from the daemon.'),
     });
   }

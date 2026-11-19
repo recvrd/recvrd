@@ -124,6 +124,11 @@ impl EventBus {
         self.inner.snapshot.read().unwrap().clone()
     }
 
+    /// Newest event id published so far (0 when no events exist).
+    pub fn latest_id(&self) -> u64 {
+        self.inner.next_id.load(Ordering::SeqCst).saturating_sub(1)
+    }
+
     pub fn publish(&self, event: CoreEvent) -> u64 {
         // Serialise id assignment, snapshot updates and history writes so
         // subscribers always observe events in id order.

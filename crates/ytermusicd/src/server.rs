@@ -950,6 +950,7 @@ async fn events<S: AudioSink + Send + 'static>(
         &subscription.snapshot.queue,
     );
     let snapshot_queue = api_queue(&subscription.snapshot.queue);
+    let stream_state = state.clone();
 
     let stream = async_stream::stream! {
         let mut last_sent = if subscription.needs_snapshot {
@@ -985,30 +986,68 @@ async fn events<S: AudioSink + Send + 'static>(
         }
 
         let mut receiver = subscription.receiver;
+        // Named heartbeat, sent when the stream would otherwise be idle.
+        // It carries no id, so it never advances the client's Last-Event-ID
+        // and never changes replay. The axum comment keep-alive below is
+        // kept for proxies; comments never reach EventSource listeners.
+        let mut heartbeat = tokio::time::interval(Duration::from_secs(15));
+        // The first tick of an interval completes immediately; consume it
+        // so the first heartbeat is 15 s after the stream starts.
+        heartbeat.tick().await;
         loop {
-            match receiver.recv().await {
-                Ok(envelope) => {
-                    // The receiver is subscribed before history is read, so an
-                    // event published in that window can be replayed twice.
-                    if envelope.id <= last_sent {
-                        continue;
+            tokio::select! {
+                result = receiver.recv() => match result {
+                    Ok(envelope) => {
+                        // The receiver is subscribed before history is read, so an
+                        // event published in that window can be replayed twice.
+                        if envelope.id <= last_sent {
+                            continue;
+                        }
+                        last_sent = envelope.id;
+                        if let Some(event) = api_event(envelope.event) {
+                            let payload = Event {
+                                id: envelope.id,
+                                event,
+                            };
+                            yield Ok::<SseEvent, Infallible>(SseEvent::default()
+                                .id(envelope.id.to_string())
+                                .json_data(payload)
+                                .expect("event serializes"));
+                        }
                     }
-                    last_sent = envelope.id;
-                    if let Some(event) = api_event(envelope.event) {
-                        let payload = Event {
-                            id: envelope.id,
-                            event,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
+                        // The client missed events it can no longer replay.
+                        // Resend a fresh snapshot instead of leaving it
+                        // silently behind; the snapshot's id is the newest
+                        // published id, so replay after a reconnect stays
+                        // consistent.
+                        log::warn!("SSE client lagged by {count} events; resending snapshot");
+                        let fresh = stream_state.events.snapshot();
+                        let fresh_status =
+                            status_from_parts(&stream_state, &fresh.playback, &fresh.queue);
+                        let fresh_queue = api_queue(&fresh.queue);
+                        let latest = stream_state.events.latest_id();
+                        let snapshot = Event {
+                            id: latest,
+                            event: EventKind::Snapshot {
+                                status: Box::new(fresh_status),
+                                queue: fresh_queue,
+                            },
                         };
                         yield Ok::<SseEvent, Infallible>(SseEvent::default()
-                            .id(envelope.id.to_string())
-                            .json_data(payload)
-                            .expect("event serializes"));
+                            .event("snapshot")
+                            .id(latest.to_string())
+                            .json_data(snapshot)
+                            .expect("snapshot serializes"));
+                        last_sent = latest;
                     }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                },
+                _ = heartbeat.tick() => {
+                    yield Ok::<SseEvent, Infallible>(
+                        SseEvent::default().event("heartbeat").data("{}"),
+                    );
                 }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
-                    log::warn!("SSE client lagged by {count} events");
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
         }
     };
@@ -2655,6 +2694,42 @@ mod tests {
         assert_eq!(live["id"].as_u64(), Some(last_event_id(&buffer)));
         assert_eq!(live["event"]["type"], "playback");
         assert_eq!(live["event"]["playback"]["volume"], 80);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn sse_sends_heartbeat_without_event_id() {
+        let (base, server) = start_server(test_state()).await;
+        let client = reqwest::Client::new();
+        let response = client
+            .get(format!("{base}/api/events"))
+            .send()
+            .await
+            .unwrap();
+        let mut stream = Box::pin(response.bytes_stream());
+        let mut buffer = String::new();
+        // The first heartbeat arrives 15 s after the stream starts; the
+        // shared read_until helper only waits 5 s, so wait here directly.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+        while !buffer.contains("event: heartbeat") {
+            let chunk = tokio::time::timeout_at(deadline, stream.next())
+                .await
+                .expect("timed out waiting for SSE heartbeat")
+                .expect("SSE stream ended")
+                .expect("SSE stream error");
+            buffer.push_str(&String::from_utf8_lossy(chunk.as_ref()));
+        }
+        let heartbeat_block = buffer
+            .split("\n\n")
+            .find(|block| block.contains("event: heartbeat"))
+            .expect("heartbeat block");
+        assert!(
+            !heartbeat_block.lines().any(|line| line.starts_with("id:")),
+            "heartbeat must not carry an id: {heartbeat_block}"
+        );
+        // Only the snapshot's id 0 is present: the heartbeat must not
+        // advance Last-Event-ID, so replay after a reconnect is unchanged.
+        assert_eq!(last_event_id(&buffer), 0);
         server.abort();
     }
 

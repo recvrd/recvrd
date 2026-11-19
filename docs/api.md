@@ -447,6 +447,16 @@ Event kinds (`EventKind` in the bindings):
 | `error` | Shared `ApiError` envelope |
 | `library_changed` | Library needs refreshing |
 
+The daemon also sends a named `heartbeat` event every 15 seconds:
+
+```
+event: heartbeat
+data: {}
+```
+
+The heartbeat carries no id. It does not change `Last-Event-ID` and does not
+change replay.
+
 ### Reconnect and replay
 
 Event ids are monotonically increasing. The daemon retains the last 256 events.
@@ -463,12 +473,13 @@ curl -N 'http://127.0.0.1:8080/api/events?last_event_id=2'
 - If the id is unknown, older than the window, or from the future, the daemon
   sends a fresh `snapshot` (with the current newest id) so the client can
   resynchronise.
-- A client that cannot keep up may lag; the daemon drops the oldest events for
-  that connection and logs a warning. Reconnecting with `Last-Event-ID` (or
-  accepting the new snapshot) resynchronises.
+- If a client cannot keep up, the daemon drops the oldest events for that
+  connection and logs a warning. The daemon then sends a fresh `snapshot` with
+  the newest id, so the client resynchronises without a reconnect.
 
-Keepalive comments are sent every 15 seconds so proxies and idle connections do
-not time out.
+Keepalive comments are also sent every 15 seconds so proxies and idle
+connections do not time out. `EventSource` does not deliver comments to
+JavaScript, so clients use the `heartbeat` event to detect a live stream.
 
 ## TypeScript and other clients
 
