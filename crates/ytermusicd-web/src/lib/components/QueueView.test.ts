@@ -12,6 +12,7 @@ function makeStore() {
   const api = makeApi({}, initial);
   const store = new AppStore(api);
   store.queue = initial;
+  store.openQueue();
   return { api, store };
 }
 

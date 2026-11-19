@@ -6,7 +6,6 @@
 
   let dragFrom = $state<number | null>(null);
   let dragOver = $state<number | null>(null);
-  let confirmClear = $state(false);
 
   function drop(index: number): void {
     if (dragFrom !== null) {
@@ -26,22 +25,21 @@
       </span>
     </div>
     {#if (store.queue?.items.length ?? 0) > 0}
-      {#if confirmClear}
+      {#if store.confirmClearQueue}
         <div class="confirm">
           <span>Clear the queue?</span>
           <button
             class="danger"
             onclick={() => {
               void store.clearQueue();
-              confirmClear = false;
             }}
           >
             Clear
           </button>
-          <button onclick={() => (confirmClear = false)}>Cancel</button>
+          <button onclick={() => store.cancelClearQueue()}>Cancel</button>
         </div>
       {:else}
-        <button onclick={() => (confirmClear = true)}>Clear queue</button>
+        <button onclick={() => store.requestClearQueue()}>Clear queue</button>
       {/if}
     {/if}
   </header>

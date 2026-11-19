@@ -516,4 +516,279 @@ describe('AppStore', () => {
     expect(store.selectedTrack?.track_id).toBe('v1');
     store.dispose();
   });
+
+  it('toggles keyboard focus and navigates the sidebar', async () => {
+    const { api, store } = setup();
+    await store.init();
+    expect(store.focus).toBe('main');
+
+    store.toggleFocus();
+    expect(store.focus).toBe('sidebar');
+    expect(store.sidebarSelectedPlaylist?.id).toBe('p1');
+
+    store.moveSelection(1);
+    expect(store.sidebarSelection).toBe(1);
+    expect(store.sidebarSelectedPlaylist?.id).toBe('p2');
+    expect(store.selection).toBe(0);
+
+    store.selectFirst();
+    expect(store.sidebarSelection).toBe(0);
+    store.selectLast();
+    expect(store.sidebarSelection).toBe(1);
+
+    await store.playSelected();
+    expect(api.playlist).toHaveBeenCalledWith('p2', 'youtube');
+    expect(store.view).toEqual({ kind: 'playlist', id: 'p2', name: 'Playlist p2' });
+
+    // Esc with nothing open returns focus to the main view.
+    store.closeOverlays();
+    expect(store.focus).toBe('main');
+    store.dispose();
+  });
+
+  it('cycles providers and reports a lone provider', async () => {
+    const { api, store } = setup();
+    await store.init();
+    await store.cycleProvider();
+    expect(store.activeProvider).toBe('youtube');
+    expect(store.toasts.at(-1)?.message).toContain('only provider');
+
+    api.providers = vi.fn(async () => [
+      makeProviderInfo(),
+      makeProviderInfo({ id: 'rss', name: 'RSS', default: false }),
+    ]);
+    await store.loadProviders();
+    await store.cycleProvider();
+    expect(store.activeProvider).toBe('rss');
+    await store.cycleProvider();
+    expect(store.activeProvider).toBe('youtube');
+    store.dispose();
+  });
+
+  it('adjusts volume in steps and clamps', async () => {
+    const { api, store } = setup();
+    await store.init();
+    expect(store.volume).toBe(50);
+
+    await store.adjustVolume(5);
+    expect(store.volume).toBe(55);
+    expect(api.setVolume).toHaveBeenLastCalledWith(55);
+
+    await store.adjustVolume(-5);
+    expect(store.volume).toBe(50);
+
+    await store.setVolume(98);
+    await store.adjustVolume(5);
+    expect(store.volume).toBe(100);
+    store.dispose();
+  });
+
+  it('seeks relative to the position and clamps to the duration', async () => {
+    const { api, store } = setup();
+    await store.init();
+    // The fake api.seek rebuilds status with no current track, so
+    // re-establish playback before each relative seek.
+    const playing = (position: number) =>
+      makeStatus({
+        playback: {
+          state: 'playing',
+          current: makeTrack('v1'),
+          position_secs: position,
+          volume: 50,
+          repeat: 'off',
+          shuffle: false,
+        },
+      });
+
+    store.status = playing(10);
+    await store.seekRelative(5);
+    expect(api.seek).toHaveBeenLastCalledWith(15);
+
+    store.status = playing(170);
+    await store.seekRelative(500);
+    expect(api.seek).toHaveBeenLastCalledWith(180);
+
+    store.status = playing(10);
+    await store.seekRelative(-500);
+    expect(api.seek).toHaveBeenLastCalledWith(0);
+
+    store.status = makeStatus();
+    await store.seekRelative(5);
+    expect(api.seek).toHaveBeenCalledTimes(3);
+    store.dispose();
+  });
+
+  it('moves the selected queue item and follows it', async () => {
+    // Pass the queue to makeApi so the fake queueReorder acts on the
+    // same queue the store holds.
+    const initial = makeQueue([makeTrack('v0'), makeTrack('v1'), makeTrack('v2')]);
+    const api = makeApi({}, initial);
+    const sources: FakeEventSource[] = [];
+    const store = new AppStore(api, {
+      createEventSource: (url) => {
+        const source = new FakeEventSource(url);
+        sources.push(source);
+        return source;
+      },
+      toastTtlMs: 1000,
+      searchDebounceMs: 250,
+    });
+    await store.init();
+    store.queue = initial;
+    store.openQueue();
+    store.select(0);
+
+    await store.moveSelectedQueueItem(1);
+    expect(store.queue?.items.map((item) => item.track.track_id)).toEqual([
+      'v1',
+      'v0',
+      'v2',
+    ]);
+    expect(store.selection).toBe(1);
+    expect(api.queueReorder).toHaveBeenCalledWith(0, 1);
+
+    // At the bottom edge there is nowhere to move.
+    store.select(2);
+    await store.moveSelectedQueueItem(1);
+    expect(api.queueReorder).toHaveBeenCalledTimes(1);
+
+    // Outside the queue view J/K do nothing.
+    store.openLibrary();
+    await store.moveSelectedQueueItem(-1);
+    expect(api.queueReorder).toHaveBeenCalledTimes(1);
+    store.dispose();
+  });
+
+  it('clears the queue only after confirmation', async () => {
+    const { api, store } = setup();
+    await store.init();
+    store.queue = makeQueue([makeTrack('v1')]);
+
+    store.requestClearQueue();
+    expect(store.confirmClearQueue).toBe(false);
+
+    store.openQueue();
+    store.requestClearQueue();
+    expect(store.confirmClearQueue).toBe(true);
+
+    store.cancelClearQueue();
+    expect(store.confirmClearQueue).toBe(false);
+
+    store.requestClearQueue();
+    await store.clearQueue();
+    expect(store.confirmClearQueue).toBe(false);
+    expect(store.queue?.items).toHaveLength(0);
+    expect(api.queueClear).toHaveBeenCalledOnce();
+    store.dispose();
+  });
+
+  it('opens and closes the create playlist form', async () => {
+    const { store } = setup();
+    await store.init();
+    store.openQueue();
+
+    store.openCreatePlaylist();
+    expect(store.createPlaylistOpen).toBe(true);
+    expect(store.view).toEqual({ kind: 'library' });
+
+    store.closeCreatePlaylist();
+    expect(store.createPlaylistOpen).toBe(false);
+    expect(store.createPlaylistName).toBe('');
+    store.dispose();
+  });
+
+  it('opens the rename form for the open or sidebar-selected playlist', async () => {
+    const { store } = setup();
+    await store.init();
+    await store.openPlaylist('p1');
+
+    store.openRenamePlaylist();
+    expect(store.renamePlaylistOpen).toBe(true);
+    expect(store.renamePlaylistId).toBe('p1');
+    expect(store.renamePlaylistName).toBe('Playlist p1');
+
+    store.closeRenamePlaylist();
+    store.openLibrary();
+    store.toggleFocus();
+    store.selectSidebar(1);
+    store.openRenamePlaylist();
+    expect(store.renamePlaylistId).toBe('p2');
+    expect(store.view).toEqual({ kind: 'playlist', id: 'p2', name: 'Playlist p2' });
+    store.dispose();
+  });
+
+  it('plays the selected playlist from the view or the sidebar', async () => {
+    const { api, store } = setup();
+    await store.init();
+
+    await store.playSelectedPlaylist();
+    expect(api.playPlaylist).not.toHaveBeenCalled();
+
+    await store.openPlaylist('p1');
+    await store.playSelectedPlaylist();
+    expect(api.playPlaylist).toHaveBeenCalledWith('p1', 'youtube');
+
+    store.openLibrary();
+    store.toggleFocus();
+    store.selectSidebar(1);
+    await store.playSelectedPlaylist();
+    expect(api.playPlaylist).toHaveBeenLastCalledWith('p2', 'youtube');
+    store.dispose();
+  });
+
+  it('retries only the selected queue download', async () => {
+    const { api, store } = setup();
+    await store.init();
+    store.queue = makeQueue([makeTrack('v1'), makeTrack('v2')]);
+
+    await store.retrySelected();
+    expect(api.retryDownload).not.toHaveBeenCalled();
+
+    store.openQueue();
+    store.select(1);
+    await store.retrySelected();
+    expect(api.retryDownload).toHaveBeenCalledWith(makeTrack('v2'));
+    store.dispose();
+  });
+
+  it('opens the playlist picker and adds the selected track', async () => {
+    const { api, store } = setup();
+    await store.init();
+
+    store.openPlaylistPicker();
+    expect(store.pickerOpen).toBe(false);
+
+    await store.openPlaylist('p1');
+    store.select(1);
+    store.openPlaylistPicker();
+    expect(store.pickerOpen).toBe(true);
+    expect(store.pickerTrack?.track_id).toBe('v2');
+
+    store.selectPicker(1);
+    expect(await store.confirmPicker()).toBe(true);
+    expect(store.pickerOpen).toBe(false);
+    expect(api.addPlaylistTracks).toHaveBeenCalledWith('p2', 'youtube', ['v2']);
+    store.dispose();
+  });
+
+  it('closes new overlays with Escape, innermost first', async () => {
+    const { store } = setup();
+    await store.init();
+    await store.openPlaylist('p1');
+    store.select(0);
+    store.openPlaylistPicker();
+    expect(store.pickerOpen).toBe(true);
+
+    store.closeOverlays();
+    expect(store.pickerOpen).toBe(false);
+
+    store.openCreatePlaylist();
+    store.closeOverlays();
+    expect(store.createPlaylistOpen).toBe(false);
+
+    store.openRenamePlaylist();
+    store.closeOverlays();
+    expect(store.renamePlaylistOpen).toBe(false);
+    store.dispose();
+  });
 });

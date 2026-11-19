@@ -1,14 +1,13 @@
 <script lang="ts">
+  import { tick } from 'svelte';
   import type { AppStore } from '../store.svelte';
   import { coverUrl } from '../api';
   import TrackTable from './TrackTable.svelte';
 
   let { store }: { store: AppStore } = $props();
 
-  let creating = $state(false);
-  let newName = $state('');
-  let renaming = $state(false);
-  let renameName = $state('');
+  let createInput: HTMLInputElement | undefined = $state();
+  let renameInput: HTMLInputElement | undefined = $state();
   let confirmDelete = $state(false);
   let removal = $state<{ index: number; title: string } | null>(null);
   let addingFeed = $state(false);
@@ -21,26 +20,32 @@
   const currentTrack = $derived(store.currentTrack);
   const isPlaying = $derived(store.status?.playback.state === 'playing');
 
+  $effect(() => {
+    if (store.createPlaylistOpen) {
+      void tick().then(() => createInput?.focus());
+    }
+  });
+
+  $effect(() => {
+    if (store.renamePlaylistOpen) {
+      void tick().then(() => renameInput?.focus());
+    }
+  });
+
   async function create(): Promise<void> {
-    const value = newName.trim();
+    const value = store.createPlaylistName.trim();
     if (!value) return;
     if (await store.createPlaylist(value)) {
-      newName = '';
-      creating = false;
+      store.closeCreatePlaylist();
     }
   }
 
-  function startRename(): void {
-    renameName = name;
-    renaming = true;
-  }
-
   async function rename(): Promise<void> {
-    if (!playlistView) return;
-    const value = renameName.trim();
+    if (!playlistView || !store.renamePlaylistId) return;
+    const value = store.renamePlaylistName.trim();
     if (!value) return;
-    if (await store.renamePlaylist(playlistView.id, value)) {
-      renaming = false;
+    if (await store.renamePlaylist(store.renamePlaylistId, value)) {
+      store.closeRenamePlaylist();
     }
   }
 
@@ -131,7 +136,7 @@
           {/if}
           <button class="refresh" onclick={() => store.refreshRssFeeds()}>Refresh feeds</button>
         {/if}
-        {#if creating}
+        {#if store.createPlaylistOpen}
           <form
             class="inline-form"
             onsubmit={(event) => {
@@ -140,24 +145,20 @@
             }}
           >
             <input
-              bind:value={newName}
+              bind:this={createInput}
+              value={store.createPlaylistName}
+              oninput={(event) => (store.createPlaylistName = event.currentTarget.value)}
               placeholder="Playlist name"
               aria-label="New playlist name"
               maxlength="150"
             />
-            <button type="submit" class="accent" disabled={!newName.trim()}>Create</button>
-            <button
-              type="button"
-              onclick={() => {
-                creating = false;
-                newName = '';
-              }}
-            >
-              Cancel
+            <button type="submit" class="accent" disabled={!store.createPlaylistName.trim()}>
+              Create
             </button>
+            <button type="button" onclick={() => store.closeCreatePlaylist()}>Cancel</button>
           </form>
         {:else if store.canCreatePlaylist}
-          <button class="accent" onclick={() => (creating = true)}>New playlist</button>
+          <button class="accent" onclick={() => store.openCreatePlaylist()}>New playlist</button>
         {/if}
         <button class="refresh" onclick={() => store.loadPlaylists()}>Reload</button>
       </div>
@@ -256,7 +257,7 @@
       <div class="art large" aria-hidden="true">{name.slice(0, 1).toUpperCase()}</div>
       <div class="heading">
         <p class="eyebrow">Playlist</p>
-        {#if renaming}
+        {#if store.renamePlaylistOpen && store.renamePlaylistId === playlistView.id}
           <form
             class="inline-form"
             onsubmit={(event) => {
@@ -264,9 +265,17 @@
               void rename();
             }}
           >
-            <input bind:value={renameName} aria-label="Playlist name" maxlength="150" />
-            <button type="submit" class="accent" disabled={!renameName.trim()}>Save</button>
-            <button type="button" onclick={() => (renaming = false)}>Cancel</button>
+            <input
+              bind:this={renameInput}
+              value={store.renamePlaylistName}
+              oninput={(event) => (store.renamePlaylistName = event.currentTarget.value)}
+              aria-label="Playlist name"
+              maxlength="150"
+            />
+            <button type="submit" class="accent" disabled={!store.renamePlaylistName.trim()}>
+              Save
+            </button>
+            <button type="button" onclick={() => store.closeRenamePlaylist()}>Cancel</button>
           </form>
         {:else}
           <h1>{name}</h1>
@@ -296,7 +305,7 @@
           </button>
           {#if store.canEditPlaylist}
             <button onclick={() => store.openSearchForPlaylist(playlistView.id)}>Add tracks</button>
-            <button onclick={startRename}>Rename</button>
+            <button onclick={() => store.openRenamePlaylist()}>Rename</button>
             <button class="danger" onclick={() => (confirmDelete = true)}>Delete</button>
           {/if}
         {/if}

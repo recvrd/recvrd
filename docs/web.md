@@ -129,6 +129,19 @@ The app loads no network fonts and uses no CDN.
 | `g` `g` | First row |
 | `G` | Last row |
 | `Ctrl+D` / `Ctrl+U` | Half page down / up |
+| `Tab` | Move focus between the sidebar and the main view |
+| `1` / `2` | Show the library / queue |
+| `J` / `K` | Move the selected queue item |
+| `D` | Clear the queue after confirmation |
+| `n` / `r` | Create / rename a playlist |
+| `p` | Play the selected playlist |
+| `a` | Add the selected track to a playlist |
+| `t` | Retry the selected download |
+| `s` / `R` | Toggle shuffle / cycle repeat |
+| `o` | Switch the music provider |
+| `+` / `-` | Volume up / down |
+| `←` / `→` | Seek 5 seconds |
+| `Ctrl+←` / `Ctrl+→` | Previous / next track |
 | `/` or `Ctrl+K` | Open search |
 | `Enter` | Play the selected item |
 | `Space` | Play or pause |

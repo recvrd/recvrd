@@ -12,7 +12,7 @@ import type { RssFeed } from '@api/RssFeed';
 import type { SearchResults } from '@api/SearchResults';
 import type { Status } from '@api/Status';
 import type { Track } from '@api/Track';
-import { ApiError, createApi, describeError, formatBytes, type YtermusicdApi } from './api';
+import { ApiError, createApi, describeError, durationSeconds, formatBytes, type YtermusicdApi } from './api';
 import { EventStream, type ConnectionState, type EventSourceLike } from './sse';
 
 export type View =
@@ -25,6 +25,11 @@ export type ToastSeverity = 'info' | 'success' | 'warning' | 'error';
 export type PlayerLayout = 'compact' | 'terminal';
 
 export type SearchMode = 'normal' | 'add-to-playlist';
+
+/// Which pane the keyboard drives. `main` is the library/queue view,
+/// `sidebar` is the playlist list in the sidebar. Tab toggles it, and
+/// Esc returns focus to the main view.
+export type FocusPane = 'sidebar' | 'main';
 
 export const PLAYER_LAYOUT_KEY = 'ytermusicd.player-layout';
 export const PROVIDER_KEY = 'ytermusicd.provider';
@@ -138,6 +143,17 @@ export class AppStore {
   searchMode = $state<SearchMode>('normal');
   searchPlaylistId = $state<string | null>(null);
   helpOpen = $state(false);
+  focus = $state<FocusPane>('main');
+  sidebarSelection = $state(0);
+  confirmClearQueue = $state(false);
+  createPlaylistOpen = $state(false);
+  createPlaylistName = $state('');
+  renamePlaylistOpen = $state(false);
+  renamePlaylistId = $state<string | null>(null);
+  renamePlaylistName = $state('');
+  pickerOpen = $state(false);
+  pickerTrack = $state<Track | null>(null);
+  pickerSelection = $state(0);
   toasts = $state<Toast[]>([]);
   volume = $state(50);
   playerLayout = $state<PlayerLayout>('compact');
@@ -250,6 +266,14 @@ export class AppStore {
 
   get selectedTrack(): Track | null {
     return this.viewTracks[this.selection] ?? null;
+  }
+
+  /// The playlist the sidebar selection points at, clamped to the
+  /// filtered list so it stays valid when the filter changes.
+  get sidebarSelectedPlaylist(): Playlist | null {
+    const playlists = this.filteredPlaylists;
+    if (playlists.length === 0) return null;
+    return playlists[Math.max(0, Math.min(this.sidebarSelection, playlists.length - 1))];
   }
 
   get searchTargetName(): string | null {
@@ -558,6 +582,10 @@ export class AppStore {
   }
 
   select(index: number): void {
+    if (this.focus === 'sidebar') {
+      this.selectSidebar(index);
+      return;
+    }
     const count = this.selectionCount;
     if (count === 0) {
       this.selection = 0;
@@ -566,15 +594,40 @@ export class AppStore {
     this.selection = Math.max(0, Math.min(index, count - 1));
   }
 
+  selectSidebar(index: number): void {
+    const count = this.filteredPlaylists.length;
+    if (count === 0) {
+      this.sidebarSelection = 0;
+      return;
+    }
+    this.sidebarSelection = Math.max(0, Math.min(index, count - 1));
+  }
+
+  toggleFocus(): void {
+    this.focus = this.focus === 'sidebar' ? 'main' : 'sidebar';
+  }
+
   moveSelection(delta: number): void {
+    if (this.focus === 'sidebar') {
+      this.selectSidebar(this.sidebarSelection + delta);
+      return;
+    }
     this.select(this.selection + delta);
   }
 
   selectFirst(): void {
+    if (this.focus === 'sidebar') {
+      this.selectSidebar(0);
+      return;
+    }
     this.select(0);
   }
 
   selectLast(): void {
+    if (this.focus === 'sidebar') {
+      this.selectSidebar(this.filteredPlaylists.length - 1);
+      return;
+    }
     this.select(this.selectionCount - 1);
   }
 
@@ -583,12 +636,31 @@ export class AppStore {
   }
 
   async playSelected(): Promise<void> {
+    if (this.focus === 'sidebar') {
+      const playlist = this.sidebarSelectedPlaylist;
+      if (playlist) await this.openPlaylist(playlist.id, playlist.name);
+      return;
+    }
     if (this.view.kind === 'queue') {
       await this.playIndex(this.selection);
       return;
     }
     const track = this.selectedTrack;
     if (track) await this.playTrack(track);
+  }
+
+  /// Play the playlist the keyboard points at: the sidebar-selected
+  /// playlist when the sidebar has focus, otherwise the open playlist
+  /// view. Anywhere else there is no selected playlist, so this is a
+  /// no-op (the library cards have no keyboard selection).
+  async playSelectedPlaylist(): Promise<void> {
+    const id =
+      this.focus === 'sidebar'
+        ? this.sidebarSelectedPlaylist?.id
+        : this.view.kind === 'playlist'
+          ? this.view.id
+          : undefined;
+    if (id) await this.playPlaylist(id);
   }
 
   async playTrack(track: Track): Promise<void> {
@@ -717,6 +789,37 @@ export class AppStore {
     }
   }
 
+  async adjustVolume(delta: number): Promise<void> {
+    await this.setVolume(this.volume + delta);
+  }
+
+  /// Seek relative to the current position, clamped to [0, duration]
+  /// like the TUI. No-ops when nothing is playing. When the duration
+  /// is unknown (unparseable), only the lower bound applies.
+  async seekRelative(deltaSecs: number): Promise<void> {
+    const track = this.currentTrack;
+    if (!track) return;
+    const position = this.status?.playback.position_secs ?? 0;
+    const duration = durationSeconds(track.duration);
+    let target = position + deltaSecs;
+    if (duration > 0) target = Math.min(target, duration);
+    await this.seek(Math.max(0, target));
+  }
+
+  /// Cycle to the next provider, like the TUI. With one provider there
+  /// is nothing to switch to.
+  async cycleProvider(): Promise<void> {
+    if (this.providers.length < 2) {
+      this.notify('info', `${this.activeProviderName} is the only provider.`);
+      return;
+    }
+    const current = this.providers.findIndex(
+      (provider) => provider.id === this.activeProvider,
+    );
+    const next = this.providers[(current + 1) % this.providers.length];
+    await this.setProvider(next.id);
+  }
+
   async reorderQueue(from: number, to: number): Promise<void> {
     if (!this.queue) return;
     const previous = this.queue;
@@ -758,12 +861,36 @@ export class AppStore {
     const previous = this.queue;
     this.queue = { ...previous, items: [], current: null };
     this.selection = 0;
+    this.confirmClearQueue = false;
     try {
       this.queue = await this.api.queueClear();
     } catch (error) {
       this.queue = previous;
       this.report(error);
     }
+  }
+
+  /// Arm the clear-queue confirmation. Queue view only, like the TUI,
+  /// and only when there is something to clear.
+  requestClearQueue(): void {
+    if (this.view.kind !== 'queue') return;
+    if ((this.queue?.items.length ?? 0) === 0) return;
+    this.confirmClearQueue = true;
+  }
+
+  cancelClearQueue(): void {
+    this.confirmClearQueue = false;
+  }
+
+  /// Move the selected queue item, following the issue (queue only;
+  /// the TUI also moves playlist tracks, but the web keeps J/K to the
+  /// queue). The selection follows the moved item.
+  async moveSelectedQueueItem(delta: number): Promise<void> {
+    if (this.view.kind !== 'queue' || !this.queue) return;
+    const to = this.selection + delta;
+    if (to < 0 || to >= this.queue.items.length) return;
+    await this.reorderQueue(this.selection, to);
+    this.selection = to;
   }
 
   async retryDownload(track: Track): Promise<void> {
@@ -773,6 +900,92 @@ export class AppStore {
     } catch (error) {
       this.report(error);
     }
+  }
+
+  /// Retry the selected download. Queue-only, like the TUI: the retry
+  /// button only exists on queue items, and a selected library or
+  /// playlist track may not be in the queue at all.
+  async retrySelected(): Promise<void> {
+    if (this.view.kind !== 'queue') return;
+    const track = this.queue?.items[this.selection]?.track;
+    if (track) await this.retryDownload(track);
+  }
+
+  openCreatePlaylist(): void {
+    if (!this.canCreatePlaylist) return;
+    // The create form lives in the library header.
+    if (this.view.kind !== 'library') this.openLibrary();
+    this.createPlaylistName = '';
+    this.createPlaylistOpen = true;
+  }
+
+  closeCreatePlaylist(): void {
+    this.createPlaylistOpen = false;
+    this.createPlaylistName = '';
+  }
+
+  /// Open the rename form for the playlist the keyboard points at:
+  /// the open playlist view, or the sidebar-selected playlist (which
+  /// is opened first, since the form lives in the playlist header).
+  openRenamePlaylist(): void {
+    if (!this.canEditPlaylist) return;
+    const target =
+      this.view.kind === 'playlist' && this.playlist
+        ? { id: this.view.id, name: this.playlist.playlist.name }
+        : this.sidebarSelectedPlaylist
+          ? { id: this.sidebarSelectedPlaylist.id, name: this.sidebarSelectedPlaylist.name }
+          : null;
+    if (!target) return;
+    if (this.view.kind !== 'playlist' || this.view.id !== target.id) {
+      void this.openPlaylist(target.id, target.name);
+    }
+    this.renamePlaylistId = target.id;
+    this.renamePlaylistName = target.name;
+    this.renamePlaylistOpen = true;
+  }
+
+  closeRenamePlaylist(): void {
+    this.renamePlaylistOpen = false;
+    this.renamePlaylistId = null;
+    this.renamePlaylistName = '';
+  }
+
+  /// Open the playlist picker for the selected track, the web
+  /// equivalent of the TUI PickPlaylist overlay. No-ops with no
+  /// selected track (e.g. the library view) or with no playlists.
+  openPlaylistPicker(): void {
+    if (this.focus === 'sidebar') return;
+    const track = this.selectedTrack;
+    if (!track) return;
+    if (this.playlists.length === 0) {
+      this.notify('info', 'No playlists yet.');
+      return;
+    }
+    this.pickerTrack = track;
+    this.pickerSelection = 0;
+    this.pickerOpen = true;
+  }
+
+  closePlaylistPicker(): void {
+    this.pickerOpen = false;
+    this.pickerTrack = null;
+    this.pickerSelection = 0;
+  }
+
+  selectPicker(index: number): void {
+    if (this.playlists.length === 0) {
+      this.pickerSelection = 0;
+      return;
+    }
+    this.pickerSelection = Math.max(0, Math.min(index, this.playlists.length - 1));
+  }
+
+  async confirmPicker(): Promise<boolean> {
+    const track = this.pickerTrack;
+    const playlist = this.playlists[this.pickerSelection];
+    if (!track || !playlist) return false;
+    this.closePlaylistPicker();
+    return this.addPlaylistTracks(playlist.id, track.provider, [track.track_id]);
   }
 
   openSearch(): void {
@@ -873,7 +1086,29 @@ export class AppStore {
       this.searchOpen = false;
       return;
     }
-    if (this.helpOpen) this.helpOpen = false;
+    if (this.helpOpen) {
+      this.helpOpen = false;
+      return;
+    }
+    if (this.pickerOpen) {
+      this.closePlaylistPicker();
+      return;
+    }
+    if (this.createPlaylistOpen) {
+      this.closeCreatePlaylist();
+      return;
+    }
+    if (this.renamePlaylistOpen) {
+      this.closeRenamePlaylist();
+      return;
+    }
+    if (this.confirmClearQueue) {
+      this.confirmClearQueue = false;
+      return;
+    }
+    // Nothing open: Esc returns keyboard focus to the main view,
+    // like the TUI.
+    if (this.focus === 'sidebar') this.focus = 'main';
   }
 
   retryConnection(): void {
