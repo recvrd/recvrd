@@ -1,5 +1,50 @@
 # Changelog
 
+## 0.6.0 — 2026-11-19
+
+### Added
+
+- Add an RSS music provider. Add, refresh and remove feeds, and play episodes
+  from the library, the API, the web UI and MCP.
+- Add provider selection to the API, the web UI, `ytmc` and MCP. Requests can
+  name a provider, and each provider has its own caches.
+- Add a cache clean action to the API and the web UI.
+- Add 8 MCP tools for seek, shuffle, repeat, queue edits and download retry.
+- Render `ytmc` cover art with the Kitty, Sixel or iTerm2 protocol when the
+  terminal supports one. Keep Unicode half blocks as the fallback, and use
+  `--cover-mode halfblocks` or `YTMC_COVER_MODE` to force them.
+- Extend the web UI keymap with the `ytmc` bindings. Add view switching,
+  sidebar focus, queue edits, playlist actions, playback controls and
+  relative seek.
+- Send a named `heartbeat` event from the SSE endpoint, and recover the web UI
+  event stream after suspend.
+
+### Changed
+
+- Use provider-neutral track IDs. The API DTOs, the MCP tools and the caches
+  now carry a provider value and a track ID.
+- Rename the default branch to `main`.
+
+### Fixed
+
+- Reject invalid video IDs at the play and queue endpoints.
+- Reject seek positions that cannot become a `Duration`.
+- Kill `yt-dlp` when a download is cancelled, and require the MP4 file and the
+  sidecar before a track counts as downloaded.
+- Build InnerTube request bodies with `serde_json`, and encode query values.
+- Bound `ytpapi2` browse calls with a timeout and retries, and follow search
+  continuations when the caller allows them.
+- Keep the unshuffled queue order across a restart.
+- Write `db.bin` atomically, return typed errors, and quarantine suspect files
+  in `fix_db`.
+- Report the daemon volume to MPRIS clients, and wire the initial volume into
+  the sink and the service.
+- Drain async player errors in the audio thread, and stop the legacy MPRIS
+  callback from panicking.
+- Retry the `ytmc` cover fetch after a failed fetch.
+- Map daemon client errors to MCP invalid-params errors.
+- Warn on a non-loopback bind, and validate the bind value as an IP address.
+
 ## 0.5.0 — 2026-11-16
 
 ### Added
