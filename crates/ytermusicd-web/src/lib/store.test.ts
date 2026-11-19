@@ -80,6 +80,26 @@ describe('AppStore', () => {
     store.dispose();
   });
 
+  it('refreshes status and queue after the event stream reconnects', async () => {
+    const { api, store, sources } = setup();
+    await store.init();
+    expect(api.status).toHaveBeenCalledOnce();
+
+    sources[0].open();
+    expect(store.connection).toBe('online');
+
+    sources[0].fail();
+    // Backoff is the default 1000 ms; the stream has no jitter override
+    // here, so advancing past the maximum delay reconnects it.
+    vi.advanceTimersByTime(1000);
+    expect(sources).toHaveLength(2);
+    sources[1].open();
+
+    expect(api.status).toHaveBeenCalledTimes(2);
+    expect(api.queue).toHaveBeenCalledTimes(1);
+    store.dispose();
+  });
+
   it('loads providers and scopes the library to the default', async () => {
     const { api, store } = setup();
     await store.init();
