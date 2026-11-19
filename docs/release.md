@@ -4,7 +4,7 @@ The release version is `0.5.0`. The tag is `v0.5.0`.
 
 ## Before the tag
 
-1. Start from a clean `master` checkout.
+1. Start from a clean `main` checkout.
 2. Run the checks:
 
    ```sh

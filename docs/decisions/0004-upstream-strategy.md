@@ -36,7 +36,10 @@ git remote add upstream https://github.com/ccgauche/ytermusic.git
 git fetch upstream
 ```
 
-Sync through a dedicated branch and PR; do not rewrite `master`:
+The fork default branch is `main`. Upstream still uses `master`. Keep the
+`upstream/master` refs unchanged.
+
+Sync through a dedicated branch and PR; do not rewrite `main`:
 
 ```sh
 git fetch origin
@@ -48,14 +51,14 @@ nix develop
 just check
 just test
 git push -u origin HEAD
-gh pr create --base master
+gh pr create --base main
 ```
 
-Feature branches should be rebased onto the latest `master` before merging.
+Feature branches should be rebased onto the latest `main` before merging.
 Check upstream activity before syncing:
 
 ```sh
-git log --oneline --no-merges master..upstream/master
+git log --oneline --no-merges main..upstream/master
 gh pr list -R ccgauche/ytermusic --state open
 ```
 
