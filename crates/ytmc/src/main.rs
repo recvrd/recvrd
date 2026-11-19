@@ -21,6 +21,7 @@ use crossterm::terminal::{
 use futures_util::StreamExt;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
+use ratatui_image::picker::{Picker, ProtocolType};
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 use tokio::time::MissedTickBehavior;
 use ytermusicd_client::DaemonClient;
@@ -39,6 +40,20 @@ struct Cli {
     /// Daemon URL.
     #[arg(long, env = "YTERMUSICD_URL", default_value = ytermusicd_client::DEFAULT_URL)]
     url: String,
+    /// Cover art rendering: `auto` uses a terminal graphics protocol
+    /// when one is detected, `halfblocks` always uses half-block cells.
+    #[arg(long, env = "YTMC_COVER_MODE", default_value = "auto")]
+    cover_mode: CoverMode,
+}
+
+/// How cover art is rendered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum CoverMode {
+    /// Use a terminal graphics protocol when detected, half-blocks
+    /// otherwise.
+    Auto,
+    /// Always use the half-block renderer.
+    Halfblocks,
 }
 
 #[tokio::main]
@@ -58,13 +73,17 @@ async fn run(cli: Cli) -> io::Result<()> {
     tokio::spawn(daemon::run_events(client.clone(), event_tx.clone()));
     tokio::spawn(daemon::run_commands(client, command_rx, event_tx));
 
+    let mut terminal = setup_terminal()?;
+    let _guard = TerminalGuard;
+    // Detect graphics support after entering the alternate screen and
+    // before reading terminal events: the query writes escape
+    // sequences to stdout and reads the reply from stdin.
     let mut app = App::new(cli.url);
+    app.set_cover_picker(cover_picker(cli.cover_mode));
     for command in app.initial_commands() {
         let _ = command_tx.send(command);
     }
 
-    let mut terminal = setup_terminal()?;
-    let _guard = TerminalGuard;
     let mut input = EventStream::new();
     let mut tick = tokio::time::interval(Duration::from_millis(200));
     tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -99,6 +118,16 @@ async fn run(cli: Cli) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+fn cover_picker(mode: CoverMode) -> Option<Picker> {
+    if mode == CoverMode::Halfblocks {
+        return None;
+    }
+    match Picker::from_query_stdio() {
+        Ok(picker) if picker.protocol_type() != ProtocolType::Halfblocks => Some(picker),
+        _ => None,
+    }
 }
 
 fn setup_terminal() -> io::Result<Terminal<CrosstermBackend<io::Stdout>>> {
@@ -163,5 +192,13 @@ mod tests {
     fn parses_a_url() {
         let cli = Cli::try_parse_from(["ytmc", "--url", "http://localhost:9000"]).unwrap();
         assert_eq!(cli.url, "http://localhost:9000");
+    }
+
+    #[test]
+    fn parses_cover_mode() {
+        let cli = Cli::try_parse_from(["ytmc", "--cover-mode", "halfblocks"]).unwrap();
+        assert_eq!(cli.cover_mode, CoverMode::Halfblocks);
+        let cli = Cli::try_parse_from(["ytmc"]).unwrap();
+        assert_eq!(cli.cover_mode, CoverMode::Auto);
     }
 }

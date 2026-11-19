@@ -4,12 +4,14 @@ use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::widgets::{ListState, TableState};
+use ratatui_image::picker::{Picker, ProtocolType};
+use ratatui_image::protocol::StatefulProtocol;
 use ytermusicd_api::{
     AuthState, DownloadStatus, PlaybackState, Playlist, PlaylistDetail, ProviderId, ProviderInfo,
     Queue, RepeatMode, SearchResults, Status, Track, TrackKey,
 };
 
-use crate::cover::CoverArt;
+use crate::cover::{self, CoverArt};
 use crate::event::{Command, DaemonEvent, ToastLevel};
 use crate::mouse::{Hit, HitMap, Nav};
 
@@ -313,10 +315,20 @@ pub struct App {
     pub overlay: Option<Overlay>,
     /// Active toasts.
     pub toasts: Vec<Toast>,
-    /// Cover art for the current track.
+    /// Cover art for the current track, as half-block cells. Used when
+    /// no graphics protocol is available or half-blocks are forced.
     pub cover: Option<CoverArt>,
     /// Track key for the cover request.
     pub cover_for: Option<TrackKey>,
+    /// Detected terminal graphics support. `None` means half-blocks.
+    /// Set once at startup from `Picker::from_query_stdio`.
+    pub cover_picker: Option<Picker>,
+    /// Live graphics-protocol state for the current cover. Dropping it
+    /// (see `clear_cover`) stops the image being rendered, which is
+    /// what removes a Kitty placement once the placeholder cells are
+    /// redrawn; the image lives outside ratatui's buffer, so clearing
+    /// `cover` alone would leave it on screen.
+    pub cover_protocol: Option<StatefulProtocol>,
     /// Pending `g` or `d` key.
     pub pending_key: Option<(char, Instant)>,
     /// Last click.
@@ -356,11 +368,22 @@ impl App {
             toasts: Vec::new(),
             cover: None,
             cover_for: None,
+            cover_picker: None,
+            cover_protocol: None,
             pending_key: None,
             last_click: None,
             hitmap: HitMap::default(),
             quit: false,
         }
+    }
+
+    /// Set the detected terminal graphics support. Call once at
+    /// startup, after entering the alternate screen and before the
+    /// event loop. `None` (or a half-blocks picker) keeps the
+    /// half-block renderer.
+    pub fn set_cover_picker(&mut self, picker: Option<Picker>) {
+        self.cover_picker =
+            picker.filter(|picker| picker.protocol_type() != ProtocolType::Halfblocks);
     }
 
     /// Return the commands to run at startup.
@@ -479,7 +502,7 @@ impl App {
                 self.connection = Connection::Online;
                 self.connection_message = None;
                 let mut commands = vec![Command::RefreshPlaylists];
-                if self.cover.is_none() {
+                if self.cover.is_none() && self.cover_protocol.is_none() {
                     self.cover_for = None;
                     commands.extend(self.ensure_cover());
                 }
@@ -503,8 +526,7 @@ impl App {
                     status.playback = playback;
                 }
                 if previous != self.current_track_key() {
-                    self.cover = None;
-                    self.cover_for = None;
+                    self.clear_cover();
                 }
                 self.ensure_cover()
             }
@@ -610,11 +632,23 @@ impl App {
                 }
                 Vec::new()
             }
-            DaemonEvent::Cover { key, art } => {
+            DaemonEvent::Cover { key, image } => {
                 if self.cover_for.as_ref() == Some(&key) {
-                    self.cover = art;
-                    if self.cover.is_none() {
-                        self.cover_for = None;
+                    match image {
+                        Some(image) => {
+                            if let Some(picker) = &self.cover_picker {
+                                self.cover_protocol = Some(picker.new_resize_protocol(image));
+                                self.cover = None;
+                            } else {
+                                self.cover = Some(cover::render_image(&image, 10, 5));
+                                self.cover_protocol = None;
+                            }
+                        }
+                        None => {
+                            self.cover = None;
+                            self.cover_protocol = None;
+                            self.cover_for = None;
+                        }
                     }
                 }
                 Vec::new()
@@ -630,8 +664,7 @@ impl App {
         let previous = self.current_track_key();
         self.status = Some(status);
         if previous != self.current_track_key() {
-            self.cover = None;
-            self.cover_for = None;
+            self.clear_cover();
         }
         self.sync_selection();
         self.ensure_cover()
@@ -646,8 +679,7 @@ impl App {
             status.queue_length = len;
         }
         if previous != self.current_track_key() {
-            self.cover = None;
-            self.cover_for = None;
+            self.clear_cover();
         }
         self.sync_selection();
         self.ensure_cover()
@@ -675,6 +707,17 @@ impl App {
             }
         }
         self.sync_selection();
+    }
+
+    /// Drop the current cover art and its graphics-protocol state.
+    /// Dropping the protocol is what clears a Kitty/Sixel/iTerm2
+    /// image: the pixels live outside ratatui's buffer, so the next
+    /// frame redraws the placeholder cells over the image area and
+    /// the terminal removes the placement.
+    fn clear_cover(&mut self) {
+        self.cover = None;
+        self.cover_protocol = None;
+        self.cover_for = None;
     }
 
     fn ensure_cover(&mut self) -> Vec<Command> {
@@ -2064,7 +2107,7 @@ mod tests {
         });
         let commands = app.handle_daemon_event(DaemonEvent::Cover {
             key: TrackKey::youtube("v1"),
-            art: None,
+            image: None,
         });
         assert!(commands.is_empty());
         let playback = status().playback;
@@ -2072,6 +2115,98 @@ mod tests {
         assert!(
             matches!(commands.first(), Some(Command::LoadCover(key)) if key == &TrackKey::youtube("v1"))
         );
+    }
+
+    /// A picker that reports a graphics protocol, for tests.
+    /// `Picker::halfblocks` reports half-blocks, which
+    /// `set_cover_picker` stores as no picker.
+    fn graphics_picker() -> Picker {
+        let mut picker = Picker::halfblocks();
+        picker.set_protocol_type(ProtocolType::Kitty);
+        picker
+    }
+
+    fn cover_image() -> image::DynamicImage {
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(4, 4, image::Rgb([10, 20, 30])))
+    }
+
+    #[test]
+    fn cover_arrives_as_half_blocks_without_a_picker() {
+        let mut app = App::new("http://localhost");
+        app.handle_daemon_event(DaemonEvent::Snapshot {
+            status: status(),
+            queue: queue(),
+        });
+        app.handle_daemon_event(DaemonEvent::Cover {
+            key: TrackKey::youtube("v1"),
+            image: Some(cover_image()),
+        });
+        let art = app.cover.as_ref().unwrap();
+        assert_eq!((art.width, art.height), (10, 5));
+        assert!(app.cover_protocol.is_none());
+    }
+
+    #[test]
+    fn cover_arrives_as_a_graphics_protocol_with_a_picker() {
+        let mut app = App::new("http://localhost");
+        app.set_cover_picker(Some(graphics_picker()));
+        app.handle_daemon_event(DaemonEvent::Snapshot {
+            status: status(),
+            queue: queue(),
+        });
+        app.handle_daemon_event(DaemonEvent::Cover {
+            key: TrackKey::youtube("v1"),
+            image: Some(cover_image()),
+        });
+        assert!(app.cover_protocol.is_some());
+        assert!(app.cover.is_none());
+    }
+
+    #[test]
+    fn halfblocks_picker_keeps_half_block_cover() {
+        let mut app = App::new("http://localhost");
+        app.set_cover_picker(Some(Picker::halfblocks()));
+        assert!(app.cover_picker.is_none());
+    }
+
+    #[test]
+    fn track_change_drops_the_graphics_protocol() {
+        let mut app = App::new("http://localhost");
+        app.set_cover_picker(Some(graphics_picker()));
+        app.handle_daemon_event(DaemonEvent::Snapshot {
+            status: status(),
+            queue: queue(),
+        });
+        app.handle_daemon_event(DaemonEvent::Cover {
+            key: TrackKey::youtube("v1"),
+            image: Some(cover_image()),
+        });
+        assert!(app.cover_protocol.is_some());
+        let mut playback = status().playback;
+        playback.current = Some(track("v2"));
+        app.handle_daemon_event(DaemonEvent::Playback(playback));
+        assert!(app.cover_protocol.is_none());
+        assert!(app.cover.is_none());
+        assert_eq!(app.cover_for, Some(TrackKey::youtube("v2")));
+    }
+
+    #[test]
+    fn late_cover_for_a_previous_track_is_discarded() {
+        let mut app = App::new("http://localhost");
+        app.set_cover_picker(Some(graphics_picker()));
+        app.handle_daemon_event(DaemonEvent::Snapshot {
+            status: status(),
+            queue: queue(),
+        });
+        let mut playback = status().playback;
+        playback.current = Some(track("v2"));
+        app.handle_daemon_event(DaemonEvent::Playback(playback));
+        app.handle_daemon_event(DaemonEvent::Cover {
+            key: TrackKey::youtube("v1"),
+            image: Some(cover_image()),
+        });
+        assert!(app.cover_protocol.is_none());
+        assert!(app.cover.is_none());
     }
 
     #[test]

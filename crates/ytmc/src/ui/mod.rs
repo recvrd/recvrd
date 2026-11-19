@@ -129,7 +129,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
 fn render_frame(
     frame: &mut Frame,
-    app: &App,
+    app: &mut App,
     library_state: &mut TableState,
     playlist_state: &mut TableState,
     queue_state: &mut ListState,

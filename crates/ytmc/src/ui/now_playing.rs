@@ -5,6 +5,7 @@ use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, LineGauge, Paragraph};
+use ratatui_image::StatefulImage;
 
 use crate::app::App;
 use crate::cover::CoverArt;
@@ -15,7 +16,7 @@ use crate::ui::{
 };
 
 /// Render the now-playing bar.
-pub fn render(frame: &mut Frame, area: Rect, app: &App, hitmap: &mut HitMap) {
+pub fn render(frame: &mut Frame, area: Rect, app: &mut App, hitmap: &mut HitMap) {
     let block = Block::default()
         .borders(Borders::TOP)
         .border_style(Style::default().fg(BORDER))
@@ -42,19 +43,28 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App, hitmap: &mut HitMap) {
         .split(inner)
     };
     if has_cover {
-        render_cover_area(frame, chunks[0], app);
+        render_cover_area(frame, chunks[0], &mut *app);
     }
     render_info(frame, chunks[1], app, hitmap);
     render_controls(frame, chunks[2], app, hitmap);
 }
 
-fn render_cover_area(frame: &mut Frame, area: Rect, app: &App) {
-    let current = app.current_track();
-    if let (Some(track), Some(art)) = (current, app.cover.as_ref())
-        && app.cover_for.as_ref() == Some(&track.key())
+fn render_cover_area(frame: &mut Frame, area: Rect, app: &mut App) {
+    let key = app.current_track().map(|track| track.key());
+    if let Some(key) = key
+        && app.cover_for.as_ref() == Some(&key)
     {
-        render_cover(frame, area, art);
-        return;
+        // The graphics image is drawn with terminal escape sequences
+        // into this area only; no other widget writes here, so nothing
+        // draws over the image.
+        if let Some(protocol) = app.cover_protocol.as_mut() {
+            frame.render_stateful_widget(StatefulImage::default(), area, protocol);
+            return;
+        }
+        if let Some(art) = app.cover.as_ref() {
+            render_cover(frame, area, art);
+            return;
+        }
     }
     let block = Block::default()
         .borders(Borders::ALL)

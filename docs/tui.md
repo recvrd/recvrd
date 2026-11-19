@@ -107,9 +107,16 @@ Keyboard actions remain available.
 
 ## Cover art
 
-The client renders cover art with Unicode half blocks. The color is correct on
-a truecolor terminal. The client does not use kitty, sixel or iTerm2 graphics
-protocols yet.
+The client detects terminal graphics support at startup. It uses the Kitty,
+Sixel or iTerm2 protocol when the terminal reports one. It falls back to
+Unicode half blocks when detection fails or finds no protocol. Half blocks need
+a truecolor terminal for correct colors.
+
+The detection query can add a short delay at startup on a terminal that does
+not answer it.
+
+Use `--cover-mode halfblocks` or `YTMC_COVER_MODE=halfblocks` to force the
+half-block renderer.
 
 ## Limits
 
