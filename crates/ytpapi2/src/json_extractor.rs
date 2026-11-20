@@ -183,9 +183,7 @@ fn is_year(run: &str) -> bool {
 /// A track count is a number followed by "songs", such as "12 songs".
 fn is_track_count(run: &str) -> bool {
     run.split_once(' ').is_some_and(|(count, rest)| {
-        !count.is_empty()
-            && count.chars().all(|c| c.is_ascii_digit())
-            && rest.starts_with("song")
+        !count.is_empty() && count.chars().all(|c| c.is_ascii_digit()) && rest.starts_with("song")
     })
 }
 
