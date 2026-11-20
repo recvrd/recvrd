@@ -238,7 +238,7 @@ fn provider_failure<S: AudioSink + Send + 'static>(
     error: String,
 ) -> ApiFailure {
     let live = state.music.auth_status(provider);
-    let auth = live.clone().unwrap_or_else(|| api_auth(&state.auth));
+    let auth = provider_auth(state, provider);
     // A live provider state needs the matching error message. A
     // transient failure while the state is Expired stays a 502. If
     // the provider has no live state, the headers state is the only
@@ -256,15 +256,22 @@ fn provider_failure<S: AudioSink + Send + 'static>(
 }
 
 /// Report the auth state for one provider. A live provider state wins
-/// over the state of the headers file.
+/// over the state of the headers file. RSS needs no auth.
 fn provider_auth<S: AudioSink + Send + 'static>(
     state: &AppState<S>,
     provider: ProviderId,
 ) -> ApiAuthStatus {
-    state
-        .music
-        .auth_status(provider)
-        .unwrap_or_else(|| api_auth(&state.auth))
+    match provider {
+        ProviderId::Rss => ApiAuthStatus {
+            state: AuthState::Ok,
+            source: None,
+            message: None,
+        },
+        ProviderId::Youtube => state
+            .music
+            .auth_status(provider)
+            .unwrap_or_else(|| api_auth(&state.auth)),
+    }
 }
 
 /// Describe every provider the daemon knows, with its capabilities
@@ -277,15 +284,7 @@ async fn providers<S: AudioSink + Send + 'static>(
         ProviderId::all()
             .iter()
             .map(|provider| {
-                let auth = match provider {
-                    // RSS needs no auth. It fetches public feeds.
-                    ProviderId::Rss => ApiAuthStatus {
-                        state: AuthState::Ok,
-                        source: None,
-                        message: None,
-                    },
-                    ProviderId::Youtube => provider_auth(&state, *provider),
-                };
+                let auth = provider_auth(&state, *provider);
                 ProviderInfo::new(*provider, auth)
             })
             .collect(),
@@ -2804,6 +2803,33 @@ mod tests {
             start_server(test_state_with(Arc::new(crate::music::UnavailableMusicApi))).await;
         let response = reqwest::Client::new()
             .get(format!("{base}/api/playlists"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::BAD_GATEWAY);
+        let body: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(body["error"]["code"], "upstream_error");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn rss_failure_with_an_expired_youtube_file_returns_502() {
+        // An expired YouTube file must not turn an RSS failure into
+        // an auth error. RSS needs no auth.
+        let artwork = Arc::new(ArtworkCache::with_fetcher(
+            std::env::temp_dir().join("ytermusicd-test-covers"),
+            0,
+            Arc::new(FakeCovers::new()),
+        ));
+        let state = test_state_with_auth(
+            AuthStatus::expired("/tmp/headers.txt", AUTH_EXPIRED_MESSAGE),
+            Arc::new(FailingMusicApi),
+            Arc::new(MockDownloads::default()),
+            artwork,
+        );
+        let (base, server) = start_server(state).await;
+        let response = reqwest::Client::new()
+            .get(format!("{base}/api/playlists?provider=rss"))
             .send()
             .await
             .unwrap();
