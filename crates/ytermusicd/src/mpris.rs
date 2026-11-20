@@ -152,6 +152,8 @@ fn update_controls(
     if let Err(error) = controls.set_playback(playback) {
         log::warn!("MPRIS playback update failed: {error:?}");
     }
+    // MPRIS is Linux-only. The other souvlaki backends do not set the volume.
+    #[cfg(target_os = "linux")]
     if let Err(error) = controls.set_volume(volume_fraction(snapshot.volume)) {
         log::warn!("MPRIS volume update failed: {error:?}");
     }
@@ -191,6 +193,7 @@ pub fn media_playback(snapshot: &PlaybackSnapshot) -> MediaPlayback {
 }
 
 /// Convert a 0-100 volume value to the MPRIS 0.0-1.0 range.
+#[cfg(target_os = "linux")]
 fn volume_fraction(volume: u8) -> f64 {
     volume as f64 / 100.0
 }
@@ -323,6 +326,7 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn volume_conversion_maps_percent_to_fraction() {
         assert_eq!(volume_fraction(0), 0.0);
