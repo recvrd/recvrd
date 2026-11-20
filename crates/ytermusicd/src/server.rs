@@ -231,7 +231,9 @@ async fn playlists<S: AudioSink + Send + 'static>(
 /// Map a provider read error. An expired session is a 401; every other
 /// provider error is a 502. A live provider state needs the matching
 /// error message, so a network failure while the state is Expired stays
-/// a 502. With no live state, an expired headers file owns the failure.
+/// a 502. The no-live-state rule below is YouTube only: with no live
+/// YouTube client, an expired headers file owns the failure. RSS has
+/// no auth state, so its failures stay 502.
 fn provider_failure<S: AudioSink + Send + 'static>(
     state: &AppState<S>,
     provider: ProviderId,
@@ -241,8 +243,10 @@ fn provider_failure<S: AudioSink + Send + 'static>(
     let auth = provider_auth(state, provider);
     // A live provider state needs the matching error message. A
     // transient failure while the state is Expired stays a 502. If
-    // the provider has no live state, the headers state is the only
-    // signal. An expired file then owns the failure.
+    // the YouTube provider has no live state, the headers state is
+    // the only signal. An expired file then owns the failure, and
+    // the 401 names the session even when the failure was a network
+    // failure. RSS never reaches this branch: its auth state is Ok.
     let expired = auth.state == AuthState::Expired
         && (live.is_none() || error.contains(AUTH_EXPIRED_MESSAGE));
     if expired {

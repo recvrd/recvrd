@@ -44,6 +44,19 @@ local API has no authentication. Search and playback still work with an
 expired session. Library reads and playlist edits fail until you refresh
 `headers.txt` and restart the daemon.
 
+When the YouTube client is unavailable, the daemon has no live auth state.
+The headers file state then owns the failure: an expired file returns 401
+`auth_expired`, and a valid file returns 502. The 401 names the session
+even when the failure was a network failure, because the daemon cannot
+tell the two apart without a client. RSS has no auth state, so RSS
+failures always return 502.
+
+A public playlist still loads and plays without a session. The daemon
+reports an expired session only for an empty signed-out response that
+asks the user to sign in or has no playlist shelf. A session that
+expires during pagination ends the load with 401 `auth_expired`
+instead of a cut list.
+
 `GET /api/status` itself returns 200 with an `auth.state` of `ok`, `missing`,
 `invalid` or `expired`, so clients can render an actionable auth message.
 
