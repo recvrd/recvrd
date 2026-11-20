@@ -169,7 +169,7 @@ fn consume_continuation(remaining: &mut usize) -> bool {
 /// last field (terminated by `}`).
 fn parse_logged_in_flag(homepage: &str) -> Option<bool> {
     let rest = homepage.after("\"LOGGED_IN\":")?;
-    let value = rest.split(|c| c == ',' || c == '}').next()?.trim();
+    let value = rest.split([',', '}']).next()?.trim();
     match value {
         "true" => Some(true),
         "false" => Some(false),
@@ -1481,9 +1481,7 @@ mod browse_tests {
         )
     }
 
-    async fn library_response(
-        logged_in: Option<&str>,
-    ) -> Result<Vec<YoutubeMusicPlaylistRef>> {
+    async fn library_response(logged_in: Option<&str>) -> Result<Vec<YoutubeMusicPlaylistRef>> {
         mock_browse_instance(logged_in)
             .await
             .get_library(&Endpoint::MusicLibraryLanding, 0)
@@ -1534,8 +1532,7 @@ mod browse_tests {
                 let Ok((mut socket, _)) = listener.accept().await else {
                     return;
                 };
-                let request =
-                    super::search_pagination_tests::read_request(&mut socket).await;
+                let request = super::search_pagination_tests::read_request(&mut socket).await;
                 // The continuation fetch carries the token in the URL.
                 let signed_out = request.contains("continuation=token1");
                 let body = if signed_out {

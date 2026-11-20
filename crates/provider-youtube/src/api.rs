@@ -493,9 +493,7 @@ mod tests {
     async fn mock_server(body: serde_json::Value) -> String {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let body = body.to_string();
         tokio::spawn(async move {
@@ -516,12 +514,9 @@ mod tests {
                         break;
                     }
                     buffer.extend_from_slice(&chunk[..count]);
-                    if let Some(position) =
-                        buffer.windows(4).position(|w| w == b"\r\n\r\n")
-                    {
+                    if let Some(position) = buffer.windows(4).position(|w| w == b"\r\n\r\n") {
                         let header_end = position + 4;
-                        let headers =
-                            String::from_utf8_lossy(&buffer[..header_end]).to_string();
+                        let headers = String::from_utf8_lossy(&buffer[..header_end]).to_string();
                         let length = headers
                             .lines()
                             .find_map(|line| {
@@ -646,9 +641,7 @@ mod tests {
 
     #[test]
     fn reread_errors_keep_the_auth_code() {
-        let expired = playlist_read_error(format!(
-            "load playlist failed: {AUTH_EXPIRED_MESSAGE}"
-        ));
+        let expired = playlist_read_error(format!("load playlist failed: {AUTH_EXPIRED_MESSAGE}"));
         match expired {
             PlaylistEditError::AuthExpired(message) => {
                 assert!(message.contains("restart the daemon"), "{message}");
