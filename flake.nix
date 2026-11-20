@@ -22,7 +22,7 @@
           pname = "ytermusicd-web";
           version = (builtins.fromJSON (builtins.readFile ./crates/ytermusicd-web/package.json)).version;
           src = ./crates/ytermusicd-web;
-          npmDepsHash = "sha256-xDXhUgYlK0f4ReBzsC2tB73KqQEFdWLiItQPvGm9ZGo=";
+          npmDepsHash = "sha256-BjBDWfJFXREfBvPhWtrpC5jxB17NgGTLtaWdCCL31b8=";
           buildPhase = "npm run build";
           installPhase = "cp -r dist $out";
         };
