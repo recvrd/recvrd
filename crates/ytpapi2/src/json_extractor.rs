@@ -148,6 +148,22 @@ pub fn extract_playlist_info(value: &Value) -> Option<(String, String)> {
     Some((title, subtitles.get(1)?.clone()))
 }
 
+/// Read the playlist header: the title and the second subtitle run.
+/// A missing header means the page is not a playlist page.
+pub fn playlist_header_info(value: &Value) -> Option<(String, String)> {
+    let header = value.get("header")?.get("musicDetailHeaderRenderer")?;
+    let title = get_text(header.get("title")?, false, false)?;
+    let subtitles: Vec<String> = header
+        .get("subtitle")?
+        .get("runs")?
+        .as_array()?
+        .iter()
+        .flat_map(|run| get_text(run, false, false))
+        .filter(|run| run != " • ")
+        .collect();
+    Some((title, subtitles.into_iter().nth(1).unwrap_or_default()))
+}
+
 pub fn get_video_from_album(value: &Value) -> Option<YoutubeMusicVideoRef> {
     let video_id = value
         .get("playlistItemData")
@@ -341,6 +357,25 @@ mod tests {
         assert_eq!(playlist.name, "My Playlist");
         assert_eq!(playlist.subtitle, "Artist");
         assert_eq!(playlist.browse_id, "VLPL123");
+    }
+
+    #[test]
+    fn extracts_playlist_header_info() {
+        let value = json!({
+            "header": {"musicDetailHeaderRenderer": {
+                "title": {"runs": [{"text": "My Mix"}]},
+                "subtitle": {"runs": [
+                    {"text": "Playlist"},
+                    {"text": " • "},
+                    {"text": "12 songs"}
+                ]}
+            }}
+        });
+        assert_eq!(
+            playlist_header_info(&value),
+            Some(("My Mix".to_string(), "12 songs".to_string()))
+        );
+        assert_eq!(playlist_header_info(&json!({"contents": {}})), None);
     }
 
     #[test]

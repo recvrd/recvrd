@@ -9,8 +9,8 @@ use std::{
 use async_trait::async_trait;
 use common_structs::ProviderId;
 use ytermusicd_api::{
-    AuthState, AuthStatus, CreatePlaylistRequest, MusicApi, Playlist, PlaylistEditError,
-    PlaylistPrivacy, SearchResults, Track, UpdatePlaylistRequest,
+    AuthState, AuthStatus, CreatePlaylistRequest, MusicApi, Playlist, PlaylistDetail,
+    PlaylistEditError, PlaylistPrivacy, SearchResults, Track, UpdatePlaylistRequest,
 };
 use ytpapi2::{
     COOKIE, Endpoint, HeaderMap, HeaderValue, PlaylistPrivacy as UpstreamPrivacy, USER_AGENT,
@@ -162,6 +162,47 @@ impl MusicApi for YoutubeMusicApi {
                 YoutubeMusicError::AuthExpired(_) => self.auth_failure("load playlist"),
                 other => format!("failed to load playlist {id}: {other:?}"),
             })
+    }
+
+    async fn playlist_detail(
+        &self,
+        provider: ProviderId,
+        id: &str,
+    ) -> Result<PlaylistDetail, String> {
+        // Read the playlist direct, not through the library. A
+        // public playlist plays without a session, and the library
+        // load would reject it as expired.
+        check_provider(provider)?;
+        let (info, tracks) = self
+            .client
+            .get_playlist_with_info(id, 5)
+            .await
+            .map_err(|error| match error {
+                YoutubeMusicError::AuthExpired(_) => self.auth_failure("load playlist"),
+                other => format!("failed to load playlist {id}: {other:?}"),
+            })?;
+        // A page with no header and no tracks is not a playlist.
+        let Some((name, subtitle)) = info else {
+            if tracks.is_empty() {
+                return Err(format!("playlist {id} not found"));
+            }
+            return Ok(PlaylistDetail {
+                playlist: Playlist {
+                    id: id.to_string(),
+                    name: id.to_string(),
+                    subtitle: String::new(),
+                },
+                tracks: tracks.into_iter().map(track_dto).collect(),
+            });
+        };
+        Ok(PlaylistDetail {
+            playlist: Playlist {
+                id: id.to_string(),
+                name,
+                subtitle,
+            },
+            tracks: tracks.into_iter().map(track_dto).collect(),
+        })
     }
 
     async fn search(&self, provider: ProviderId, query: &str) -> Result<SearchResults, String> {
@@ -618,6 +659,176 @@ mod tests {
             .playlist(ProviderId::Youtube, "VL1")
             .await
             .expect_err("signed-out playlist must fail");
+        assert!(error.contains("restart the daemon"), "{error}");
+        assert_eq!(auth_state(&api), AuthState::Expired);
+    }
+
+    /// Build one playlist page with a detail header, `videos`
+    /// tracks, and an optional continuation token.
+    fn playlist_detail_body() -> serde_json::Value {
+        serde_json::json!({
+            "responseContext": {"serviceTrackingParams": [{
+                "service": "GFEEDBACK",
+                "params": [{"key": "logged_in", "value": "1"}]
+            }]},
+            "header": {"musicDetailHeaderRenderer": {
+                "title": {"runs": [{"text": "My Mix"}]},
+                "subtitle": {"runs": [
+                    {"text": "Playlist"},
+                    {"text": " • "},
+                    {"text": "12 songs"}
+                ]}
+            }},
+            "contents": {"musicPlaylistShelfRenderer": {"contents": [{
+                "playlistItemData": {"videoId": "vid1"},
+                "flexColumns": [{
+                    "musicResponsiveListItemFlexColumnRenderer": {
+                        "text": {"runs": [{"text": "Public Track"}]}
+                    }
+                }]
+            }]}}
+        })
+    }
+
+    #[tokio::test]
+    async fn playlist_detail_reads_the_header_direct() {
+        let base = mock_server(playlist_detail_body()).await;
+        let api = api_with(&base, Some(true));
+        let detail = api
+            .playlist_detail(ProviderId::Youtube, "VL1")
+            .await
+            .unwrap();
+        assert_eq!(detail.playlist.id, "VL1");
+        assert_eq!(detail.playlist.name, "My Mix");
+        assert_eq!(detail.playlist.subtitle, "12 songs");
+        assert_eq!(detail.tracks.len(), 1);
+        assert_eq!(detail.tracks[0].track_id, "vid1");
+    }
+
+    #[tokio::test]
+    async fn playlist_detail_propagates_auth_expired() {
+        let base = mock_server(library_body("0")).await;
+        let api = api_with(&base, Some(true));
+        let error = api
+            .playlist_detail(ProviderId::Youtube, "VL1")
+            .await
+            .expect_err("signed-out playlist detail must fail");
+        assert!(error.contains("restart the daemon"), "{error}");
+        assert_eq!(auth_state(&api), AuthState::Expired);
+    }
+
+    #[tokio::test]
+    async fn playlist_detail_without_a_header_or_tracks_is_not_found() {
+        let base = mock_server(library_body("1")).await;
+        let api = api_with(&base, Some(true));
+        let error = api
+            .playlist_detail(ProviderId::Youtube, "VL1")
+            .await
+            .expect_err("unknown playlist must fail");
+        assert_eq!(error, "playlist VL1 not found");
+    }
+
+    /// Serve one browse response per request, in order.
+    async fn mock_server_with_pages(pages: Vec<serde_json::Value>) -> String {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let pages = Arc::new(pages);
+        let index = Arc::new(AtomicUsize::new(0));
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
+                let mut buffer = Vec::new();
+                let mut chunk = [0u8; 1024];
+                loop {
+                    let count = match socket.read(&mut chunk).await {
+                        Ok(count) => count,
+                        Err(_) => return,
+                    };
+                    if count == 0 {
+                        break;
+                    }
+                    buffer.extend_from_slice(&chunk[..count]);
+                    if let Some(position) = buffer.windows(4).position(|w| w == b"\r\n\r\n") {
+                        let header_end = position + 4;
+                        let headers = String::from_utf8_lossy(&buffer[..header_end]).to_string();
+                        let length = headers
+                            .lines()
+                            .find_map(|line| {
+                                let (name, value) = line.split_once(':')?;
+                                name.eq_ignore_ascii_case("content-length")
+                                    .then(|| value.trim().parse::<usize>().ok())
+                                    .flatten()
+                            })
+                            .unwrap_or(0);
+                        if buffer.len() >= header_end + length {
+                            break;
+                        }
+                    }
+                }
+                let at = index.fetch_add(1, Ordering::SeqCst).min(pages.len() - 1);
+                let body = pages[at].to_string();
+                let reply = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                if socket.write_all(reply.as_bytes()).await.is_err() {
+                    return;
+                }
+            }
+        });
+        format!("http://{address}")
+    }
+
+    #[tokio::test]
+    async fn playlist_mid_pagination_expiry_marks_the_state_expired() {
+        // The first page has tracks, the next page is an empty auth
+        // page. The load must fail, and the state must flip.
+        let first = serde_json::json!({
+            "responseContext": {"serviceTrackingParams": [{
+                "service": "GFEEDBACK",
+                "params": [{"key": "logged_in", "value": "0"}]
+            }]},
+            "contents": {"musicPlaylistShelfRenderer": {"contents": [{
+                "playlistItemData": {"videoId": "vid1"},
+                "flexColumns": [{
+                    "musicResponsiveListItemFlexColumnRenderer": {
+                        "text": {"runs": [{"text": "Public Track"}]}
+                    }
+                }]
+            }]}},
+            "nextContinuationData": {
+                "continuation": "token1",
+                "clickTrackingParams": "tracking"
+            }
+        });
+        let auth_page = serde_json::json!({
+            "responseContext": {"serviceTrackingParams": [{
+                "service": "GFEEDBACK",
+                "params": [{"key": "logged_in", "value": "0"}]
+            }]},
+            "contents": {
+                "messageRenderer": {
+                    "text": {"runs": [{"text": "Sign in to access tracks that you liked or saved"}]},
+                    "command": {"signInEndpoint": {}}
+                }
+            }
+        });
+        let base = mock_server_with_pages(vec![first, auth_page]).await;
+        let api = api_with(&base, Some(true));
+        assert_eq!(auth_state(&api), AuthState::Ok);
+        let error = api
+            .playlist(ProviderId::Youtube, "VL1")
+            .await
+            .expect_err("mid-pagination expiry must fail");
         assert!(error.contains("restart the daemon"), "{error}");
         assert_eq!(auth_state(&api), AuthState::Expired);
     }

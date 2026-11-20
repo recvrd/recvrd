@@ -375,20 +375,17 @@ async fn playlist<S: AudioSink + Send + 'static>(
     Query(query): Query<ProviderQuery>,
 ) -> Result<Json<PlaylistDetail>, ApiFailure> {
     let provider = parse_provider(query.provider)?;
-    let playlist = state
-        .music
-        .playlists(provider)
-        .await
-        .map_err(|error| provider_failure(&state, provider, error))?
-        .into_iter()
-        .find(|playlist| playlist.id == id)
-        .ok_or_else(|| ApiFailure::not_found(format!("playlist {id} not found")))?;
-    let tracks = state
-        .music
-        .playlist(provider, &id)
-        .await
-        .map_err(|error| provider_failure(&state, provider, error))?;
-    Ok(Json(PlaylistDetail { playlist, tracks }))
+    // Load the playlist direct, not through the library. A public
+    // playlist has tracks without a session, and the library load
+    // would reject it as expired.
+    let detail = match state.music.playlist_detail(provider, &id).await {
+        Ok(detail) => detail,
+        Err(error) if error == format!("playlist {id} not found") => {
+            return Err(ApiFailure::not_found(error));
+        }
+        Err(error) => return Err(provider_failure(&state, provider, error)),
+    };
+    Ok(Json(detail))
 }
 
 async fn create_playlist<S: AudioSink + Send + 'static>(
@@ -1376,6 +1373,7 @@ mod tests {
         auth: Option<ApiAuthStatus>,
         fail_playlists: Option<String>,
         fail_playlist: Option<String>,
+        playlist_detail: Option<Result<PlaylistDetail, String>>,
     }
 
     fn track(id: &str) -> Track {
@@ -1411,6 +1409,24 @@ mod tests {
                 return Err(error.clone());
             }
             Ok(vec![track("v1"), track("v2")])
+        }
+
+        async fn playlist_detail(
+            &self,
+            provider: ProviderId,
+            id: &str,
+        ) -> Result<PlaylistDetail, String> {
+            if let Some(detail) = &self.playlist_detail {
+                return detail.clone();
+            }
+            let playlist = self
+                .playlists(provider)
+                .await?
+                .into_iter()
+                .find(|playlist| playlist.id == id)
+                .ok_or_else(|| format!("playlist {id} not found"))?;
+            let tracks = self.playlist(provider, id).await?;
+            Ok(PlaylistDetail { playlist, tracks })
         }
 
         async fn search(
@@ -2755,6 +2771,94 @@ mod tests {
         let status: Status = response.json().await.unwrap();
         assert_eq!(status.auth.state, AuthState::Expired);
         assert_eq!(status.queue_length, 2);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn playlist_detail_loads_direct_without_the_library() {
+        // The detail route reads the playlist direct. The library
+        // load fails here, so a route that used it would return 401.
+        let music = Arc::new(MockMusicApi {
+            auth: Some(expired_auth()),
+            fail_playlists: Some(format!("load playlists failed: {AUTH_EXPIRED_MESSAGE}")),
+            playlist_detail: Some(Ok(PlaylistDetail {
+                playlist: Playlist {
+                    id: "p1".to_string(),
+                    name: "Playlist One".to_string(),
+                    subtitle: "Artist".to_string(),
+                },
+                tracks: vec![track("v1"), track("v2")],
+            })),
+            ..Default::default()
+        });
+        let (base, server) = start_server(test_state_with(music)).await;
+        let response = reqwest::Client::new()
+            .get(format!("{base}/api/playlists/p1"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let detail: PlaylistDetail = response.json().await.unwrap();
+        assert_eq!(detail.playlist.name, "Playlist One");
+        assert_eq!(detail.tracks.len(), 2);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn rss_playlist_detail_with_an_expired_youtube_file_returns_502() {
+        // An expired YouTube file must not turn an RSS failure into
+        // an auth error. RSS needs no auth.
+        let artwork = Arc::new(ArtworkCache::with_fetcher(
+            std::env::temp_dir().join("ytermusicd-test-covers"),
+            0,
+            Arc::new(FakeCovers::new()),
+        ));
+        let state = test_state_with_auth(
+            AuthStatus::expired("/tmp/headers.txt", AUTH_EXPIRED_MESSAGE),
+            Arc::new(FailingMusicApi),
+            Arc::new(MockDownloads::default()),
+            artwork,
+        );
+        let (base, server) = start_server(state).await;
+        let response = reqwest::Client::new()
+            .get(format!("{base}/api/playlists/p1?provider=rss"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::BAD_GATEWAY);
+        let body: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(body["error"]["code"], "upstream_error");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn rss_play_playlist_with_an_expired_youtube_file_returns_502() {
+        // The play route uses the same provider check as the detail
+        // route. An RSS failure stays a 502.
+        let artwork = Arc::new(ArtworkCache::with_fetcher(
+            std::env::temp_dir().join("ytermusicd-test-covers"),
+            0,
+            Arc::new(FakeCovers::new()),
+        ));
+        let state = test_state_with_auth(
+            AuthStatus::expired("/tmp/headers.txt", AUTH_EXPIRED_MESSAGE),
+            Arc::new(FailingMusicApi),
+            Arc::new(MockDownloads::default()),
+            artwork,
+        );
+        let (base, server) = start_server(state).await;
+        let response = reqwest::Client::new()
+            .post(format!("{base}/api/play/playlist"))
+            .json(&PlayPlaylistRequest {
+                playlist_id: "p1".to_string(),
+                provider: ProviderId::Rss,
+            })
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::BAD_GATEWAY);
+        let body: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(body["error"]["code"], "upstream_error");
         server.abort();
     }
 

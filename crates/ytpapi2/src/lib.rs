@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 use json_extractor::{
     Continuation, extract_playlist_info, from_json, get_continuation, get_playlist,
-    get_playlist_search, get_video, get_video_from_album,
+    get_playlist_search, get_video, get_video_from_album, playlist_header_info,
 };
 use log::{debug, error, trace};
 pub use reqwest::header::HeaderMap;
@@ -582,8 +582,21 @@ impl YoutubeMusicInstance {
     pub async fn get_playlist_raw(
         &self,
         playlist_id: &str,
-        mut n_continuations: usize,
+        n_continuations: usize,
     ) -> Result<Vec<YoutubeMusicVideoRef>> {
+        Ok(self
+            .get_playlist_with_info(playlist_id, n_continuations)
+            .await?
+            .1)
+    }
+
+    /// Load a playlist with its header info. The info is `None`
+    /// when the page has no detail header.
+    pub async fn get_playlist_with_info(
+        &self,
+        playlist_id: &str,
+        mut n_continuations: usize,
+    ) -> Result<(Option<(String, String)>, Vec<YoutubeMusicVideoRef>)> {
         let (playlist_json, mut continuations) = self
             .browse(
                 &Endpoint::Playlist(playlist_id.to_string()),
@@ -593,6 +606,7 @@ impl YoutubeMusicInstance {
         trace!("Fetched playlist");
         debug!("Playlist response: {playlist_json}");
         debug!("Continuations: {continuations:?}");
+        let info = playlist_header_info(&playlist_json);
         let mut videos = parse_playlist(&playlist_json)?;
         // An empty signed-out first page is an auth page only when
         // it asks the user to sign in or has no playlist shelf. A
@@ -640,7 +654,7 @@ impl YoutubeMusicInstance {
             }
         }
 
-        Ok(videos)
+        Ok((info, videos))
     }
     pub async fn search(
         &self,

@@ -5,7 +5,8 @@ use async_trait::async_trait;
 use common_structs::ProviderId;
 
 use crate::{
-    AuthStatus, CreatePlaylistRequest, Playlist, SearchResults, Track, UpdatePlaylistRequest,
+    AuthStatus, CreatePlaylistRequest, Playlist, PlaylistDetail, SearchResults, Track,
+    UpdatePlaylistRequest,
 };
 
 /// A playlist edit failed because of the request or the upstream service.
@@ -29,6 +30,25 @@ pub trait MusicApi: Send + Sync {
 
     async fn playlists(&self, provider: ProviderId) -> Result<Vec<Playlist>, String>;
     async fn playlist(&self, provider: ProviderId, id: &str) -> Result<Vec<Track>, String>;
+
+    /// Load one playlist with its tracks. The default reads the
+    /// library first, then the playlist. Providers that serve a
+    /// playlist without a library read it direct.
+    async fn playlist_detail(
+        &self,
+        provider: ProviderId,
+        id: &str,
+    ) -> Result<PlaylistDetail, String> {
+        let playlist = self
+            .playlists(provider)
+            .await?
+            .into_iter()
+            .find(|playlist| playlist.id == id)
+            .ok_or_else(|| format!("playlist {id} not found"))?;
+        let tracks = self.playlist(provider, id).await?;
+        Ok(PlaylistDetail { playlist, tracks })
+    }
+
     async fn search(&self, provider: ProviderId, query: &str) -> Result<SearchResults, String>;
     async fn create_playlist(
         &self,
