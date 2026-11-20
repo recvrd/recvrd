@@ -100,6 +100,38 @@ describe('AppStore', () => {
     store.dispose();
   });
 
+  it('clears the expired banner after the event stream reconnects', async () => {
+    const { api, store, sources } = setup();
+    api.providers = vi.fn(async () => [
+      makeProviderInfo({
+        auth: {
+          state: 'expired',
+          source: '/tmp/headers.txt',
+          message: 'The YouTube Music session expired.',
+        },
+      }),
+    ]);
+    await store.init();
+    expect(store.activeProviderInfo?.auth.state).toBe('expired');
+
+    // The daemon restarted with a fresh cookie: providers now report ok.
+    api.providers = vi.fn(async () => [makeProviderInfo()]);
+    sources[0].open();
+    expect(store.connection).toBe('online');
+    sources[0].fail();
+    vi.advanceTimersByTime(1000);
+    expect(sources).toHaveLength(2);
+    sources[1].open();
+
+    await vi.waitFor(() => {
+      expect(store.activeProviderInfo?.auth.state).toBe('ok');
+    });
+    // The fresh mock serves only the reconnect fetch; init used the
+    // expired mock that this test replaced.
+    expect(api.providers).toHaveBeenCalledTimes(1);
+    store.dispose();
+  });
+
   it('loads providers and scopes the library to the default', async () => {
     const { api, store } = setup();
     await store.init();

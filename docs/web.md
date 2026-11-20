@@ -165,7 +165,7 @@ table.
 - A download failure shows a *retry* action. The action calls
   `/api/downloads/retry`.
 - An expired playlist edit session shows the auth banner. Update `headers.txt`
-  and try again.
+  and restart the daemon.
 - API errors use one envelope and become dismissible toasts with an actionable
   message.
 - A Svelte error boundary catches component failures and shows a retry button.

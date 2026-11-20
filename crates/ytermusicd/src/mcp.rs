@@ -22,7 +22,12 @@ fn to_mcp(error: ytermusicd_client::DaemonError) -> McpError {
     let data = serde_json::json!({ "code": error.code });
     let message = format!("daemon error ({}): {}", error.code, error.message);
     match error.code.as_str() {
-        "bad_request" | "not_found" => McpError::invalid_params(message, Some(data)),
+        // An expired session is actionable by the caller: refresh
+        // headers.txt and restart the daemon. It is not an upstream
+        // failure, so it gets its own code instead of internal_error.
+        "bad_request" | "not_found" | "auth_expired" => {
+            McpError::invalid_params(message, Some(data))
+        }
         _ => McpError::internal_error(message, Some(data)),
     }
 }
@@ -1534,7 +1539,7 @@ mod tests {
 
     #[test]
     fn to_mcp_maps_client_errors_to_invalid_params() {
-        for code in ["bad_request", "not_found"] {
+        for code in ["bad_request", "not_found", "auth_expired"] {
             let error = to_mcp(DaemonError {
                 code: code.to_string(),
                 message: "playlist p9 not found".to_string(),
@@ -1543,6 +1548,19 @@ mod tests {
             assert!(error.message.contains("playlist p9 not found"));
             assert_eq!(error.data, Some(json!({ "code": code })));
         }
+    }
+
+    #[test]
+    fn to_mcp_auth_expired_keeps_the_restart_message() {
+        let error = to_mcp(DaemonError {
+            code: "auth_expired".to_string(),
+            message: "The YouTube Music session expired. Update headers.txt \
+                with a fresh Cookie and restart the daemon. Search and playback still work."
+                .to_string(),
+        });
+        assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
+        assert!(error.message.contains("restart the daemon"));
+        assert_eq!(error.data, Some(json!({ "code": "auth_expired" })));
     }
 
     #[test]

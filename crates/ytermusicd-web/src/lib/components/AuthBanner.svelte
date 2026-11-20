@@ -11,10 +11,7 @@
   <div class="auth-banner" role="alert">
     {#if auth.state === 'expired'}
       <strong>{providerName} session expired.</strong>
-      <span>
-        Update <code>headers.txt</code> with a fresh <code>Cookie</code> and
-        <code>User-Agent</code>. Then restart the daemon. Search and playback still work.
-      </span>
+      <span>Library and playlist actions need a new cookie.</span>
     {:else}
       <strong>
         {auth.state === 'missing'

@@ -174,9 +174,12 @@ export class AppStore {
         }
       },
       // After a reconnect (suspend resume, watchdog, or manual retry),
-      // re-read status and queue so the position matches the daemon.
+      // re-read status, providers, and queue. The position matches the
+      // daemon, and the auth banner clears after a daemon restart
+      // with a fresh cookie.
       onReconnect: () => {
         void this.refreshStatus();
+        void this.loadProviders();
         void this.refreshQueue();
       },
       onParseError: () => this.notify('warning', 'Received a malformed event from the daemon.'),

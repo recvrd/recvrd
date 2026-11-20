@@ -334,7 +334,8 @@ The daemon validates these values before it sends an upstream request:
 - Indices and track IDs are unique in one request.
 
 An out-of-range track index or move position returns 400. An expired session
-returns 502 with a message that asks the user to sign in again.
+returns 401 with code `auth_expired` and a message that says to refresh
+`headers.txt` and restart the daemon.
 
 The YouTube provider sends the edits to the authenticated `playlist/create`,
 `browse/edit_playlist` and `playlist/delete` endpoints. Removal and reordering
