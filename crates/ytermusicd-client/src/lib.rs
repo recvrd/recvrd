@@ -31,6 +31,10 @@ pub struct DaemonClient {
     base_url: String,
     http: reqwest::Client,
     stream_http: reqwest::Client,
+    /// When true, invalid-response errors include the endpoint, the
+    /// serde error, and the raw body (truncated). Off by default so
+    /// normal errors stay short.
+    debug: bool,
 }
 
 /// Error returned by the daemon or the transport.
@@ -110,7 +114,17 @@ impl DaemonClient {
             base_url: base_url.into().trim_end_matches('/').to_string(),
             http,
             stream_http,
+            debug: false,
         })
+    }
+
+    /// Enable or disable debug output for invalid responses. When on,
+    /// a response that fails to parse reports the endpoint, the serde
+    /// error, and the raw body (truncated to 500 chars). Bodies are
+    /// daemon JSON (status, queue, events); they carry no auth
+    /// material, which travels in headers, not bodies.
+    pub fn set_debug(&mut self, debug: bool) {
+        self.debug = debug;
     }
 
     /// Return the base URL.
@@ -158,11 +172,23 @@ impl DaemonClient {
         path: &str,
         body: Option<serde_json::Value>,
     ) -> Result<T, DaemonError> {
-        let response = self.send(method, path, body).await?;
-        response
-            .json::<T>()
+        let response = self.send(method.clone(), path, body).await?;
+        // Read the body as text so a parse failure can report it when
+        // debug is on, instead of only the serde error.
+        let text = response
+            .text()
             .await
-            .map_err(DaemonError::invalid_response)
+            .map_err(DaemonError::invalid_response)?;
+        serde_json::from_str::<T>(&text).map_err(|error| {
+            if self.debug {
+                DaemonError::invalid_response(format!(
+                    "{method} {path}: {error} (body: {})",
+                    truncate(&text, 500)
+                ))
+            } else {
+                DaemonError::invalid_response(error)
+            }
+        })
     }
 
     async fn send(
@@ -511,6 +537,7 @@ impl DaemonClient {
             inner: Box::pin(response.bytes_stream()),
             buffer: Vec::new(),
             done: false,
+            debug: self.debug,
         })
     }
 }
@@ -520,6 +547,7 @@ pub struct EventStream {
     inner: Pin<Box<dyn Stream<Item = Result<Bytes, reqwest::Error>> + Send>>,
     buffer: Vec<u8>,
     done: bool,
+    debug: bool,
 }
 
 impl EventStream {
@@ -537,7 +565,15 @@ impl EventStream {
                 };
                 match parse_event(text) {
                     Some(Ok(event)) => return Some(Ok(event)),
-                    Some(Err(error)) => return Some(Err(error)),
+                    Some(Err(error)) => {
+                        if self.debug {
+                            return Some(Err(DaemonError::invalid_response(format!(
+                                "SSE event: {error} (block: {})",
+                                truncate(text, 500)
+                            ))));
+                        }
+                        return Some(Err(error));
+                    }
                     None => continue,
                 }
             }
@@ -586,6 +622,7 @@ fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 fn parse_event(block: &str) -> Option<Result<Event, DaemonError>> {
     let mut data = String::new();
     let mut has_data = false;
+    let mut name: Option<&str> = None;
     for line in block.lines() {
         if line.starts_with(':') || line.is_empty() {
             continue;
@@ -594,18 +631,40 @@ fn parse_event(block: &str) -> Option<Result<Event, DaemonError>> {
             Some((field, value)) => (field, value.strip_prefix(' ').unwrap_or(value)),
             None => (line, ""),
         };
-        if field == "data" {
-            if has_data {
-                data.push('\n');
+        match field {
+            "event" => name = Some(value),
+            "data" => {
+                if has_data {
+                    data.push('\n');
+                }
+                data.push_str(value);
+                has_data = true;
             }
-            data.push_str(value);
-            has_data = true;
+            _ => {}
         }
     }
     if !has_data {
         return None;
     }
+    // The daemon sends named heartbeat events with an empty JSON body
+    // and no id (docs/api.md: the heartbeat must not change
+    // Last-Event-ID or replay). It is not an Event, so skip it
+    // instead of parsing its data. Named snapshot events and unnamed
+    // live events both carry an Event body and are parsed below.
+    if name == Some("heartbeat") {
+        return None;
+    }
     Some(serde_json::from_str::<Event>(&data).map_err(DaemonError::invalid_response))
+}
+
+/// Truncate raw text for a debug error message, keeping it to at most
+/// `limit` chars (plus an ellipsis marker when truncated).
+fn truncate(text: &str, limit: usize) -> String {
+    let mut out: String = text.chars().take(limit).collect();
+    if text.chars().count() > limit {
+        out.push('\u{2026}');
+    }
+    out
 }
 
 /// Percent-encode a path segment or query value.
@@ -644,6 +703,7 @@ mod tests {
         calls: Arc<Mutex<Vec<String>>>,
         last_event_id: Arc<Mutex<Option<String>>>,
         fail: Arc<std::sync::atomic::AtomicBool>,
+        bad_json: Arc<std::sync::atomic::AtomicBool>,
     }
 
     fn track(id: &str) -> Track {
@@ -772,6 +832,9 @@ mod tests {
             .lock()
             .unwrap()
             .push("GET /api/status".to_string());
+        if state.bad_json.load(std::sync::atomic::Ordering::SeqCst) {
+            return (StatusCode::OK, "not-json").into_response();
+        }
         if state.fail.load(std::sync::atomic::Ordering::SeqCst) {
             return (
                 StatusCode::BAD_GATEWAY,
@@ -821,8 +884,11 @@ mod tests {
             id: 8,
             event: EventKind::LibraryChanged,
         };
+        // The daemon sends a named heartbeat with an empty body before
+        // live events (v0.6.0, #139). It is not an Event and must be
+        // skipped, not parsed.
         let body = format!(
-            ": keepalive\n\nid: 8\nevent: library_changed\ndata: {}\n\n",
+            "event: heartbeat\ndata: {{}}\n\n: keepalive\n\nid: 8\nevent: library_changed\ndata: {}\n\n",
             serde_json::to_string(&event).unwrap()
         );
         Response::builder()
@@ -909,6 +975,89 @@ mod tests {
         assert_eq!(*state.last_event_id.lock().unwrap(), Some("7".to_string()));
         assert!(events.next().await.is_none());
         handle.abort();
+    }
+
+    #[test]
+    fn heartbeat_blocks_are_skipped_not_parsed() {
+        // Regression test for #144 (v0.6.0): the daemon sends a named
+        // heartbeat with an empty body every 15 s. The parser must skip
+        // it; before the fix it tried to parse `{}` as an Event and
+        // failed with "missing field `id`", dropping the stream.
+        assert!(parse_event("event: heartbeat\ndata: {}").is_none());
+    }
+
+    #[tokio::test]
+    async fn heartbeat_blocks_in_the_stream_are_skipped() {
+        let state = MockState::default();
+        let (base, handle) = mock_router(state.clone()).await;
+        let client = DaemonClient::new(base).unwrap();
+        let mut events = client.events(Some(7)).await.unwrap();
+        // The first block on the wire is a heartbeat; the first event
+        // the caller sees must be the real event, not an error.
+        let event = events.next().await.unwrap().unwrap();
+        assert_eq!(event.id, 8);
+        assert!(events.next().await.is_none());
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn debug_flag_includes_the_raw_body_on_a_parse_failure() {
+        let state = MockState::default();
+        state
+            .bad_json
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let (base, handle) = mock_router(state).await;
+        let mut debug_client = DaemonClient::new(base.clone()).unwrap();
+        debug_client.set_debug(true);
+        let error = debug_client.status().await.unwrap_err();
+        assert_eq!(error.code, "invalid_response");
+        assert!(
+            error.message.contains("/api/status"),
+            "debug error names the endpoint: {error}",
+        );
+        assert!(
+            error.message.contains("not-json"),
+            "debug error includes the raw body: {error}",
+        );
+        let plain_client = DaemonClient::new(base).unwrap();
+        let error = plain_client.status().await.unwrap_err();
+        assert_eq!(error.code, "invalid_response");
+        assert!(
+            !error.message.contains("not-json"),
+            "without debug the raw body stays out of the error: {error}",
+        );
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn debug_flag_includes_the_raw_block_on_an_sse_parse_failure() {
+        use futures_util::stream;
+        let bad_block = "event: snapshot\ndata: {}\n\n";
+        let make_stream = |debug: bool| EventStream {
+            inner: Box::pin(stream::iter(vec![Ok::<Bytes, reqwest::Error>(
+                Bytes::from(bad_block),
+            )])),
+            buffer: Vec::new(),
+            done: false,
+            debug,
+        };
+        let error = make_stream(true).next().await.unwrap().unwrap_err();
+        assert_eq!(error.code, "invalid_response");
+        assert!(
+            error.message.contains("data: {}"),
+            "debug error includes the raw block: {error}",
+        );
+        let error = make_stream(false).next().await.unwrap().unwrap_err();
+        assert!(
+            !error.message.contains("data: {}"),
+            "without debug the raw block stays out of the error: {error}",
+        );
+    }
+
+    #[test]
+    fn truncate_keeps_short_text_and_caps_long_text() {
+        assert_eq!(truncate("abc", 500), "abc");
+        assert_eq!(truncate("abcdef", 3), "abc\u{2026}");
     }
 
     #[test]

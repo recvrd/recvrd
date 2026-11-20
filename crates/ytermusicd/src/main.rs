@@ -68,6 +68,11 @@ enum Command {
         /// Base URL of the running daemon
         #[arg(long, env = "YTERMUSICD_URL")]
         url: Option<String>,
+        /// Include the endpoint and the raw daemon response (truncated)
+        /// in invalid-response errors, instead of only the serde error.
+        /// Also settable with `YTERMUSICD_DEBUG=true`.
+        #[arg(long, env = "YTERMUSICD_DEBUG")]
+        debug: bool,
     },
     /// Manage the daemon cache
     Cache {
@@ -124,7 +129,7 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
-        Command::Mcp { url } => match run_mcp(url) {
+        Command::Mcp { url, debug } => match run_mcp(url, debug) {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
                 eprintln!("ytermusicd mcp failed: {error}");
@@ -143,11 +148,11 @@ fn main() -> ExitCode {
     }
 }
 
-fn run_mcp(url: Option<String>) -> std::io::Result<()> {
+fn run_mcp(url: Option<String>, debug: bool) -> std::io::Result<()> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
-    runtime.block_on(mcp::run(url))
+    runtime.block_on(mcp::run(url, debug))
 }
 
 /// Clean the cache. When the daemon answers, the daemon cleans it:
@@ -739,7 +744,13 @@ mod tests {
     #[test]
     fn parses_mcp() {
         let cli = Cli::try_parse_from(["ytermusicd", "mcp"]).unwrap();
-        assert!(matches!(cli.command, Command::Mcp { url: None }));
+        assert!(matches!(
+            cli.command,
+            Command::Mcp {
+                url: None,
+                debug: false
+            }
+        ));
     }
 
     #[test]
@@ -748,7 +759,19 @@ mod tests {
             Cli::try_parse_from(["ytermusicd", "mcp", "--url", "http://127.0.0.1:9000"]).unwrap();
         assert!(matches!(
             cli.command,
-            Command::Mcp { url: Some(url) } if url == "http://127.0.0.1:9000"
+            Command::Mcp { url: Some(url), .. } if url == "http://127.0.0.1:9000"
+        ));
+    }
+
+    #[test]
+    fn parses_mcp_debug() {
+        let cli = Cli::try_parse_from(["ytermusicd", "mcp", "--debug"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Mcp {
+                url: None,
+                debug: true
+            }
         ));
     }
 
