@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.6.3 — 2026-11-20
+
+### Fixed
+
+- Detect an expired YouTube Music session from the homepage login flag and
+  the InnerTube `logged_in` value.
+- Report an expired session as HTTP 401 `auth_expired` for library reads and
+  playlist actions. Show the state in the API, the web UI and `ytmc`.
+- Keep search, single-track playback and signed-out public playlists
+  available with an expired session.
+- Load a public playlist detail directly. Read nested album headers.
+- Clear the web auth banner after a daemon restart with a fresh cookie.
+- Keep one auth banner for an expired library, search or queue load.
+- Fix the cover path in the local smoke test.
+
+### Changed
+
+- Add `AuthState::Expired` to the API and the generated TypeScript bindings.
+- Map `auth_expired` to an invalid-parameter error in MCP.
+
 ## 0.6.2 — 2026-11-19
 
 ### Fixed
