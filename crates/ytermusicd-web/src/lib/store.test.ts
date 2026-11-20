@@ -536,7 +536,46 @@ describe('AppStore', () => {
     });
     expect(api.providers).toHaveBeenCalled();
     expect(api.status).toHaveBeenCalled();
-    expect(store.toasts.at(-1)?.message).toContain('session expired');
+    // The auth banner is the only message: no error toast.
+    expect(store.toasts).toHaveLength(0);
+    store.dispose();
+  });
+
+  it('shows no toast when the queue load fails with an expired session', async () => {
+    const { api, store } = setup();
+    await store.init();
+    vi.mocked(api.providers).mockClear();
+    vi.mocked(api.status).mockClear();
+    api.queue = vi.fn(async () => {
+      throw new ApiError('The YouTube Music session expired.', 'auth_expired', 401);
+    });
+    api.providers = vi.fn(async () => [
+      makeProviderInfo({
+        auth: {
+          state: 'expired',
+          source: '/tmp/headers.txt',
+          message: 'The YouTube Music session expired.',
+        },
+      }),
+    ]);
+    api.status = vi.fn(async () =>
+      makeStatus({
+        auth: {
+          state: 'expired',
+          source: '/tmp/headers.txt',
+          message: 'The YouTube Music session expired.',
+        },
+      }),
+    );
+    await store.refreshQueue();
+
+    await vi.waitFor(() => {
+      expect(store.activeProviderInfo?.auth.state).toBe('expired');
+    });
+    expect(api.providers).toHaveBeenCalled();
+    expect(api.status).toHaveBeenCalled();
+    // The auth banner is the only message: no error toast.
+    expect(store.toasts).toHaveLength(0);
     store.dispose();
   });
 

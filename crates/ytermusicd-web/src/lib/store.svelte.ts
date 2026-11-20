@@ -1198,6 +1198,10 @@ export class AppStore {
       this.connection = 'offline';
     }
     this.handleAuthError(error);
+    // Keep the auth banner as the only message for an expired
+    // session. Every load path reports through this method, so the
+    // rule covers search and queue loads as well as library loads.
+    if (error instanceof ApiError && error.code === 'auth_expired') return;
     this.notify('error', describeError(error, this.activeProviderName));
   }
 
