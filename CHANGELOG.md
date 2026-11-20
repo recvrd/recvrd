@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.1 — 2026-11-19
+
+### Fixed
+
+- Fix the macOS and Windows builds. Limit the MPRIS volume update to Linux.
+- Keep the terminal client connected when the SSE stream sends a heartbeat.
+
 ## 0.6.0 — 2026-11-19
 
 ### Added
