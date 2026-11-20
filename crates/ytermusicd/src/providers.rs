@@ -8,8 +8,8 @@ use download_manager::{DownloadError, TrackDownloader};
 use provider_rss::RssProvider;
 use std::{path::Path, sync::Arc};
 use ytermusicd_api::{
-    CreatePlaylistRequest, MusicApi, Playlist, PlaylistEditError, SearchResults, Track,
-    UpdatePlaylistRequest,
+    AuthStatus, CreatePlaylistRequest, MusicApi, Playlist, PlaylistDetail, PlaylistEditError,
+    SearchResults, Track, UpdatePlaylistRequest,
 };
 use ytermusicd_core::{CoverFetcher, Track as CoreTrack};
 
@@ -39,12 +39,24 @@ impl CompositeMusicApi {
 
 #[async_trait]
 impl MusicApi for CompositeMusicApi {
+    fn auth_status(&self, provider: ProviderId) -> Option<AuthStatus> {
+        self.api(provider).auth_status(provider)
+    }
+
     async fn playlists(&self, provider: ProviderId) -> Result<Vec<Playlist>, String> {
         self.api(provider).playlists(provider).await
     }
 
     async fn playlist(&self, provider: ProviderId, id: &str) -> Result<Vec<Track>, String> {
         self.api(provider).playlist(provider, id).await
+    }
+
+    async fn playlist_detail(
+        &self,
+        provider: ProviderId,
+        id: &str,
+    ) -> Result<PlaylistDetail, String> {
+        self.api(provider).playlist_detail(provider, id).await
     }
 
     async fn search(&self, provider: ProviderId, query: &str) -> Result<SearchResults, String> {

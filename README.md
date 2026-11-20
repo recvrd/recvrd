@@ -116,9 +116,12 @@ daemon resolves headers in this order:
 2. `$XDG_CONFIG_HOME/ytermusicd/headers.txt`
 3. `$XDG_CONFIG_HOME/ytermusic/headers.txt` (legacy, with a warning)
 
-It validates the cookie and `SAPISID` at startup and exits with an actionable
-error instead of prompting on stdin. The legacy TUI shares the validation and
-still checks `./headers.txt` first.
+It validates the cookie and `SAPISID` at startup. It also reads the YouTube
+Music login state. An expired session leaves search and playback available.
+The library and playlist actions fail with an `auth_expired` error until you
+refresh `headers.txt` and restart the daemon. The daemon never prompts on
+stdin. The legacy TUI shares the validation and still checks `./headers.txt`
+first.
 
 Brand accounts: copy the account ID from `myaccount.google.com` (the number
 after `/b/`) into `account_id.txt` next to `headers.txt`.
@@ -226,8 +229,12 @@ error behavior. Lyrics and HTTP transport are post-v1.
 **The daemon exits with a cookie or `SAPISID` error.** Refresh `headers.txt`.
 See [Authentication](#authentication). The daemon never prompts on stdin.
 
-**The API returns 502.** YouTube Music rejected the request. Check the cookie,
-the network and the daemon log. The web UI shows the message in a toast.
+**The API returns 401 with `auth_expired`.** The YouTube Music session expired.
+Refresh `headers.txt` and restart the daemon. The web UI shows a sign-in
+banner. Search and playback still work.
+
+**The API returns 502.** An upstream request failed. Check the network and
+the daemon log. The web UI shows the message in a toast.
 
 **The web UI shows "not built".** Run `just web-install && just web-check`.
 Then restart the daemon.

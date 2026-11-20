@@ -100,6 +100,38 @@ describe('AppStore', () => {
     store.dispose();
   });
 
+  it('clears the expired banner after the event stream reconnects', async () => {
+    const { api, store, sources } = setup();
+    api.providers = vi.fn(async () => [
+      makeProviderInfo({
+        auth: {
+          state: 'expired',
+          source: '/tmp/headers.txt',
+          message: 'The YouTube Music session expired.',
+        },
+      }),
+    ]);
+    await store.init();
+    expect(store.activeProviderInfo?.auth.state).toBe('expired');
+
+    // The daemon restarted with a fresh cookie: providers now report ok.
+    api.providers = vi.fn(async () => [makeProviderInfo()]);
+    sources[0].open();
+    expect(store.connection).toBe('online');
+    sources[0].fail();
+    vi.advanceTimersByTime(1000);
+    expect(sources).toHaveLength(2);
+    sources[1].open();
+
+    await vi.waitFor(() => {
+      expect(store.activeProviderInfo?.auth.state).toBe('ok');
+    });
+    // The fresh mock serves only the reconnect fetch; init used the
+    // expired mock that this test replaced.
+    expect(api.providers).toHaveBeenCalledTimes(1);
+    store.dispose();
+  });
+
   it('loads providers and scopes the library to the default', async () => {
     const { api, store } = setup();
     await store.init();
@@ -470,17 +502,109 @@ describe('AppStore', () => {
     store.dispose();
   });
 
-  it('marks the auth banner for upstream auth failures', async () => {
+  it('reloads the auth state after an expired-session error', async () => {
     const { api, store } = setup();
     await store.init();
+    vi.mocked(api.providers).mockClear();
+    vi.mocked(api.status).mockClear();
     api.search = vi.fn(async () => {
-      throw new ApiError('401 unauthorized: cookies expired', 'upstream_error', 502);
+      throw new ApiError('The YouTube Music session expired.', 'auth_expired', 401);
     });
+    api.providers = vi.fn(async () => [
+      makeProviderInfo({
+        auth: {
+          state: 'expired',
+          source: '/tmp/headers.txt',
+          message: 'The YouTube Music session expired.',
+        },
+      }),
+    ]);
+    api.status = vi.fn(async () =>
+      makeStatus({
+        auth: {
+          state: 'expired',
+          source: '/tmp/headers.txt',
+          message: 'The YouTube Music session expired.',
+        },
+      }),
+    );
     store.searchQuery = 'test';
     await store.searchNow();
 
-    expect(store.authExpired).toBe(true);
-    expect(store.toasts.at(-1)?.message).toContain('YouTube Music rejected the request');
+    await vi.waitFor(() => {
+      expect(store.activeProviderInfo?.auth.state).toBe('expired');
+    });
+    expect(api.providers).toHaveBeenCalled();
+    expect(api.status).toHaveBeenCalled();
+    // The auth banner is the only message: no error toast.
+    expect(store.toasts).toHaveLength(0);
+    store.dispose();
+  });
+
+  it('shows no toast when the queue load fails with an expired session', async () => {
+    const { api, store } = setup();
+    await store.init();
+    vi.mocked(api.providers).mockClear();
+    vi.mocked(api.status).mockClear();
+    api.queue = vi.fn(async () => {
+      throw new ApiError('The YouTube Music session expired.', 'auth_expired', 401);
+    });
+    api.providers = vi.fn(async () => [
+      makeProviderInfo({
+        auth: {
+          state: 'expired',
+          source: '/tmp/headers.txt',
+          message: 'The YouTube Music session expired.',
+        },
+      }),
+    ]);
+    api.status = vi.fn(async () =>
+      makeStatus({
+        auth: {
+          state: 'expired',
+          source: '/tmp/headers.txt',
+          message: 'The YouTube Music session expired.',
+        },
+      }),
+    );
+    await store.refreshQueue();
+
+    await vi.waitFor(() => {
+      expect(store.activeProviderInfo?.auth.state).toBe('expired');
+    });
+    expect(api.providers).toHaveBeenCalled();
+    expect(api.status).toHaveBeenCalled();
+    // The auth banner is the only message: no error toast.
+    expect(store.toasts).toHaveLength(0);
+    store.dispose();
+  });
+
+  it('shows the expired state when the first library load fails', async () => {
+    const api = makeApi();
+    api.playlists = vi.fn(async () => {
+      throw new ApiError('The YouTube Music session expired.', 'auth_expired', 401);
+    });
+    api.providers = vi.fn(async () => [
+      makeProviderInfo({
+        auth: {
+          state: 'expired',
+          source: '/tmp/headers.txt',
+          message: 'The YouTube Music session expired.',
+        },
+      }),
+    ]);
+    const sources: FakeEventSource[] = [];
+    const store = new AppStore(api, {
+      createEventSource: (url) => {
+        const source = new FakeEventSource(url);
+        sources.push(source);
+        return source;
+      },
+    });
+    await store.init();
+
+    expect(store.activeProviderInfo?.auth.state).toBe('expired');
+    expect(store.error).toBeNull();
     store.dispose();
   });
 

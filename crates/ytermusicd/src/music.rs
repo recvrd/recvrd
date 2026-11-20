@@ -9,18 +9,22 @@ use ytermusicd_api::{
 
 pub struct UnavailableMusicApi;
 
+/// Error text when no provider client exists. The edit path matches
+/// this text to tell an unavailable client from other failures.
+pub const CLIENT_UNAVAILABLE: &str = "YouTube Music client is unavailable; check auth/network";
+
 #[async_trait]
 impl MusicApi for UnavailableMusicApi {
     async fn playlists(&self, _provider: ProviderId) -> Result<Vec<Playlist>, String> {
-        Err("YouTube Music client is unavailable; check auth/network".to_string())
+        Err(CLIENT_UNAVAILABLE.to_string())
     }
 
     async fn playlist(&self, _provider: ProviderId, _id: &str) -> Result<Vec<Track>, String> {
-        Err("YouTube Music client is unavailable; check auth/network".to_string())
+        Err(CLIENT_UNAVAILABLE.to_string())
     }
 
     async fn search(&self, _provider: ProviderId, _query: &str) -> Result<SearchResults, String> {
-        Err("YouTube Music client is unavailable; check auth/network".to_string())
+        Err(CLIENT_UNAVAILABLE.to_string())
     }
 
     async fn create_playlist(
@@ -69,7 +73,5 @@ impl MusicApi for UnavailableMusicApi {
 }
 
 fn unavailable() -> PlaylistEditError {
-    PlaylistEditError::Upstream(
-        "YouTube Music client is unavailable; check auth/network".to_string(),
-    )
+    PlaylistEditError::Upstream(CLIENT_UNAVAILABLE.to_string())
 }

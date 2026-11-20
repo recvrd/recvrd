@@ -42,6 +42,7 @@ use ytermusicd_core::{
 
 use crate::{artwork::ArtworkCache, cache::CacheService, downloads::DownloadControl};
 use provider_rss::RssProvider;
+use provider_youtube::AUTH_EXPIRED_MESSAGE;
 
 pub struct AppState<S: AudioSink + Send + 'static> {
     started_at: Instant,
@@ -134,6 +135,18 @@ impl ApiFailure {
         }
     }
 
+    /// The upstream session expired. The local API has no auth of its
+    /// own, so this status describes the provider session.
+    fn auth_expired(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::UNAUTHORIZED,
+            error: ApiError {
+                code: "auth_expired".to_string(),
+                message: message.into(),
+            },
+        }
+    }
+
     fn internal(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
@@ -209,12 +222,60 @@ async fn playlists<S: AudioSink + Send + 'static>(
     Query(query): Query<ProviderQuery>,
 ) -> Result<Json<Vec<Playlist>>, ApiFailure> {
     let provider = parse_provider(query.provider)?;
-    state
-        .music
-        .playlists(provider)
-        .await
-        .map(Json)
-        .map_err(|error| ApiFailure::upstream(format!("{provider}: {error}")))
+    match state.music.playlists(provider).await {
+        Ok(playlists) => Ok(Json(playlists)),
+        Err(error) => Err(provider_failure(&state, provider, error)),
+    }
+}
+
+/// Map a provider read error. An expired session is a 401; every other
+/// provider error is a 502. A live provider state needs the matching
+/// error message, so a network failure while the state is Expired stays
+/// a 502. The no-live-state rule below is YouTube only: with no live
+/// YouTube client, an expired headers file owns the failure. RSS has
+/// no auth state, so its failures stay 502.
+fn provider_failure<S: AudioSink + Send + 'static>(
+    state: &AppState<S>,
+    provider: ProviderId,
+    error: String,
+) -> ApiFailure {
+    let live = state.music.auth_status(provider);
+    let auth = provider_auth(state, provider);
+    // A live provider state needs the matching error message. A
+    // transient failure while the state is Expired stays a 502. If
+    // the YouTube provider has no live state, the headers state is
+    // the only signal. An expired file then owns the failure, and
+    // the 401 names the session even when the failure was a network
+    // failure. RSS never reaches this branch: its auth state is Ok.
+    let expired = auth.state == AuthState::Expired
+        && (live.is_none() || error.contains(AUTH_EXPIRED_MESSAGE));
+    if expired {
+        ApiFailure::auth_expired(
+            auth.message
+                .unwrap_or_else(|| format!("{provider}: {error}")),
+        )
+    } else {
+        ApiFailure::upstream(format!("{provider}: {error}"))
+    }
+}
+
+/// Report the auth state for one provider. A live provider state wins
+/// over the state of the headers file. RSS needs no auth.
+fn provider_auth<S: AudioSink + Send + 'static>(
+    state: &AppState<S>,
+    provider: ProviderId,
+) -> ApiAuthStatus {
+    match provider {
+        ProviderId::Rss => ApiAuthStatus {
+            state: AuthState::Ok,
+            source: None,
+            message: None,
+        },
+        ProviderId::Youtube => state
+            .music
+            .auth_status(provider)
+            .unwrap_or_else(|| api_auth(&state.auth)),
+    }
 }
 
 /// Describe every provider the daemon knows, with its capabilities
@@ -227,15 +288,7 @@ async fn providers<S: AudioSink + Send + 'static>(
         ProviderId::all()
             .iter()
             .map(|provider| {
-                let auth = match provider {
-                    // RSS needs no auth. It fetches public feeds.
-                    ProviderId::Rss => ApiAuthStatus {
-                        state: AuthState::Ok,
-                        source: None,
-                        message: None,
-                    },
-                    ProviderId::Youtube => api_auth(&state.auth),
-                };
+                let auth = provider_auth(&state, *provider);
                 ProviderInfo::new(*provider, auth)
             })
             .collect(),
@@ -326,20 +379,17 @@ async fn playlist<S: AudioSink + Send + 'static>(
     Query(query): Query<ProviderQuery>,
 ) -> Result<Json<PlaylistDetail>, ApiFailure> {
     let provider = parse_provider(query.provider)?;
-    let playlist = state
-        .music
-        .playlists(provider)
-        .await
-        .map_err(|error| ApiFailure::upstream(format!("{provider}: {error}")))?
-        .into_iter()
-        .find(|playlist| playlist.id == id)
-        .ok_or_else(|| ApiFailure::not_found(format!("playlist {id} not found")))?;
-    let tracks = state
-        .music
-        .playlist(provider, &id)
-        .await
-        .map_err(|error| ApiFailure::upstream(format!("{provider}: {error}")))?;
-    Ok(Json(PlaylistDetail { playlist, tracks }))
+    // Load the playlist direct, not through the library. A public
+    // playlist has tracks without a session, and the library load
+    // would reject it as expired.
+    let detail = match state.music.playlist_detail(provider, &id).await {
+        Ok(detail) => detail,
+        Err(error) if error == format!("playlist {id} not found") => {
+            return Err(ApiFailure::not_found(error));
+        }
+        Err(error) => return Err(provider_failure(&state, provider, error)),
+    };
+    Ok(Json(detail))
 }
 
 async fn create_playlist<S: AudioSink + Send + 'static>(
@@ -351,7 +401,7 @@ async fn create_playlist<S: AudioSink + Send + 'static>(
         .music
         .create_playlist(&request)
         .await
-        .map_err(playlist_failure)?;
+        .map_err(|error| edit_failure(&state, error))?;
     Ok((StatusCode::CREATED, Json(playlist)))
 }
 
@@ -369,7 +419,7 @@ async fn update_playlist<S: AudioSink + Send + 'static>(
         .update_playlist(&id, &request)
         .await
         .map(Json)
-        .map_err(playlist_failure)
+        .map_err(|error| edit_failure(&state, error))
 }
 
 async fn delete_playlist<S: AudioSink + Send + 'static>(
@@ -381,7 +431,7 @@ async fn delete_playlist<S: AudioSink + Send + 'static>(
         .music
         .delete_playlist(&id)
         .await
-        .map_err(playlist_failure)?;
+        .map_err(|error| edit_failure(&state, error))?;
     Ok(Json(OkResponse { ok: true }))
 }
 
@@ -397,7 +447,7 @@ async fn add_playlist_tracks<S: AudioSink + Send + 'static>(
         .add_playlist_tracks(&id, &request.track_ids)
         .await
         .map(Json)
-        .map_err(playlist_failure)
+        .map_err(|error| edit_failure(&state, error))
 }
 
 async fn remove_playlist_tracks<S: AudioSink + Send + 'static>(
@@ -412,7 +462,7 @@ async fn remove_playlist_tracks<S: AudioSink + Send + 'static>(
         .remove_playlist_tracks(&id, &request.indices)
         .await
         .map(Json)
-        .map_err(playlist_failure)
+        .map_err(|error| edit_failure(&state, error))
 }
 
 async fn move_playlist_track<S: AudioSink + Send + 'static>(
@@ -426,7 +476,7 @@ async fn move_playlist_track<S: AudioSink + Send + 'static>(
         .move_playlist_track(&id, request.from, request.to)
         .await
         .map(Json)
-        .map_err(playlist_failure)
+        .map_err(|error| edit_failure(&state, error))
 }
 
 const MAX_PLAYLIST_TITLE: usize = 150;
@@ -554,8 +604,31 @@ fn core_track(track: Track) -> ytermusicd_core::Track {
 fn playlist_failure(error: PlaylistEditError) -> ApiFailure {
     match error {
         PlaylistEditError::Invalid(message) => ApiFailure::bad_request(message),
+        PlaylistEditError::AuthExpired(message) => ApiFailure::auth_expired(message),
         PlaylistEditError::Upstream(message) => ApiFailure::upstream(message),
     }
+}
+
+/// Map a playlist edit error. An unavailable client with an expired
+/// headers file is a 401, like the read paths. Every other edit
+/// error keeps its typed mapping.
+fn edit_failure<S: AudioSink + Send + 'static>(
+    state: &AppState<S>,
+    error: PlaylistEditError,
+) -> ApiFailure {
+    if let PlaylistEditError::Upstream(message) = &error
+        && message == crate::music::CLIENT_UNAVAILABLE
+    {
+        let auth = provider_auth(state, ProviderId::Youtube);
+        let live = state.music.auth_status(ProviderId::Youtube);
+        if live.is_none() && auth.state == AuthState::Expired {
+            return ApiFailure::auth_expired(
+                auth.message
+                    .unwrap_or_else(|| AUTH_EXPIRED_MESSAGE.to_string()),
+            );
+        }
+    }
+    playlist_failure(error)
 }
 
 #[derive(Debug, Deserialize)]
@@ -671,7 +744,7 @@ async fn play_playlist<S: AudioSink + Send + 'static>(
         .music
         .playlist(provider, &request.playlist_id)
         .await
-        .map_err(|error| ApiFailure::upstream(format!("{provider}: {error}")))?;
+        .map_err(|error| provider_failure(&state, provider, error))?;
     if tracks.is_empty() {
         return Err(ApiFailure::bad_request("playlist has no tracks"));
     }
@@ -1141,7 +1214,7 @@ fn status_from_parts<S: AudioSink + Send + 'static>(
         version: env!("CARGO_PKG_VERSION").to_string(),
         status: "ok".to_string(),
         uptime_seconds: state.started_at.elapsed().as_secs(),
-        auth: api_auth(&state.auth),
+        auth: provider_auth(state, ProviderId::default_provider()),
         playback: api_playback(playback),
         queue_length: queue.items.len(),
         downloads: api_download_summary(state.downloads.summary()),
@@ -1166,6 +1239,7 @@ fn api_auth(auth: &AuthStatus) -> ApiAuthStatus {
             CoreAuthState::Ok => AuthState::Ok,
             CoreAuthState::Missing => AuthState::Missing,
             CoreAuthState::Invalid => AuthState::Invalid,
+            CoreAuthState::Expired => AuthState::Expired,
         },
         source: auth.source.as_ref().map(|path| path.display().to_string()),
         message: auth.message.clone(),
@@ -1322,6 +1396,10 @@ mod tests {
     #[derive(Default, Clone)]
     struct MockMusicApi {
         edits: Arc<std::sync::Mutex<Vec<String>>>,
+        auth: Option<ApiAuthStatus>,
+        fail_playlists: Option<String>,
+        fail_playlist: Option<String>,
+        playlist_detail: Option<Result<PlaylistDetail, String>>,
     }
 
     fn track(id: &str) -> Track {
@@ -1337,7 +1415,14 @@ mod tests {
 
     #[async_trait]
     impl MusicApi for MockMusicApi {
+        fn auth_status(&self, _provider: ProviderId) -> Option<ApiAuthStatus> {
+            self.auth.clone()
+        }
+
         async fn playlists(&self, _provider: ProviderId) -> Result<Vec<Playlist>, String> {
+            if let Some(error) = &self.fail_playlists {
+                return Err(error.clone());
+            }
             Ok(vec![Playlist {
                 id: "p1".to_string(),
                 name: "Playlist One".to_string(),
@@ -1346,7 +1431,28 @@ mod tests {
         }
 
         async fn playlist(&self, _provider: ProviderId, _id: &str) -> Result<Vec<Track>, String> {
+            if let Some(error) = &self.fail_playlist {
+                return Err(error.clone());
+            }
             Ok(vec![track("v1"), track("v2")])
+        }
+
+        async fn playlist_detail(
+            &self,
+            provider: ProviderId,
+            id: &str,
+        ) -> Result<PlaylistDetail, String> {
+            if let Some(detail) = &self.playlist_detail {
+                return detail.clone();
+            }
+            let playlist = self
+                .playlists(provider)
+                .await?
+                .into_iter()
+                .find(|playlist| playlist.id == id)
+                .ok_or_else(|| format!("playlist {id} not found"))?;
+            let tracks = self.playlist(provider, id).await?;
+            Ok(PlaylistDetail { playlist, tracks })
         }
 
         async fn search(
@@ -1590,6 +1696,36 @@ mod tests {
         test_state_with(Arc::new(MockMusicApi::default()))
     }
 
+    fn expired_auth() -> ApiAuthStatus {
+        ApiAuthStatus {
+            state: AuthState::Expired,
+            source: Some("/tmp/headers.txt".to_string()),
+            message: Some(AUTH_EXPIRED_MESSAGE.to_string()),
+        }
+    }
+
+    fn expired_state() -> AppState<MockSink> {
+        test_state_with(Arc::new(MockMusicApi {
+            auth: Some(expired_auth()),
+            fail_playlists: Some(format!("load playlists failed: {AUTH_EXPIRED_MESSAGE}")),
+            ..Default::default()
+        }))
+    }
+
+    fn unavailable_expired_state() -> AppState<MockSink> {
+        let artwork = Arc::new(ArtworkCache::with_fetcher(
+            std::env::temp_dir().join("ytermusicd-test-covers"),
+            0,
+            Arc::new(FakeCovers::new()),
+        ));
+        test_state_with_auth(
+            AuthStatus::expired("/tmp/headers.txt", AUTH_EXPIRED_MESSAGE),
+            Arc::new(crate::music::UnavailableMusicApi),
+            Arc::new(MockDownloads::default()),
+            artwork,
+        )
+    }
+
     fn test_state_with(music: Arc<dyn MusicApi>) -> AppState<MockSink> {
         test_state_with_downloads(music, Arc::new(MockDownloads::default()))
     }
@@ -1619,6 +1755,20 @@ mod tests {
         downloads: Arc<dyn DownloadControl>,
         artwork: Arc<ArtworkCache>,
     ) -> AppState<MockSink> {
+        test_state_with_auth(
+            AuthStatus::ok("/tmp/headers.txt"),
+            music,
+            downloads,
+            artwork,
+        )
+    }
+
+    fn test_state_with_auth(
+        auth: AuthStatus,
+        music: Arc<dyn MusicApi>,
+        downloads: Arc<dyn DownloadControl>,
+        artwork: Arc<ArtworkCache>,
+    ) -> AppState<MockSink> {
         let service = PlaybackService::new(MockSink, "/tmp/ytermusicd-test", 50);
         let events = service.events();
         let playback = Arc::new(Mutex::new(service));
@@ -1628,14 +1778,7 @@ mod tests {
         ));
         let rss = fresh_rss();
         AppState::new(
-            AuthStatus::ok("/tmp/headers.txt"),
-            music,
-            playback,
-            events,
-            downloads,
-            artwork,
-            cache,
-            rss,
+            auth, music, playback, events, downloads, artwork, cache, rss,
         )
     }
 
@@ -2567,6 +2710,309 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn expired_session_returns_401_and_reports_the_state() {
+        let (base, server) = start_server(expired_state()).await;
+        let client = reqwest::Client::new();
+
+        let response = client
+            .get(format!("{base}/api/playlists"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::UNAUTHORIZED);
+        let body: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(body["error"]["code"], "auth_expired");
+        let message = body["error"]["message"].as_str().unwrap();
+        assert!(message.contains("session expired"), "{message}");
+        assert!(message.contains("headers.txt"), "{message}");
+        assert!(message.contains("restart the daemon"), "{message}");
+
+        let status: serde_json::Value = client
+            .get(format!("{base}/api/status"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(status["auth"]["state"], "expired");
+
+        let providers: serde_json::Value = client
+            .get(format!("{base}/api/providers"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(providers[0]["auth"]["state"], "expired");
+        assert_eq!(providers[1]["auth"]["state"], "ok");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn expired_session_play_playlist_returns_401() {
+        let music = Arc::new(MockMusicApi {
+            auth: Some(expired_auth()),
+            fail_playlist: Some(format!("load playlist failed: {AUTH_EXPIRED_MESSAGE}")),
+            ..Default::default()
+        });
+        let (base, server) = start_server(test_state_with(music)).await;
+        let response = reqwest::Client::new()
+            .post(format!("{base}/api/play/playlist"))
+            .json(&PlayPlaylistRequest {
+                playlist_id: "p1".to_string(),
+                provider: ProviderId::Youtube,
+            })
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::UNAUTHORIZED);
+        let body: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(body["error"]["code"], "auth_expired");
+        let message = body["error"]["message"].as_str().unwrap();
+        assert!(message.contains("restart the daemon"), "{message}");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn expired_session_plays_a_public_playlist_with_tracks() {
+        // A public playlist still returns tracks without a session.
+        // The expired state must not block that playback.
+        let music = Arc::new(MockMusicApi {
+            auth: Some(expired_auth()),
+            ..Default::default()
+        });
+        let (base, server) = start_server(test_state_with(music)).await;
+        let response = reqwest::Client::new()
+            .post(format!("{base}/api/play/playlist"))
+            .json(&PlayPlaylistRequest {
+                playlist_id: "MPREb_public".to_string(),
+                provider: ProviderId::Youtube,
+            })
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let status: Status = response.json().await.unwrap();
+        assert_eq!(status.auth.state, AuthState::Expired);
+        assert_eq!(status.queue_length, 2);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn playlist_detail_loads_direct_without_the_library() {
+        // The detail route reads the playlist direct. The library
+        // load fails here, so a route that used it would return 401.
+        let music = Arc::new(MockMusicApi {
+            auth: Some(expired_auth()),
+            fail_playlists: Some(format!("load playlists failed: {AUTH_EXPIRED_MESSAGE}")),
+            playlist_detail: Some(Ok(PlaylistDetail {
+                playlist: Playlist {
+                    id: "p1".to_string(),
+                    name: "Playlist One".to_string(),
+                    subtitle: "Artist".to_string(),
+                },
+                tracks: vec![track("v1"), track("v2")],
+            })),
+            ..Default::default()
+        });
+        let (base, server) = start_server(test_state_with(music)).await;
+        let response = reqwest::Client::new()
+            .get(format!("{base}/api/playlists/p1"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let detail: PlaylistDetail = response.json().await.unwrap();
+        assert_eq!(detail.playlist.name, "Playlist One");
+        assert_eq!(detail.tracks.len(), 2);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn rss_playlist_detail_with_an_expired_youtube_file_returns_502() {
+        // An expired YouTube file must not turn an RSS failure into
+        // an auth error. RSS needs no auth.
+        let artwork = Arc::new(ArtworkCache::with_fetcher(
+            std::env::temp_dir().join("ytermusicd-test-covers"),
+            0,
+            Arc::new(FakeCovers::new()),
+        ));
+        let state = test_state_with_auth(
+            AuthStatus::expired("/tmp/headers.txt", AUTH_EXPIRED_MESSAGE),
+            Arc::new(FailingMusicApi),
+            Arc::new(MockDownloads::default()),
+            artwork,
+        );
+        let (base, server) = start_server(state).await;
+        let response = reqwest::Client::new()
+            .get(format!("{base}/api/playlists/p1?provider=rss"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::BAD_GATEWAY);
+        let body: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(body["error"]["code"], "upstream_error");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn rss_play_playlist_with_an_expired_youtube_file_returns_502() {
+        // The play route uses the same provider check as the detail
+        // route. An RSS failure stays a 502.
+        let artwork = Arc::new(ArtworkCache::with_fetcher(
+            std::env::temp_dir().join("ytermusicd-test-covers"),
+            0,
+            Arc::new(FakeCovers::new()),
+        ));
+        let state = test_state_with_auth(
+            AuthStatus::expired("/tmp/headers.txt", AUTH_EXPIRED_MESSAGE),
+            Arc::new(FailingMusicApi),
+            Arc::new(MockDownloads::default()),
+            artwork,
+        );
+        let (base, server) = start_server(state).await;
+        let response = reqwest::Client::new()
+            .post(format!("{base}/api/play/playlist"))
+            .json(&PlayPlaylistRequest {
+                playlist_id: "p1".to_string(),
+                provider: ProviderId::Rss,
+            })
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::BAD_GATEWAY);
+        let body: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(body["error"]["code"], "upstream_error");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn transient_failure_while_expired_returns_502() {
+        // The state is Expired, but the error is a network failure, not
+        // an expiry. It must stay a 502.
+        let music = Arc::new(MockMusicApi {
+            auth: Some(expired_auth()),
+            fail_playlists: Some("upstream unavailable".to_string()),
+            ..Default::default()
+        });
+        let (base, server) = start_server(test_state_with(music)).await;
+        let response = reqwest::Client::new()
+            .get(format!("{base}/api/playlists"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::BAD_GATEWAY);
+        let body: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(body["error"]["code"], "upstream_error");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn unavailable_client_with_an_expired_file_returns_401() {
+        // The homepage redirects to sign-in, so no client exists.
+        // The headers file state is the only signal, and it is expired.
+        let (base, server) = start_server(unavailable_expired_state()).await;
+        let response = reqwest::Client::new()
+            .get(format!("{base}/api/playlists"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::UNAUTHORIZED);
+        let body: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(body["error"]["code"], "auth_expired");
+        let message = body["error"]["message"].as_str().unwrap();
+        assert!(message.contains("restart the daemon"), "{message}");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn unavailable_client_with_a_valid_file_returns_502() {
+        let (base, server) =
+            start_server(test_state_with(Arc::new(crate::music::UnavailableMusicApi))).await;
+        let response = reqwest::Client::new()
+            .get(format!("{base}/api/playlists"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::BAD_GATEWAY);
+        let body: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(body["error"]["code"], "upstream_error");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn unavailable_client_with_an_expired_file_returns_401_for_edits() {
+        // The edit path uses the same no-live-state rule as the
+        // read paths. An expired file owns the failure.
+        let (base, server) = start_server(unavailable_expired_state()).await;
+        let response = reqwest::Client::new()
+            .post(format!("{base}/api/playlists"))
+            .json(&CreatePlaylistRequest {
+                title: "Mix".to_string(),
+                description: String::new(),
+                privacy: ytermusicd_api::PlaylistPrivacy::Private,
+            })
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::UNAUTHORIZED);
+        let body: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(body["error"]["code"], "auth_expired");
+        let message = body["error"]["message"].as_str().unwrap();
+        assert!(message.contains("restart the daemon"), "{message}");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn unavailable_client_with_a_valid_file_returns_502_for_edits() {
+        let (base, server) =
+            start_server(test_state_with(Arc::new(crate::music::UnavailableMusicApi))).await;
+        let response = reqwest::Client::new()
+            .post(format!("{base}/api/playlists"))
+            .json(&CreatePlaylistRequest {
+                title: "Mix".to_string(),
+                description: String::new(),
+                privacy: ytermusicd_api::PlaylistPrivacy::Private,
+            })
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::BAD_GATEWAY);
+        let body: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(body["error"]["code"], "upstream_error");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn rss_failure_with_an_expired_youtube_file_returns_502() {
+        // An expired YouTube file must not turn an RSS failure into
+        // an auth error. RSS needs no auth.
+        let artwork = Arc::new(ArtworkCache::with_fetcher(
+            std::env::temp_dir().join("ytermusicd-test-covers"),
+            0,
+            Arc::new(FakeCovers::new()),
+        ));
+        let state = test_state_with_auth(
+            AuthStatus::expired("/tmp/headers.txt", AUTH_EXPIRED_MESSAGE),
+            Arc::new(FailingMusicApi),
+            Arc::new(MockDownloads::default()),
+            artwork,
+        );
+        let (base, server) = start_server(state).await;
+        let response = reqwest::Client::new()
+            .get(format!("{base}/api/playlists?provider=rss"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::BAD_GATEWAY);
+        let body: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(body["error"]["code"], "upstream_error");
+        server.abort();
+    }
+
+    #[tokio::test]
     async fn commands_queue_downloads() {
         let downloads = Arc::new(MockDownloads::default());
         let (base, server) = start_server(test_state_with_downloads(
@@ -3171,6 +3617,10 @@ mod tests {
         let invalid = playlist_failure(PlaylistEditError::Invalid("bad".to_string()));
         assert_eq!(invalid.status, StatusCode::BAD_REQUEST);
         assert_eq!(invalid.error.code, "bad_request");
+
+        let expired = playlist_failure(PlaylistEditError::AuthExpired("expired".to_string()));
+        assert_eq!(expired.status, StatusCode::UNAUTHORIZED);
+        assert_eq!(expired.error.code, "auth_expired");
 
         let upstream = playlist_failure(PlaylistEditError::Upstream("down".to_string()));
         assert_eq!(upstream.status, StatusCode::BAD_GATEWAY);

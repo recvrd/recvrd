@@ -105,17 +105,6 @@ export function removeQueueItem(queue: Queue, index: number): Queue {
   return { ...queue, items, current };
 }
 
-export function looksLikeAuthError(message: string): boolean {
-  const text = message.toLowerCase();
-  return (
-    text.includes('401') ||
-    text.includes('403') ||
-    text.includes('cookie') ||
-    text.includes('sign in') ||
-    text.includes('auth')
-  );
-}
-
 export class AppStore {
   readonly api: YtermusicdApi;
 
@@ -131,7 +120,6 @@ export class AppStore {
   playlistsLoading = $state(false);
   playlistLoading = $state(false);
   error = $state<string | null>(null);
-  authExpired = $state(false);
   connection = $state<ConnectionState>('connecting');
   view = $state<View>({ kind: 'library' });
   selection = $state(0);
@@ -186,9 +174,12 @@ export class AppStore {
         }
       },
       // After a reconnect (suspend resume, watchdog, or manual retry),
-      // re-read status and queue so the position matches the daemon.
+      // re-read status, providers, and queue. The position matches the
+      // daemon, and the auth banner clears after a daemon restart
+      // with a fresh cookie.
       onReconnect: () => {
         void this.refreshStatus();
+        void this.loadProviders();
         void this.refreshQueue();
       },
       onParseError: () => this.notify('warning', 'Received a malformed event from the daemon.'),
@@ -352,7 +343,8 @@ export class AppStore {
         this.rssFeeds = await this.api.rssFeeds();
       }
     } catch (error) {
-      this.error = describeError(error, this.activeProviderName);
+      this.setLoadError(error);
+      this.handleAuthError(error);
     } finally {
       this.playlistsLoading = false;
     }
@@ -454,7 +446,8 @@ export class AppStore {
     try {
       this.playlist = await this.api.playlist(id, this.activeProvider);
     } catch (error) {
-      this.error = describeError(error, this.activeProviderName);
+      this.setLoadError(error);
+      this.handleAuthError(error);
     } finally {
       this.playlistLoading = false;
     }
@@ -1204,14 +1197,27 @@ export class AppStore {
     if (error instanceof ApiError && error.code === 'network_error') {
       this.connection = 'offline';
     }
-    if (
-      error instanceof ApiError &&
-      error.code === 'upstream_error' &&
-      looksLikeAuthError(error.message)
-    ) {
-      this.authExpired = true;
-    }
+    this.handleAuthError(error);
+    // Keep the auth banner as the only message for an expired
+    // session. Every load path reports through this method, so the
+    // rule covers search and queue loads as well as library loads.
+    if (error instanceof ApiError && error.code === 'auth_expired') return;
     this.notify('error', describeError(error, this.activeProviderName));
+  }
+
+  private handleAuthError(error: unknown): void {
+    if (error instanceof ApiError && error.code === 'auth_expired') {
+      // The daemon sets the provider state before it returns 401.
+      // Re-read it so the banner shows the source and message.
+      void this.loadProviders();
+      void this.refreshStatus();
+    }
+  }
+
+  /// Keep the auth banner as the only message for an expired session.
+  private setLoadError(error: unknown): void {
+    if (error instanceof ApiError && error.code === 'auth_expired') return;
+    this.error = describeError(error, this.activeProviderName);
   }
 
   private scheduleStatusRefresh(): void {

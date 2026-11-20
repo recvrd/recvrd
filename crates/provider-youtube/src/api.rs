@@ -1,18 +1,28 @@
 //! YouTube Music API client. It implements the provider-neutral
 //! `MusicApi` trait on top of `ytpapi2`.
 
-use std::{collections::HashSet, sync::Arc};
+use std::{
+    collections::HashSet,
+    sync::{Arc, Mutex},
+};
 
 use async_trait::async_trait;
 use common_structs::ProviderId;
 use ytermusicd_api::{
-    CreatePlaylistRequest, MusicApi, Playlist, PlaylistEditError, PlaylistPrivacy, SearchResults,
-    Track, UpdatePlaylistRequest,
+    AuthState, AuthStatus, CreatePlaylistRequest, MusicApi, Playlist, PlaylistDetail,
+    PlaylistEditError, PlaylistPrivacy, SearchResults, Track, UpdatePlaylistRequest,
 };
 use ytpapi2::{
     COOKIE, Endpoint, HeaderMap, HeaderValue, PlaylistPrivacy as UpstreamPrivacy, USER_AGENT,
     YoutubeMusicError, YoutubeMusicInstance, YoutubeMusicPlaylistRef, YoutubeMusicVideoRef,
 };
+
+/// Message shown when YouTube Music rejects the stored session.
+/// It names both steps. Update headers.txt with a fresh Cookie.
+/// Restart the daemon to load it. Search and playback still work
+/// with an expired session.
+pub const AUTH_EXPIRED_MESSAGE: &str = "The YouTube Music session expired. Update headers.txt \
+    with a fresh Cookie and restart the daemon. Search and playback still work.";
 
 /// Build an authenticated YouTube Music client from core auth.
 /// The header types come from `ytpapi2`, so they match the client.
@@ -47,33 +57,98 @@ fn check_provider(provider: ProviderId) -> Result<(), String> {
 /// The YouTube Music implementation of the provider-neutral API.
 pub struct YoutubeMusicApi {
     client: Arc<YoutubeMusicInstance>,
+    auth: Mutex<AuthStatus>,
 }
 
 impl YoutubeMusicApi {
-    pub fn new(client: YoutubeMusicInstance) -> Self {
+    /// Build the API client. The homepage login flag sets the first
+    /// auth state. A later library request can change it.
+    pub fn new(client: YoutubeMusicInstance, source: Option<String>) -> Self {
+        let (state, message) = match client.logged_in() {
+            Some(false) => (AuthState::Expired, Some(AUTH_EXPIRED_MESSAGE.to_string())),
+            _ => (AuthState::Ok, None),
+        };
+        if state == AuthState::Expired {
+            log::warn!("{AUTH_EXPIRED_MESSAGE}");
+        }
         Self {
             client: Arc::new(client),
+            auth: Mutex::new(AuthStatus {
+                state,
+                source,
+                message,
+            }),
+        }
+    }
+
+    fn auth_lock(&self) -> std::sync::MutexGuard<'_, AuthStatus> {
+        self.auth
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn mark_expired(&self) {
+        let mut auth = self.auth_lock();
+        if auth.state != AuthState::Expired {
+            log::warn!("{AUTH_EXPIRED_MESSAGE}");
+        }
+        auth.state = AuthState::Expired;
+        auth.message = Some(AUTH_EXPIRED_MESSAGE.to_string());
+    }
+
+    fn mark_ok(&self) {
+        let mut auth = self.auth_lock();
+        if auth.state != AuthState::Ok {
+            log::info!("YouTube Music session is valid");
+        }
+        auth.state = AuthState::Ok;
+        auth.message = None;
+    }
+
+    fn auth_failure(&self, action: &str) -> String {
+        self.mark_expired();
+        format!("{action} failed: {AUTH_EXPIRED_MESSAGE}")
+    }
+
+    fn edit_error(&self, action: &'static str) -> impl Fn(YoutubeMusicError) -> PlaylistEditError {
+        move |error| {
+            let result = playlist_edit_error(action, error);
+            if matches!(result, PlaylistEditError::AuthExpired(_)) {
+                self.mark_expired();
+            }
+            result
         }
     }
 }
 
 #[async_trait]
 impl MusicApi for YoutubeMusicApi {
+    fn auth_status(&self, provider: ProviderId) -> Option<AuthStatus> {
+        (provider == ProviderId::Youtube).then(|| self.auth_lock().clone())
+    }
+
     async fn playlists(&self, provider: ProviderId) -> Result<Vec<Playlist>, String> {
         check_provider(provider)?;
         let mut playlists = Vec::new();
+        let mut succeeded = false;
         for endpoint in [Endpoint::MusicLibraryLanding, Endpoint::MusicLikedPlaylists] {
             match self.client.get_library(&endpoint, 2).await {
-                Ok(found) => playlists.extend(found.into_iter().map(playlist_dto)),
+                Ok(found) => {
+                    succeeded = true;
+                    playlists.extend(found.into_iter().map(playlist_dto));
+                }
+                Err(YoutubeMusicError::AuthExpired(_)) => {
+                    return Err(self.auth_failure("load playlists"));
+                }
                 Err(error) => log::warn!("library endpoint {endpoint:?} failed: {error:?}"),
             }
         }
-        playlists.sort_by(|a, b| a.name.cmp(&b.name));
-        playlists.dedup_by(|a, b| a.id == b.id);
-        if playlists.is_empty() {
-            // Distinguish a genuinely empty library from a total failure.
+        if !succeeded {
             return Err("could not load playlists from YouTube Music".to_string());
         }
+        self.mark_ok();
+        playlists.sort_by(|a, b| a.name.cmp(&b.name));
+        playlists.dedup_by(|a, b| a.id == b.id);
         Ok(playlists)
     }
 
@@ -83,7 +158,51 @@ impl MusicApi for YoutubeMusicApi {
             .get_playlist_raw(id, 5)
             .await
             .map(|tracks| tracks.into_iter().map(track_dto).collect())
-            .map_err(|error| format!("failed to load playlist {id}: {error:?}"))
+            .map_err(|error| match error {
+                YoutubeMusicError::AuthExpired(_) => self.auth_failure("load playlist"),
+                other => format!("failed to load playlist {id}: {other:?}"),
+            })
+    }
+
+    async fn playlist_detail(
+        &self,
+        provider: ProviderId,
+        id: &str,
+    ) -> Result<PlaylistDetail, String> {
+        // Read the playlist direct, not through the library. A
+        // public playlist plays without a session, and the library
+        // load would reject it as expired.
+        check_provider(provider)?;
+        let (info, tracks) = self
+            .client
+            .get_playlist_with_info(id, 5)
+            .await
+            .map_err(|error| match error {
+                YoutubeMusicError::AuthExpired(_) => self.auth_failure("load playlist"),
+                other => format!("failed to load playlist {id}: {other:?}"),
+            })?;
+        // A page with no header and no tracks is not a playlist.
+        let Some((name, subtitle)) = info else {
+            if tracks.is_empty() {
+                return Err(format!("playlist {id} not found"));
+            }
+            return Ok(PlaylistDetail {
+                playlist: Playlist {
+                    id: id.to_string(),
+                    name: id.to_string(),
+                    subtitle: String::new(),
+                },
+                tracks: tracks.into_iter().map(track_dto).collect(),
+            });
+        };
+        Ok(PlaylistDetail {
+            playlist: Playlist {
+                id: id.to_string(),
+                name,
+                subtitle,
+            },
+            tracks: tracks.into_iter().map(track_dto).collect(),
+        })
     }
 
     async fn search(&self, provider: ProviderId, query: &str) -> Result<SearchResults, String> {
@@ -110,7 +229,7 @@ impl MusicApi for YoutubeMusicApi {
                 upstream_privacy(request.privacy),
             )
             .await
-            .map_err(edit_error("create playlist"))?;
+            .map_err(self.edit_error("create playlist"))?;
         Ok(Playlist {
             id,
             name: request.title.clone(),
@@ -126,7 +245,7 @@ impl MusicApi for YoutubeMusicApi {
         self.client
             .rename_playlist(id, &request.title)
             .await
-            .map_err(edit_error("rename playlist"))?;
+            .map_err(self.edit_error("rename playlist"))?;
         Ok(Playlist {
             id: id.to_string(),
             name: request.title.clone(),
@@ -138,7 +257,7 @@ impl MusicApi for YoutubeMusicApi {
         self.client
             .delete_playlist(id)
             .await
-            .map_err(edit_error("delete playlist"))
+            .map_err(self.edit_error("delete playlist"))
     }
 
     async fn add_playlist_tracks(
@@ -149,10 +268,10 @@ impl MusicApi for YoutubeMusicApi {
         self.client
             .add_playlist_items(id, track_ids)
             .await
-            .map_err(edit_error("add tracks"))?;
+            .map_err(self.edit_error("add tracks"))?;
         self.playlist(ProviderId::Youtube, id)
             .await
-            .map_err(PlaylistEditError::Upstream)
+            .map_err(playlist_read_error)
     }
 
     async fn remove_playlist_tracks(
@@ -164,7 +283,7 @@ impl MusicApi for YoutubeMusicApi {
             .client
             .get_playlist_raw(id, 5)
             .await
-            .map_err(edit_error("load playlist"))?;
+            .map_err(self.edit_error("load playlist"))?;
         let mut seen = HashSet::new();
         let mut remove = Vec::new();
         for index in indices {
@@ -191,10 +310,10 @@ impl MusicApi for YoutubeMusicApi {
         self.client
             .remove_playlist_items(id, &remove)
             .await
-            .map_err(edit_error("remove tracks"))?;
+            .map_err(self.edit_error("remove tracks"))?;
         self.playlist(ProviderId::Youtube, id)
             .await
-            .map_err(PlaylistEditError::Upstream)
+            .map_err(playlist_read_error)
     }
 
     async fn move_playlist_track(
@@ -207,7 +326,7 @@ impl MusicApi for YoutubeMusicApi {
             .client
             .get_playlist_raw(id, 5)
             .await
-            .map_err(edit_error("load playlist"))?;
+            .map_err(self.edit_error("load playlist"))?;
         if from >= items.len() {
             return Err(PlaylistEditError::Invalid(format!(
                 "track index {from} is out of range"
@@ -237,10 +356,10 @@ impl MusicApi for YoutubeMusicApi {
         self.client
             .move_playlist_item(id, &set_video_id, successor.as_deref())
             .await
-            .map_err(edit_error("move track"))?;
+            .map_err(self.edit_error("move track"))?;
         self.playlist(ProviderId::Youtube, id)
             .await
-            .map_err(PlaylistEditError::Upstream)
+            .map_err(playlist_read_error)
     }
 }
 
@@ -267,26 +386,34 @@ fn privacy_subtitle(privacy: PlaylistPrivacy) -> String {
     .to_string()
 }
 
-fn edit_error(action: &'static str) -> impl Fn(YoutubeMusicError) -> PlaylistEditError {
-    move |error| PlaylistEditError::Upstream(playlist_error_message(action, error))
+/// Map a re-read after a playlist edit. `playlist()` returns a plain
+/// string error, so an expiry detected on the re-read is recognized
+/// by the shared message instead of being reported as a 502.
+fn playlist_read_error(error: String) -> PlaylistEditError {
+    if error.contains(AUTH_EXPIRED_MESSAGE) {
+        PlaylistEditError::AuthExpired(error)
+    } else {
+        PlaylistEditError::Upstream(error)
+    }
 }
 
-fn playlist_error_message(action: &str, error: YoutubeMusicError) -> String {
+/// Map one upstream edit error to the provider-neutral edit error.
+fn playlist_edit_error(action: &str, error: YoutubeMusicError) -> PlaylistEditError {
     match error {
-        YoutubeMusicError::AuthExpired(_) => format!(
-            "{action} failed: the YouTube Music session expired. Sign in again and update headers.txt."
-        ),
-        YoutubeMusicError::RateLimited(_) => {
-            format!("{action} failed: the YouTube Music rate limit was reached. Try again later.")
+        YoutubeMusicError::AuthExpired(_) => {
+            PlaylistEditError::AuthExpired(format!("{action} failed: {AUTH_EXPIRED_MESSAGE}"))
         }
+        YoutubeMusicError::RateLimited(_) => PlaylistEditError::Upstream(format!(
+            "{action} failed: the YouTube Music rate limit was reached. Try again later."
+        )),
         YoutubeMusicError::YoutubeMusicError(value) => {
             let message = value
                 .pointer("/error/message")
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or("unknown YouTube Music error");
-            format!("{action} failed: {message}")
+            PlaylistEditError::Upstream(format!("{action} failed: {message}"))
         }
-        other => format!("{action} failed: {other:?}"),
+        other => PlaylistEditError::Upstream(format!("{action} failed: {other:?}")),
     }
 }
 
@@ -403,26 +530,374 @@ mod tests {
         assert_eq!(move_successor_index(5, 3, 2), Some(2));
     }
 
+    /// Serve `body` to every browse request and return the base URL.
+    async fn mock_server(body: serde_json::Value) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let body = body.to_string();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
+                // Read one request: headers, then the body per
+                // content-length, so the client is not left hanging.
+                let mut buffer = Vec::new();
+                let mut chunk = [0u8; 1024];
+                loop {
+                    let count = match socket.read(&mut chunk).await {
+                        Ok(count) => count,
+                        Err(_) => return,
+                    };
+                    if count == 0 {
+                        break;
+                    }
+                    buffer.extend_from_slice(&chunk[..count]);
+                    if let Some(position) = buffer.windows(4).position(|w| w == b"\r\n\r\n") {
+                        let header_end = position + 4;
+                        let headers = String::from_utf8_lossy(&buffer[..header_end]).to_string();
+                        let length = headers
+                            .lines()
+                            .find_map(|line| {
+                                let (name, value) = line.split_once(':')?;
+                                name.eq_ignore_ascii_case("content-length")
+                                    .then(|| value.trim().parse::<usize>().ok())
+                                    .flatten()
+                            })
+                            .unwrap_or(0);
+                        if buffer.len() >= header_end + length {
+                            break;
+                        }
+                    }
+                }
+                let reply = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                if socket.write_all(reply.as_bytes()).await.is_err() {
+                    return;
+                }
+            }
+        });
+        format!("http://{address}")
+    }
+
+    fn library_body(logged_in: &str) -> serde_json::Value {
+        serde_json::json!({
+            "responseContext": {"serviceTrackingParams": [{
+                "service": "GFEEDBACK",
+                "params": [{"key": "logged_in", "value": logged_in}]
+            }]},
+            "contents": {}
+        })
+    }
+
+    fn api_with(base: &str, logged_in: Option<bool>) -> YoutubeMusicApi {
+        let client = YoutubeMusicInstance::for_test_logged_in(
+            base.to_string(),
+            "test-key".to_string(),
+            "1.0".to_string(),
+            "SAPISID=x".to_string(),
+            None,
+            logged_in,
+        );
+        YoutubeMusicApi::new(client, Some("/tmp/headers.txt".to_string()))
+    }
+
+    fn auth_state(api: &YoutubeMusicApi) -> AuthState {
+        api.auth_status(ProviderId::Youtube)
+            .expect("youtube auth status")
+            .state
+    }
+
+    #[test]
+    fn new_sets_the_initial_auth_state_from_the_homepage_flag() {
+        // The mock server is never contacted by `new`; any base works.
+        let base = "http://127.0.0.1:9";
+        assert_eq!(auth_state(&api_with(base, Some(false))), AuthState::Expired);
+        assert_eq!(auth_state(&api_with(base, Some(true))), AuthState::Ok);
+        assert_eq!(auth_state(&api_with(base, None)), AuthState::Ok);
+        let message = api_with(base, Some(false))
+            .auth_status(ProviderId::Youtube)
+            .unwrap()
+            .message
+            .unwrap();
+        assert!(message.contains("restart the daemon"), "{message}");
+    }
+
+    #[tokio::test]
+    async fn playlists_propagates_auth_expired_and_marks_the_state() {
+        let base = mock_server(library_body("0")).await;
+        let api = api_with(&base, Some(true));
+        assert_eq!(auth_state(&api), AuthState::Ok);
+        let error = api
+            .playlists(ProviderId::Youtube)
+            .await
+            .expect_err("signed-out library must fail");
+        assert!(error.contains("restart the daemon"), "{error}");
+        assert_eq!(auth_state(&api), AuthState::Expired);
+    }
+
+    #[tokio::test]
+    async fn playlists_empty_signed_in_marks_the_state_ok() {
+        let base = mock_server(library_body("1")).await;
+        let api = api_with(&base, Some(false));
+        assert_eq!(auth_state(&api), AuthState::Expired);
+        let playlists = api.playlists(ProviderId::Youtube).await.unwrap();
+        assert!(playlists.is_empty());
+        assert_eq!(auth_state(&api), AuthState::Ok);
+    }
+
+    #[tokio::test]
+    async fn playlist_propagates_auth_expired() {
+        let base = mock_server(library_body("0")).await;
+        let api = api_with(&base, Some(true));
+        let error = api
+            .playlist(ProviderId::Youtube, "VL1")
+            .await
+            .expect_err("signed-out playlist must fail");
+        assert!(error.contains("restart the daemon"), "{error}");
+        assert_eq!(auth_state(&api), AuthState::Expired);
+    }
+
+    /// Build one playlist page with a detail header, `videos`
+    /// tracks, and an optional continuation token.
+    fn playlist_detail_body() -> serde_json::Value {
+        serde_json::json!({
+            "responseContext": {"serviceTrackingParams": [{
+                "service": "GFEEDBACK",
+                "params": [{"key": "logged_in", "value": "1"}]
+            }]},
+            "header": {"musicDetailHeaderRenderer": {
+                "title": {"runs": [{"text": "My Mix"}]},
+                "subtitle": {"runs": [
+                    {"text": "Playlist"},
+                    {"text": " • "},
+                    {"text": "12 songs"}
+                ]}
+            }},
+            "contents": {"musicPlaylistShelfRenderer": {"contents": [{
+                "playlistItemData": {"videoId": "vid1"},
+                "flexColumns": [{
+                    "musicResponsiveListItemFlexColumnRenderer": {
+                        "text": {"runs": [{"text": "Public Track"}]}
+                    }
+                }]
+            }]}}
+        })
+    }
+
+    #[tokio::test]
+    async fn playlist_detail_reads_the_header_direct() {
+        let base = mock_server(playlist_detail_body()).await;
+        let api = api_with(&base, Some(true));
+        let detail = api
+            .playlist_detail(ProviderId::Youtube, "VL1")
+            .await
+            .unwrap();
+        assert_eq!(detail.playlist.id, "VL1");
+        assert_eq!(detail.playlist.name, "My Mix");
+        assert_eq!(detail.playlist.subtitle, "12 songs");
+        assert_eq!(detail.tracks.len(), 1);
+        assert_eq!(detail.tracks[0].track_id, "vid1");
+    }
+
+    #[tokio::test]
+    async fn playlist_detail_propagates_auth_expired() {
+        let base = mock_server(library_body("0")).await;
+        let api = api_with(&base, Some(true));
+        let error = api
+            .playlist_detail(ProviderId::Youtube, "VL1")
+            .await
+            .expect_err("signed-out playlist detail must fail");
+        assert!(error.contains("restart the daemon"), "{error}");
+        assert_eq!(auth_state(&api), AuthState::Expired);
+    }
+
+    #[tokio::test]
+    async fn playlist_detail_without_a_header_or_tracks_is_not_found() {
+        let base = mock_server(library_body("1")).await;
+        let api = api_with(&base, Some(true));
+        let error = api
+            .playlist_detail(ProviderId::Youtube, "VL1")
+            .await
+            .expect_err("unknown playlist must fail");
+        assert_eq!(error, "playlist VL1 not found");
+    }
+
+    /// Serve one browse response per request, in order.
+    async fn mock_server_with_pages(pages: Vec<serde_json::Value>) -> String {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let pages = Arc::new(pages);
+        let index = Arc::new(AtomicUsize::new(0));
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
+                let mut buffer = Vec::new();
+                let mut chunk = [0u8; 1024];
+                loop {
+                    let count = match socket.read(&mut chunk).await {
+                        Ok(count) => count,
+                        Err(_) => return,
+                    };
+                    if count == 0 {
+                        break;
+                    }
+                    buffer.extend_from_slice(&chunk[..count]);
+                    if let Some(position) = buffer.windows(4).position(|w| w == b"\r\n\r\n") {
+                        let header_end = position + 4;
+                        let headers = String::from_utf8_lossy(&buffer[..header_end]).to_string();
+                        let length = headers
+                            .lines()
+                            .find_map(|line| {
+                                let (name, value) = line.split_once(':')?;
+                                name.eq_ignore_ascii_case("content-length")
+                                    .then(|| value.trim().parse::<usize>().ok())
+                                    .flatten()
+                            })
+                            .unwrap_or(0);
+                        if buffer.len() >= header_end + length {
+                            break;
+                        }
+                    }
+                }
+                let at = index.fetch_add(1, Ordering::SeqCst).min(pages.len() - 1);
+                let body = pages[at].to_string();
+                let reply = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                if socket.write_all(reply.as_bytes()).await.is_err() {
+                    return;
+                }
+            }
+        });
+        format!("http://{address}")
+    }
+
+    #[tokio::test]
+    async fn playlist_mid_pagination_expiry_marks_the_state_expired() {
+        // The first page has tracks, the next page is an empty auth
+        // page. The load must fail, and the state must flip.
+        let first = serde_json::json!({
+            "responseContext": {"serviceTrackingParams": [{
+                "service": "GFEEDBACK",
+                "params": [{"key": "logged_in", "value": "0"}]
+            }]},
+            "contents": {"musicPlaylistShelfRenderer": {"contents": [{
+                "playlistItemData": {"videoId": "vid1"},
+                "flexColumns": [{
+                    "musicResponsiveListItemFlexColumnRenderer": {
+                        "text": {"runs": [{"text": "Public Track"}]}
+                    }
+                }]
+            }]}},
+            "nextContinuationData": {
+                "continuation": "token1",
+                "clickTrackingParams": "tracking"
+            }
+        });
+        let auth_page = serde_json::json!({
+            "responseContext": {"serviceTrackingParams": [{
+                "service": "GFEEDBACK",
+                "params": [{"key": "logged_in", "value": "0"}]
+            }]},
+            "contents": {
+                "messageRenderer": {
+                    "text": {"runs": [{"text": "Sign in to access tracks that you liked or saved"}]},
+                    "command": {"signInEndpoint": {}}
+                }
+            }
+        });
+        let base = mock_server_with_pages(vec![first, auth_page]).await;
+        let api = api_with(&base, Some(true));
+        assert_eq!(auth_state(&api), AuthState::Ok);
+        let error = api
+            .playlist(ProviderId::Youtube, "VL1")
+            .await
+            .expect_err("mid-pagination expiry must fail");
+        assert!(error.contains("restart the daemon"), "{error}");
+        assert_eq!(auth_state(&api), AuthState::Expired);
+    }
+
+    #[tokio::test]
+    async fn network_error_does_not_mark_the_session_expired() {
+        // Nothing listens on 127.0.0.1:9, so every request fails at
+        // the transport. The state must not move either way.
+        let ok = api_with("http://127.0.0.1:9", Some(true));
+        let error = ok
+            .playlists(ProviderId::Youtube)
+            .await
+            .expect_err("unreachable library must fail");
+        assert_eq!(error, "could not load playlists from YouTube Music");
+        assert_eq!(auth_state(&ok), AuthState::Ok);
+
+        let expired = api_with("http://127.0.0.1:9", Some(false));
+        let _ = expired.playlists(ProviderId::Youtube).await;
+        assert_eq!(auth_state(&expired), AuthState::Expired);
+    }
+
+    #[test]
+    fn reread_errors_keep_the_auth_code() {
+        let expired = playlist_read_error(format!("load playlist failed: {AUTH_EXPIRED_MESSAGE}"));
+        match expired {
+            PlaylistEditError::AuthExpired(message) => {
+                assert!(message.contains("restart the daemon"), "{message}");
+            }
+            other => panic!("expected an auth error, got {other:?}"),
+        }
+        let upstream = playlist_read_error("upstream unavailable".to_string());
+        assert!(matches!(upstream, PlaylistEditError::Upstream(_)));
+    }
+
     #[test]
     fn playlist_errors_are_actionable() {
-        let auth = playlist_error_message(
+        let auth = playlist_edit_error(
             "create playlist",
             YoutubeMusicError::AuthExpired(serde_json::json!({})),
         );
-        assert!(auth.contains("Sign in again"), "{auth}");
+        match auth {
+            PlaylistEditError::AuthExpired(message) => {
+                assert!(message.contains("restart the daemon"), "{message}");
+            }
+            other => panic!("expected an auth error, got {other:?}"),
+        }
 
-        let rate = playlist_error_message(
+        let rate = playlist_edit_error(
             "add tracks",
             YoutubeMusicError::RateLimited(serde_json::json!({})),
         );
-        assert!(rate.contains("rate limit"), "{rate}");
+        match rate {
+            PlaylistEditError::Upstream(message) => {
+                assert!(message.contains("rate limit"), "{message}");
+            }
+            other => panic!("expected an upstream error, got {other:?}"),
+        }
 
-        let upstream = playlist_error_message(
+        let upstream = playlist_edit_error(
             "rename playlist",
             YoutubeMusicError::YoutubeMusicError(
                 serde_json::json!({"error": {"message": "Not found"}}),
             ),
         );
-        assert!(upstream.contains("Not found"), "{upstream}");
+        match upstream {
+            PlaylistEditError::Upstream(message) => {
+                assert!(message.contains("Not found"), "{message}");
+            }
+            other => panic!("expected an upstream error, got {other:?}"),
+        }
     }
 }

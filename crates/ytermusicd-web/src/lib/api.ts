@@ -72,6 +72,8 @@ export interface YtermusicdApi {
 export function describeError(error: unknown, providerName?: string): string {
   if (error instanceof ApiError) {
     switch (error.code) {
+      case 'auth_expired':
+        return error.message;
       case 'upstream_error':
         return providerName
           ? `${providerName} rejected the request: ${error.message}`

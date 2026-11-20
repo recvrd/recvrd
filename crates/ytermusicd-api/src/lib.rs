@@ -299,6 +299,8 @@ pub enum AuthState {
     Ok,
     Missing,
     Invalid,
+    /// The stored session is well-formed, but YouTube Music rejected it.
+    Expired,
 }
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]

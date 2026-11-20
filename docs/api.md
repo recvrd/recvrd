@@ -34,12 +34,31 @@ Every non-2xx response uses one envelope:
 | Code | HTTP status | Meaning |
 | --- | --- | --- |
 | `bad_request` | 400 | Invalid or out-of-range input |
+| `auth_expired` | 401 | The YouTube Music session expired |
 | `not_found` | 404 | Unknown playlist or route |
 | `upstream_error` | 502 | Upstream provider request failed |
 | `internal_error` | 500 | Local audio/daemon failure |
 
-`GET /api/status` itself returns 200 with an `auth.state` of `ok`, `missing` or
-`invalid`, so clients can render an actionable auth message.
+`auth_expired` describes the YouTube Music session, not the local API. The
+local API has no authentication. Search and playback still work with an
+expired session. Library reads and playlist edits fail until you refresh
+`headers.txt` and restart the daemon.
+
+When the YouTube client is unavailable, the daemon has no live auth state.
+The headers file state then owns the failure: an expired file returns 401
+`auth_expired`, and a valid file returns 502. The 401 names the session
+even when the failure was a network failure, because the daemon cannot
+tell the two apart without a client. RSS has no auth state, so RSS
+failures always return 502.
+
+A public playlist still loads and plays without a session. The daemon
+reports an expired session for an empty signed-out response that has
+no playlist or album header, or that shows a page-level sign-in
+prompt. A session that expires during pagination ends the load with
+401 `auth_expired` instead of a cut list.
+
+`GET /api/status` itself returns 200 with an `auth.state` of `ok`, `missing`,
+`invalid` or `expired`, so clients can render an actionable auth message.
 
 ## Endpoints
 
@@ -328,7 +347,8 @@ The daemon validates these values before it sends an upstream request:
 - Indices and track IDs are unique in one request.
 
 An out-of-range track index or move position returns 400. An expired session
-returns 502 with a message that asks the user to sign in again.
+returns 401 with code `auth_expired` and a message that says to refresh
+`headers.txt` and restart the daemon.
 
 The YouTube provider sends the edits to the authenticated `playlist/create`,
 `browse/edit_playlist` and `playlist/delete` endpoints. Removal and reordering

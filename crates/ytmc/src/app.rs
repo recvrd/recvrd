@@ -2086,6 +2086,25 @@ mod tests {
     }
 
     #[test]
+    fn reports_an_expired_auth_state() {
+        let mut app = App::new("http://localhost");
+        let mut status = status();
+        status.auth = AuthStatus {
+            state: AuthState::Expired,
+            source: None,
+            message: Some("The YouTube Music session expired.".to_string()),
+        };
+        app.handle_daemon_event(DaemonEvent::Snapshot {
+            status,
+            queue: queue(),
+        });
+        assert_eq!(
+            app.auth_problem(),
+            Some("The YouTube Music session expired.".to_string())
+        );
+    }
+
+    #[test]
     fn playback_event_requests_a_cover_for_a_new_track() {
         let mut app = App::new("http://localhost");
         app.handle_daemon_event(DaemonEvent::Snapshot {
