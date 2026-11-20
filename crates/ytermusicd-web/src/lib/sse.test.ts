@@ -2,12 +2,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EventStream } from './sse';
 import { FakeEventSource } from '../test/fixtures';
 
+function requireGlobalReceiver(this: unknown): void {
+  if (this !== globalThis) throw new TypeError('Illegal invocation');
+}
+
 describe('EventStream', () => {
   beforeEach(() => {
     vi.useFakeTimers();
   });
 
   afterEach(() => {
+    vi.unstubAllGlobals();
     vi.useRealTimers();
   });
 
@@ -337,7 +342,7 @@ describe('EventStream', () => {
     expect(sources).toHaveLength(4);
   });
 
-  it('uses the browser EventSource when no factory is passed', () => {
+  it('uses the browser EventSource and timers by default', () => {
     const sources: FakeEventSource[] = [];
     class BrowserSource extends FakeEventSource {
       constructor(url: string) {
@@ -345,17 +350,39 @@ describe('EventStream', () => {
         sources.push(this);
       }
     }
+    const timeout = globalThis.setTimeout;
+    const clear = globalThis.clearTimeout;
+    const interval = globalThis.setInterval;
+    const clearIntervalFn = globalThis.clearInterval;
     vi.stubGlobal('EventSource', BrowserSource);
+    vi.stubGlobal('setTimeout', function (this: unknown, handler: () => void, ms?: number) {
+      requireGlobalReceiver.call(this);
+      return timeout(handler, ms);
+    });
+    vi.stubGlobal('clearTimeout', function (this: unknown, handle: Parameters<typeof clearTimeout>[0]) {
+      requireGlobalReceiver.call(this);
+      clear(handle);
+    });
+    vi.stubGlobal('setInterval', function (this: unknown, handler: () => void, ms?: number) {
+      requireGlobalReceiver.call(this);
+      return interval(handler, ms);
+    });
+    vi.stubGlobal('clearInterval', function (this: unknown, handle: Parameters<typeof clearInterval>[0]) {
+      requireGlobalReceiver.call(this);
+      clearIntervalFn(handle);
+    });
 
     const stream = new EventStream({
       onEvent: () => {},
       onState: () => {},
     });
-    expect(() => stream.connect()).not.toThrow();
+    expect(() => {
+      stream.connect();
+      sources[0].fail();
+      stream.close();
+    }).not.toThrow();
     expect(sources).toHaveLength(1);
     expect(sources[0].url).toBe('/api/events');
-
-    stream.close();
-    vi.unstubAllGlobals();
+    expect(sources[0].closed).toBe(true);
   });
 });
