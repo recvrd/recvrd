@@ -4,18 +4,29 @@
 use async_trait::async_trait;
 use common_structs::ProviderId;
 
-use crate::{CreatePlaylistRequest, Playlist, SearchResults, Track, UpdatePlaylistRequest};
+use crate::{
+    AuthStatus, CreatePlaylistRequest, Playlist, SearchResults, Track, UpdatePlaylistRequest,
+};
 
 /// A playlist edit failed because of the request or the upstream service.
 #[derive(Debug)]
 pub enum PlaylistEditError {
     Invalid(String),
+    /// YouTube Music rejected the stored session.
+    AuthExpired(String),
     Upstream(String),
 }
 
 #[async_trait]
 #[allow(clippy::double_must_use)]
 pub trait MusicApi: Send + Sync {
+    /// Report the live auth state of a provider. Providers that check
+    /// the upstream session override this method. A `None` value means
+    /// the provider has no live check.
+    fn auth_status(&self, _provider: ProviderId) -> Option<AuthStatus> {
+        None
+    }
+
     async fn playlists(&self, provider: ProviderId) -> Result<Vec<Playlist>, String>;
     async fn playlist(&self, provider: ProviderId, id: &str) -> Result<Vec<Track>, String>;
     async fn search(&self, provider: ProviderId, query: &str) -> Result<SearchResults, String>;

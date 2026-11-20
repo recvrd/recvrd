@@ -276,6 +276,8 @@ pub enum AuthState {
     Ok,
     Missing,
     Invalid,
+    /// The file is well-formed, but the upstream session expired.
+    Expired,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -291,6 +293,16 @@ impl AuthStatus {
             state: AuthState::Ok,
             source: Some(source.into()),
             message: None,
+        }
+    }
+
+    /// Build a status for a well-formed file whose upstream session is
+    /// no longer accepted.
+    pub fn expired(source: impl Into<PathBuf>, message: impl Into<String>) -> Self {
+        Self {
+            state: AuthState::Expired,
+            source: Some(source.into()),
+            message: Some(message.into()),
         }
     }
 

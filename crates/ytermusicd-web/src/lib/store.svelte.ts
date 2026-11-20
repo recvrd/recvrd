@@ -105,17 +105,6 @@ export function removeQueueItem(queue: Queue, index: number): Queue {
   return { ...queue, items, current };
 }
 
-export function looksLikeAuthError(message: string): boolean {
-  const text = message.toLowerCase();
-  return (
-    text.includes('401') ||
-    text.includes('403') ||
-    text.includes('cookie') ||
-    text.includes('sign in') ||
-    text.includes('auth')
-  );
-}
-
 export class AppStore {
   readonly api: YtermusicdApi;
 
@@ -131,7 +120,6 @@ export class AppStore {
   playlistsLoading = $state(false);
   playlistLoading = $state(false);
   error = $state<string | null>(null);
-  authExpired = $state(false);
   connection = $state<ConnectionState>('connecting');
   view = $state<View>({ kind: 'library' });
   selection = $state(0);
@@ -353,6 +341,7 @@ export class AppStore {
       }
     } catch (error) {
       this.error = describeError(error, this.activeProviderName);
+      this.handleAuthError(error);
     } finally {
       this.playlistsLoading = false;
     }
@@ -455,6 +444,7 @@ export class AppStore {
       this.playlist = await this.api.playlist(id, this.activeProvider);
     } catch (error) {
       this.error = describeError(error, this.activeProviderName);
+      this.handleAuthError(error);
     } finally {
       this.playlistLoading = false;
     }
@@ -1204,14 +1194,17 @@ export class AppStore {
     if (error instanceof ApiError && error.code === 'network_error') {
       this.connection = 'offline';
     }
-    if (
-      error instanceof ApiError &&
-      error.code === 'upstream_error' &&
-      looksLikeAuthError(error.message)
-    ) {
-      this.authExpired = true;
-    }
+    this.handleAuthError(error);
     this.notify('error', describeError(error, this.activeProviderName));
+  }
+
+  private handleAuthError(error: unknown): void {
+    if (error instanceof ApiError && error.code === 'auth_expired') {
+      // The daemon sets the provider state before it returns 401.
+      // Re-read it so the banner shows the source and message.
+      void this.loadProviders();
+      void this.refreshStatus();
+    }
   }
 
   private scheduleStatusRefresh(): void {

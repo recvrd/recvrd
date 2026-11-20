@@ -9,15 +9,23 @@
 
 {#if visible && auth}
   <div class="auth-banner" role="alert">
-    <strong>
-      {auth.state === 'missing'
-        ? `${providerName} sign-in is missing.`
-        : `${providerName} sign-in is invalid.`}
-    </strong>
-    <span>
-      Create or refresh <code>headers.txt</code> with the <code>Cookie</code> and
-      <code>User-Agent</code> headers. Then restart the daemon.
-    </span>
+    {#if auth.state === 'expired'}
+      <strong>{providerName} session expired.</strong>
+      <span>
+        Update <code>headers.txt</code> with a fresh <code>Cookie</code> and
+        <code>User-Agent</code>. Then restart the daemon. Search and playback still work.
+      </span>
+    {:else}
+      <strong>
+        {auth.state === 'missing'
+          ? `${providerName} sign-in is missing.`
+          : `${providerName} sign-in is invalid.`}
+      </strong>
+      <span>
+        Create or refresh <code>headers.txt</code> with the <code>Cookie</code> and
+        <code>User-Agent</code> headers. Then restart the daemon.
+      </span>
+    {/if}
     {#if auth.source}
       <span class="path">Look for: <code>{auth.source}</code></span>
     {/if}

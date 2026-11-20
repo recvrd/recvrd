@@ -134,6 +134,18 @@ impl ApiFailure {
         }
     }
 
+    /// The upstream session expired. The local API has no auth of its
+    /// own, so this status describes the provider session.
+    fn auth_expired(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::UNAUTHORIZED,
+            error: ApiError {
+                code: "auth_expired".to_string(),
+                message: message.into(),
+            },
+        }
+    }
+
     fn internal(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
@@ -209,12 +221,40 @@ async fn playlists<S: AudioSink + Send + 'static>(
     Query(query): Query<ProviderQuery>,
 ) -> Result<Json<Vec<Playlist>>, ApiFailure> {
     let provider = parse_provider(query.provider)?;
+    match state.music.playlists(provider).await {
+        Ok(playlists) => Ok(Json(playlists)),
+        Err(error) => Err(provider_failure(&state, provider, error)),
+    }
+}
+
+/// Map a provider read error. An expired session is a 401; every other
+/// provider error is a 502.
+fn provider_failure<S: AudioSink + Send + 'static>(
+    state: &AppState<S>,
+    provider: ProviderId,
+    error: String,
+) -> ApiFailure {
+    let auth = provider_auth(state, provider);
+    if auth.state == AuthState::Expired {
+        ApiFailure::auth_expired(
+            auth.message
+                .unwrap_or_else(|| format!("{provider}: {error}")),
+        )
+    } else {
+        ApiFailure::upstream(format!("{provider}: {error}"))
+    }
+}
+
+/// Report the auth state for one provider. A live provider state wins
+/// over the state of the headers file.
+fn provider_auth<S: AudioSink + Send + 'static>(
+    state: &AppState<S>,
+    provider: ProviderId,
+) -> ApiAuthStatus {
     state
         .music
-        .playlists(provider)
-        .await
-        .map(Json)
-        .map_err(|error| ApiFailure::upstream(format!("{provider}: {error}")))
+        .auth_status(provider)
+        .unwrap_or_else(|| api_auth(&state.auth))
 }
 
 /// Describe every provider the daemon knows, with its capabilities
@@ -234,7 +274,7 @@ async fn providers<S: AudioSink + Send + 'static>(
                         source: None,
                         message: None,
                     },
-                    ProviderId::Youtube => api_auth(&state.auth),
+                    ProviderId::Youtube => provider_auth(&state, *provider),
                 };
                 ProviderInfo::new(*provider, auth)
             })
@@ -330,7 +370,7 @@ async fn playlist<S: AudioSink + Send + 'static>(
         .music
         .playlists(provider)
         .await
-        .map_err(|error| ApiFailure::upstream(format!("{provider}: {error}")))?
+        .map_err(|error| provider_failure(&state, provider, error))?
         .into_iter()
         .find(|playlist| playlist.id == id)
         .ok_or_else(|| ApiFailure::not_found(format!("playlist {id} not found")))?;
@@ -338,7 +378,7 @@ async fn playlist<S: AudioSink + Send + 'static>(
         .music
         .playlist(provider, &id)
         .await
-        .map_err(|error| ApiFailure::upstream(format!("{provider}: {error}")))?;
+        .map_err(|error| provider_failure(&state, provider, error))?;
     Ok(Json(PlaylistDetail { playlist, tracks }))
 }
 
@@ -554,6 +594,7 @@ fn core_track(track: Track) -> ytermusicd_core::Track {
 fn playlist_failure(error: PlaylistEditError) -> ApiFailure {
     match error {
         PlaylistEditError::Invalid(message) => ApiFailure::bad_request(message),
+        PlaylistEditError::AuthExpired(message) => ApiFailure::auth_expired(message),
         PlaylistEditError::Upstream(message) => ApiFailure::upstream(message),
     }
 }
@@ -1141,7 +1182,7 @@ fn status_from_parts<S: AudioSink + Send + 'static>(
         version: env!("CARGO_PKG_VERSION").to_string(),
         status: "ok".to_string(),
         uptime_seconds: state.started_at.elapsed().as_secs(),
-        auth: api_auth(&state.auth),
+        auth: provider_auth(state, ProviderId::default_provider()),
         playback: api_playback(playback),
         queue_length: queue.items.len(),
         downloads: api_download_summary(state.downloads.summary()),
@@ -1166,6 +1207,7 @@ fn api_auth(auth: &AuthStatus) -> ApiAuthStatus {
             CoreAuthState::Ok => AuthState::Ok,
             CoreAuthState::Missing => AuthState::Missing,
             CoreAuthState::Invalid => AuthState::Invalid,
+            CoreAuthState::Expired => AuthState::Expired,
         },
         source: auth.source.as_ref().map(|path| path.display().to_string()),
         message: auth.message.clone(),
@@ -1322,6 +1364,8 @@ mod tests {
     #[derive(Default, Clone)]
     struct MockMusicApi {
         edits: Arc<std::sync::Mutex<Vec<String>>>,
+        auth: Option<ApiAuthStatus>,
+        fail_playlists: bool,
     }
 
     fn track(id: &str) -> Track {
@@ -1337,7 +1381,14 @@ mod tests {
 
     #[async_trait]
     impl MusicApi for MockMusicApi {
+        fn auth_status(&self, _provider: ProviderId) -> Option<ApiAuthStatus> {
+            self.auth.clone()
+        }
+
         async fn playlists(&self, _provider: ProviderId) -> Result<Vec<Playlist>, String> {
+            if self.fail_playlists {
+                return Err("load playlists failed".to_string());
+            }
             Ok(vec![Playlist {
                 id: "p1".to_string(),
                 name: "Playlist One".to_string(),
@@ -1588,6 +1639,18 @@ mod tests {
 
     fn test_state() -> AppState<MockSink> {
         test_state_with(Arc::new(MockMusicApi::default()))
+    }
+
+    fn expired_state() -> AppState<MockSink> {
+        test_state_with(Arc::new(MockMusicApi {
+            auth: Some(ApiAuthStatus {
+                state: AuthState::Expired,
+                source: Some("/tmp/headers.txt".to_string()),
+                message: Some("The YouTube Music session expired.".to_string()),
+            }),
+            fail_playlists: true,
+            ..Default::default()
+        }))
     }
 
     fn test_state_with(music: Arc<dyn MusicApi>) -> AppState<MockSink> {
@@ -2567,6 +2630,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn expired_session_returns_401_and_reports_the_state() {
+        let (base, server) = start_server(expired_state()).await;
+        let client = reqwest::Client::new();
+
+        let response = client
+            .get(format!("{base}/api/playlists"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::UNAUTHORIZED);
+        let body: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(body["error"]["code"], "auth_expired");
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("session expired")
+        );
+
+        let status: serde_json::Value = client
+            .get(format!("{base}/api/status"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(status["auth"]["state"], "expired");
+
+        let providers: serde_json::Value = client
+            .get(format!("{base}/api/providers"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(providers[0]["auth"]["state"], "expired");
+        assert_eq!(providers[1]["auth"]["state"], "ok");
+        server.abort();
+    }
+
+    #[tokio::test]
     async fn commands_queue_downloads() {
         let downloads = Arc::new(MockDownloads::default());
         let (base, server) = start_server(test_state_with_downloads(
@@ -3171,6 +3277,10 @@ mod tests {
         let invalid = playlist_failure(PlaylistEditError::Invalid("bad".to_string()));
         assert_eq!(invalid.status, StatusCode::BAD_REQUEST);
         assert_eq!(invalid.error.code, "bad_request");
+
+        let expired = playlist_failure(PlaylistEditError::AuthExpired("expired".to_string()));
+        assert_eq!(expired.status, StatusCode::UNAUTHORIZED);
+        assert_eq!(expired.error.code, "auth_expired");
 
         let upstream = playlist_failure(PlaylistEditError::Upstream("down".to_string()));
         assert_eq!(upstream.status, StatusCode::BAD_GATEWAY);

@@ -148,6 +148,9 @@ pub struct YoutubeMusicInstance {
     account_id: Option<String>,
     client: reqwest::Client,
     base_url: String,
+    /// The homepage `ytcfg` value. `Some(false)` means YouTube Music
+    /// treats the cookie as signed out.
+    logged_in: Option<bool>,
 }
 
 /// Consume one continuation from the budget and report whether the response
@@ -158,6 +161,38 @@ fn consume_continuation(remaining: &mut usize) -> bool {
     }
     *remaining -= 1;
     *remaining > 0
+}
+
+/// Read the homepage `LOGGED_IN` flag. The homepage embeds it in
+/// `ytcfg`. Return `None` when the field is absent.
+fn parse_logged_in_flag(homepage: &str) -> Option<bool> {
+    match homepage.between("\"LOGGED_IN\":", ",")?.trim() {
+        "true" => Some(true),
+        "false" => Some(false),
+        _ => None,
+    }
+}
+
+/// Read the `logged_in` value from an InnerTube response. The value is
+/// in the `GFEEDBACK` service tracking parameters.
+fn response_logged_in(response: &Value) -> Option<bool> {
+    let services = response
+        .pointer("/responseContext/serviceTrackingParams")?
+        .as_array()?;
+    let feedback = services
+        .iter()
+        .find(|service| service.get("service").and_then(Value::as_str) == Some("GFEEDBACK"))?;
+    let params = feedback.get("params")?.as_array()?;
+    let value = params
+        .iter()
+        .find(|param| param.get("key").and_then(Value::as_str) == Some("logged_in"))?
+        .get("value")?
+        .as_str()?;
+    match value {
+        "1" => Some(true),
+        "0" => Some(false),
+        _ => None,
+    }
 }
 
 impl YoutubeMusicInstance {
@@ -260,6 +295,8 @@ impl YoutubeMusicInstance {
                 YoutubeMusicError::CantFindInnerTubeClientVersion(response.to_string())
             })?;
         trace!("Innertube client version: {}", client_version);
+        let logged_in = parse_logged_in_flag(&response);
+        trace!("Homepage login state: {logged_in:?}");
         // New file for brand accounts, maybe put it in config or headers.txt is better but more complex.
         trace!("account id {:?}", account_id);
         Ok(Self {
@@ -270,7 +307,14 @@ impl YoutubeMusicInstance {
             account_id,
             client: rest_client,
             base_url: YTM_DOMAIN.to_string(),
+            logged_in,
         })
+    }
+
+    /// Report the login state from the homepage. `None` means the
+    /// homepage did not contain the field.
+    pub fn logged_in(&self) -> Option<bool> {
+        self.logged_in
     }
 
     #[cfg(test)]
@@ -289,6 +333,7 @@ impl YoutubeMusicInstance {
             account_id,
             client: reqwest::Client::new(),
             base_url,
+            logged_in: None,
         }
     }
     fn compute_sapi_hash(&self) -> String {
@@ -454,6 +499,9 @@ impl YoutubeMusicInstance {
     ) -> Result<Vec<YoutubeMusicPlaylistRef>> {
         let (library_json, mut continuations) = self.browse(endpoint, n_continuations > 0).await?;
         trace!("Fetched library");
+        if response_logged_in(&library_json) == Some(false) {
+            return Err(YoutubeMusicError::AuthExpired(library_json));
+        }
         debug!("Library response: {library_json}");
         debug!("Continuations: {continuations:?}");
         let mut library = from_json(&library_json, get_playlist)?;
@@ -463,6 +511,9 @@ impl YoutubeMusicInstance {
             trace!("Fetching continuation {continuation:?} ({endpoint:?})");
             let (library_json, new_continuations) =
                 self.browse_continuation(&continuation, fetch_more).await?;
+            if response_logged_in(&library_json) == Some(false) {
+                return Err(YoutubeMusicError::AuthExpired(library_json));
+            }
             debug!("Library response: {library_json}");
             continuations.extend(new_continuations);
             let new_library = from_json(&library_json, get_playlist)?;
@@ -1284,6 +1335,92 @@ mod browse_tests {
             "http://127.0.0.1:9/youtubei/v1/browse?ctoken=a%26b%3Dc%2Bd&key=test-key"
         );
     }
+
+    #[test]
+    fn parses_the_homepage_login_flag() {
+        assert_eq!(
+            parse_logged_in_flag(r#"{"LOGGED_IN":true,"PAGE":"x"}"#),
+            Some(true)
+        );
+        assert_eq!(
+            parse_logged_in_flag(r#"{"LOGGED_IN":false,"PAGE":"x"}"#),
+            Some(false)
+        );
+        assert_eq!(parse_logged_in_flag(r#"{"PAGE":"x"}"#), None);
+    }
+
+    #[test]
+    fn parses_the_response_login_flag() {
+        let signed_in = json!({
+            "responseContext": {
+                "serviceTrackingParams": [{
+                    "service": "GFEEDBACK",
+                    "params": [{"key": "logged_in", "value": "1"}]
+                }]
+            }
+        });
+        let signed_out = json!({
+            "responseContext": {
+                "serviceTrackingParams": [{
+                    "service": "GFEEDBACK",
+                    "params": [{"key": "logged_in", "value": "0"}]
+                }]
+            }
+        });
+        assert_eq!(response_logged_in(&signed_in), Some(true));
+        assert_eq!(response_logged_in(&signed_out), Some(false));
+        assert_eq!(response_logged_in(&json!({})), None);
+    }
+
+    async fn library_response(logged_in: &str) -> Result<Vec<YoutubeMusicPlaylistRef>> {
+        use tokio::io::AsyncWriteExt;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let logged_in = logged_in.to_string();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let _ = super::search_pagination_tests::read_request(&mut socket).await;
+            let body = json!({
+                "responseContext": {
+                    "serviceTrackingParams": [{
+                        "service": "GFEEDBACK",
+                        "params": [{"key": "logged_in", "value": logged_in}]
+                    }]
+                },
+                "contents": {}
+            })
+            .to_string();
+            let reply = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            socket.write_all(reply.as_bytes()).await.unwrap();
+        });
+        let instance = YoutubeMusicInstance::for_test(
+            format!("http://{address}"),
+            "test-key".to_string(),
+            "1.0".to_string(),
+            "SAPISID=x".to_string(),
+            None,
+        );
+        instance
+            .get_library(&Endpoint::MusicLibraryLanding, 0)
+            .await
+    }
+
+    #[tokio::test]
+    async fn signed_out_library_returns_auth_expired() {
+        let result = library_response("0").await;
+        assert!(matches!(result, Err(YoutubeMusicError::AuthExpired(_))));
+    }
+
+    #[tokio::test]
+    async fn signed_in_empty_library_is_empty_not_expired() {
+        let result = library_response("1").await.unwrap();
+        assert!(result.is_empty());
+    }
 }
 
 #[cfg(test)]
@@ -1325,7 +1462,7 @@ mod search_pagination_tests {
         page
     }
 
-    async fn read_request(socket: &mut tokio::net::TcpStream) -> String {
+    pub(crate) async fn read_request(socket: &mut tokio::net::TcpStream) -> String {
         use tokio::io::AsyncReadExt;
 
         let mut buffer = Vec::new();

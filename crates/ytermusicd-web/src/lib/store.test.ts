@@ -470,17 +470,70 @@ describe('AppStore', () => {
     store.dispose();
   });
 
-  it('marks the auth banner for upstream auth failures', async () => {
+  it('reloads the auth state after an expired-session error', async () => {
     const { api, store } = setup();
     await store.init();
+    vi.mocked(api.providers).mockClear();
+    vi.mocked(api.status).mockClear();
     api.search = vi.fn(async () => {
-      throw new ApiError('401 unauthorized: cookies expired', 'upstream_error', 502);
+      throw new ApiError('The YouTube Music session expired.', 'auth_expired', 401);
     });
+    api.providers = vi.fn(async () => [
+      makeProviderInfo({
+        auth: {
+          state: 'expired',
+          source: '/tmp/headers.txt',
+          message: 'The YouTube Music session expired.',
+        },
+      }),
+    ]);
+    api.status = vi.fn(async () =>
+      makeStatus({
+        auth: {
+          state: 'expired',
+          source: '/tmp/headers.txt',
+          message: 'The YouTube Music session expired.',
+        },
+      }),
+    );
     store.searchQuery = 'test';
     await store.searchNow();
 
-    expect(store.authExpired).toBe(true);
-    expect(store.toasts.at(-1)?.message).toContain('YouTube Music rejected the request');
+    await vi.waitFor(() => {
+      expect(store.activeProviderInfo?.auth.state).toBe('expired');
+    });
+    expect(api.providers).toHaveBeenCalled();
+    expect(api.status).toHaveBeenCalled();
+    expect(store.toasts.at(-1)?.message).toContain('session expired');
+    store.dispose();
+  });
+
+  it('shows the expired state when the first library load fails', async () => {
+    const api = makeApi();
+    api.playlists = vi.fn(async () => {
+      throw new ApiError('The YouTube Music session expired.', 'auth_expired', 401);
+    });
+    api.providers = vi.fn(async () => [
+      makeProviderInfo({
+        auth: {
+          state: 'expired',
+          source: '/tmp/headers.txt',
+          message: 'The YouTube Music session expired.',
+        },
+      }),
+    ]);
+    const sources: FakeEventSource[] = [];
+    const store = new AppStore(api, {
+      createEventSource: (url) => {
+        const source = new FakeEventSource(url);
+        sources.push(source);
+        return source;
+      },
+    });
+    await store.init();
+
+    expect(store.activeProviderInfo?.auth.state).toBe('expired');
+    expect(store.error).toContain('session expired');
     store.dispose();
   });
 

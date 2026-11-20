@@ -34,12 +34,18 @@ Every non-2xx response uses one envelope:
 | Code | HTTP status | Meaning |
 | --- | --- | --- |
 | `bad_request` | 400 | Invalid or out-of-range input |
+| `auth_expired` | 401 | The YouTube Music session expired |
 | `not_found` | 404 | Unknown playlist or route |
 | `upstream_error` | 502 | Upstream provider request failed |
 | `internal_error` | 500 | Local audio/daemon failure |
 
-`GET /api/status` itself returns 200 with an `auth.state` of `ok`, `missing` or
-`invalid`, so clients can render an actionable auth message.
+`auth_expired` describes the YouTube Music session, not the local API. The
+local API has no authentication. Search and playback still work with an
+expired session. Library reads and playlist edits fail until you refresh
+`headers.txt` and restart the daemon.
+
+`GET /api/status` itself returns 200 with an `auth.state` of `ok`, `missing`,
+`invalid` or `expired`, so clients can render an actionable auth message.
 
 ## Endpoints
 

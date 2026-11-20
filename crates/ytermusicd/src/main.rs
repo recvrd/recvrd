@@ -33,7 +33,10 @@ use crate::{
     providers::{CompositeCoverFetcher, CompositeDownloader, CompositeMusicApi},
 };
 use provider_rss::RssProvider;
-use provider_youtube::{YoutubeCoverFetcher, YoutubeDownloader, YoutubeMusicApi, connect};
+use provider_youtube::{
+    AUTH_EXPIRED_MESSAGE, YoutubeCoverFetcher, YoutubeDownloader, YoutubeMusicApi,
+    YoutubeMusicError, connect,
+};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -281,7 +284,7 @@ fn run_serve(
     let port = port.or(config.port).unwrap_or(8080);
     let headers = headers.or(config.headers);
 
-    let (auth_status, auth) = match resolve_auth(&paths, headers.as_deref()) {
+    let (mut auth_status, auth, auth_source) = match resolve_auth(&paths, headers.as_deref()) {
         Ok(loaded) => {
             log::info!("loaded auth from {}", loaded.source.display());
             if loaded.legacy {
@@ -290,7 +293,12 @@ fn run_serve(
                     paths.headers_file().display()
                 );
             }
-            (AuthStatus::ok(loaded.source), Some(loaded.auth))
+            let source = loaded.source.clone();
+            (
+                AuthStatus::ok(loaded.source),
+                Some(loaded.auth),
+                Some(source),
+            )
         }
         Err(error) => {
             log::error!("{error}");
@@ -355,13 +363,20 @@ fn run_serve(
             Some(auth) => match connect(&auth).await {
                 Ok(client) => {
                     log::info!("YouTube Music client ready");
+                    let source = auth_source.as_ref().map(|path| path.display().to_string());
                     Arc::new(CompositeMusicApi::new(
-                        Arc::new(YoutubeMusicApi::new(client)),
+                        Arc::new(YoutubeMusicApi::new(client, source)),
                         rss.clone(),
                     ))
                 }
                 Err(error) => {
                     log::error!("could not create YouTube Music client: {error:?}");
+                    if matches!(error, YoutubeMusicError::NeedToLogin) {
+                        auth_status = AuthStatus::expired(
+                            auth_source.clone().unwrap_or_else(|| paths.headers_file()),
+                            AUTH_EXPIRED_MESSAGE,
+                        );
+                    }
                     Arc::new(CompositeMusicApi::new(
                         Arc::new(UnavailableMusicApi),
                         rss.clone(),

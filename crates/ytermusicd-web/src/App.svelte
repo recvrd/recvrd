@@ -25,18 +25,7 @@
         : (store.playlist?.playlist.name ?? store.view.name ?? 'Playlist'),
   );
 
-  const auth = $derived.by(() => {
-    const providerAuth = store.activeProviderInfo?.auth ?? store.status?.auth ?? null;
-    if (!providerAuth) return null;
-    if (store.authExpired) {
-      return {
-        ...providerAuth,
-        state: 'invalid' as const,
-        message: `${store.activeProviderName} rejected the request. Refresh headers.txt.`,
-      };
-    }
-    return providerAuth;
-  });
+  const auth = $derived(store.activeProviderInfo?.auth ?? store.status?.auth ?? null);
 
   onMount(() => {
     void store.init();

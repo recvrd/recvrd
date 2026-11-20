@@ -29,6 +29,22 @@ describe('AuthBanner', () => {
     });
     expect(container.textContent?.trim()).toBe('');
   });
+
+  it('explains an expired session without blocking search', () => {
+    render(AuthBanner, {
+      props: {
+        auth: {
+          state: 'expired',
+          source: '/tmp/headers.txt',
+          message: 'The YouTube Music session expired.',
+        },
+      },
+    });
+
+    expect(screen.getByText('YouTube Music session expired.')).toBeInTheDocument();
+    expect(screen.getByText(/Search and playback still work/)).toBeInTheDocument();
+    expect(screen.getByText('/tmp/headers.txt')).toBeInTheDocument();
+  });
 });
 
 describe('ConnectionBanner', () => {
