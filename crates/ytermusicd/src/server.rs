@@ -1648,13 +1648,17 @@ mod tests {
         test_state_with(Arc::new(MockMusicApi::default()))
     }
 
+    fn expired_auth() -> ApiAuthStatus {
+        ApiAuthStatus {
+            state: AuthState::Expired,
+            source: Some("/tmp/headers.txt".to_string()),
+            message: Some(AUTH_EXPIRED_MESSAGE.to_string()),
+        }
+    }
+
     fn expired_state() -> AppState<MockSink> {
         test_state_with(Arc::new(MockMusicApi {
-            auth: Some(ApiAuthStatus {
-                state: AuthState::Expired,
-                source: Some("/tmp/headers.txt".to_string()),
-                message: Some(AUTH_EXPIRED_MESSAGE.to_string()),
-            }),
+            auth: Some(expired_auth()),
             fail_playlists: Some(format!("load playlists failed: {AUTH_EXPIRED_MESSAGE}")),
             ..Default::default()
         }))
@@ -2680,11 +2684,7 @@ mod tests {
     #[tokio::test]
     async fn expired_session_play_playlist_returns_401() {
         let music = Arc::new(MockMusicApi {
-            auth: Some(ApiAuthStatus {
-                state: AuthState::Expired,
-                source: Some("/tmp/headers.txt".to_string()),
-                message: Some(AUTH_EXPIRED_MESSAGE.to_string()),
-            }),
+            auth: Some(expired_auth()),
             fail_playlist: Some(format!("load playlist failed: {AUTH_EXPIRED_MESSAGE}")),
             ..Default::default()
         });
@@ -2707,15 +2707,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn expired_session_plays_a_public_playlist_with_tracks() {
+        // A public playlist still returns tracks without a session.
+        // The expired state must not block that playback.
+        let music = Arc::new(MockMusicApi {
+            auth: Some(expired_auth()),
+            ..Default::default()
+        });
+        let (base, server) = start_server(test_state_with(music)).await;
+        let response = reqwest::Client::new()
+            .post(format!("{base}/api/play/playlist"))
+            .json(&PlayPlaylistRequest {
+                playlist_id: "MPREb_public".to_string(),
+                provider: ProviderId::Youtube,
+            })
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let status: Status = response.json().await.unwrap();
+        assert_eq!(status.auth.state, AuthState::Expired);
+        assert_eq!(status.queue_length, 2);
+        server.abort();
+    }
+
+    #[tokio::test]
     async fn transient_failure_while_expired_returns_502() {
         // The state is Expired, but the error is a network failure, not
         // an expiry. It must stay a 502.
         let music = Arc::new(MockMusicApi {
-            auth: Some(ApiAuthStatus {
-                state: AuthState::Expired,
-                source: Some("/tmp/headers.txt".to_string()),
-                message: Some(AUTH_EXPIRED_MESSAGE.to_string()),
-            }),
+            auth: Some(expired_auth()),
             fail_playlists: Some("upstream unavailable".to_string()),
             ..Default::default()
         });
