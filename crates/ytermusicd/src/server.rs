@@ -229,9 +229,9 @@ async fn playlists<S: AudioSink + Send + 'static>(
 }
 
 /// Map a provider read error. An expired session is a 401; every other
-/// provider error is a 502. The stored state alone does not prove the
-/// error is an expiry: a network failure while the state is Expired
-/// is still a 502. The error must carry the expired-session message.
+/// provider error is a 502. A live provider state needs the matching
+/// error message, so a network failure while the state is Expired stays
+/// a 502. With no live state, an expired headers file owns the failure.
 fn provider_failure<S: AudioSink + Send + 'static>(
     state: &AppState<S>,
     provider: ProviderId,
