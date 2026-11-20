@@ -188,10 +188,40 @@ fn response_has_key(response: &Value, key: &str) -> bool {
     }
 }
 
+/// A page has a page-level sign-in prompt when a `messageRenderer`
+/// asks the user to sign in. Item menus also carry `signInEndpoint`,
+/// but they use `menuNavigationItemRenderer`, not `messageRenderer`,
+/// so a menu entry is not a prompt.
+fn response_has_sign_in_prompt(response: &Value) -> bool {
+    match response {
+        Value::Object(map) => {
+            if let Some(message) = map.get("messageRenderer")
+                && value_has_text(message, "Sign in")
+            {
+                return true;
+            }
+            map.values().any(response_has_sign_in_prompt)
+        }
+        Value::Array(items) => items.iter().any(response_has_sign_in_prompt),
+        _ => false,
+    }
+}
+
+/// Check whether any string in a JSON value contains the given text.
+fn value_has_text(value: &Value, needle: &str) -> bool {
+    match value {
+        Value::String(text) => text.contains(needle),
+        Value::Object(map) => map.values().any(|value| value_has_text(value, needle)),
+        Value::Array(items) => items.iter().any(|value| value_has_text(value, needle)),
+        _ => false,
+    }
+}
+
 /// A playlist page is an auth page when it has no playlist or album
-/// header. A real playlist, even an empty one, has a header. Signed-out
-/// pages also put `signInEndpoint` in every item menu, so that key is
-/// not a reliable signal.
+/// header, or when it shows a page-level sign-in prompt. A real
+/// playlist, even an empty one, has a header and no prompt.
+/// Signed-out pages also put `signInEndpoint` in every item menu,
+/// so that key is not a reliable signal.
 fn playlist_page_is_auth_page(response: &Value) -> bool {
     ![
         "musicDetailHeaderRenderer",
@@ -200,6 +230,7 @@ fn playlist_page_is_auth_page(response: &Value) -> bool {
     ]
     .iter()
     .any(|key| response_has_key(response, key))
+        || response_has_sign_in_prompt(response)
 }
 
 /// Read the `logged_in` value from an InnerTube response. The value is
@@ -615,11 +646,12 @@ impl YoutubeMusicInstance {
         let info = playlist_header_info(&playlist_json);
         let mut videos = parse_playlist(&playlist_json)?;
         // An empty signed-out first page is an auth page only when
-        // it asks the user to sign in or has no playlist shelf. A
-        // real empty playlist has a shelf and no sign-in prompt.
-        // When a continuation token exists, the loop below fetches
-        // it before this conclusion, so a public playlist whose
-        // first page is empty still returns its tracks.
+        // it has no playlist or album header, or it shows a
+        // page-level sign-in prompt. A real empty playlist has a
+        // header and no prompt. When a continuation token exists,
+        // the loop below fetches it before this conclusion, so a
+        // public playlist whose first page is empty still returns
+        // its tracks.
         let signed_out = response_logged_in(&playlist_json) == Some(false);
         if videos.is_empty()
             && signed_out
@@ -644,11 +676,11 @@ impl YoutubeMusicInstance {
             trace!("Fetched {new_count} videos");
             debug!("Playlist response: {playlist_json}");
             videos.extend(new_videos);
-            // An empty signed-out page that asks the user to sign in,
-            // or has no shelf, ends the playlist. The session expired
-            // during pagination, so report it instead of a silent cut.
-            // A signed-out page with tracks is a public playlist, so
-            // keep its pages.
+            // An empty signed-out page with no header, or with a
+            // page-level sign-in prompt, ends the playlist. The
+            // session expired during pagination, so report it
+            // instead of a silent cut. A signed-out page with
+            // tracks is a public playlist, so keep its pages.
             if new_count == 0 && signed_out && playlist_page_is_auth_page(&playlist_json) {
                 return Err(YoutubeMusicError::AuthExpired(playlist_json));
             }
@@ -1765,6 +1797,70 @@ mod browse_tests {
         let instance = mock_instance_with_body(sign_in_page("0")).await;
         let result = instance.get_playlist_raw("VL1", 0).await;
         assert!(matches!(result, Err(YoutubeMusicError::AuthExpired(_))));
+    }
+
+    #[tokio::test]
+    async fn signed_out_private_playlist_with_header_and_prompt_returns_auth_expired() {
+        // A signed-out private playlist has a header, but YouTube
+        // gates it with a sign-in prompt and no tracks. The header
+        // alone must not white-list a gated page.
+        let body = json!({
+            "responseContext": {
+                "serviceTrackingParams": [{
+                    "service": "GFEEDBACK",
+                    "params": [{"key": "logged_in", "value": "0"}]
+                }]
+            },
+            "header": {"musicDetailHeaderRenderer": {
+                "title": {"runs": [{"text": "Private Playlist"}]},
+                "subtitle": {"runs": [
+                    {"text": "Playlist"},
+                    {"text": " • "},
+                    {"text": "0 songs"}
+                ]}
+            }},
+            "contents": {
+                "musicPlaylistShelfRenderer": {"contents": []},
+                "messageRenderer": {
+                    "text": {"runs": [{"text": "Sign in to access tracks that you liked or saved"}]},
+                    "command": {"signInEndpoint": {}}
+                }
+            }
+        });
+        let instance = mock_instance_with_body(body).await;
+        let result = instance.get_playlist_raw("VL1", 0).await;
+        assert!(matches!(result, Err(YoutubeMusicError::AuthExpired(_))));
+    }
+
+    #[tokio::test]
+    async fn signed_out_empty_playlist_with_other_message_is_empty_not_expired() {
+        // A message that does not ask the user to sign in is not a
+        // prompt. The page stays an empty playlist.
+        let body = json!({
+            "responseContext": {
+                "serviceTrackingParams": [{
+                    "service": "GFEEDBACK",
+                    "params": [{"key": "logged_in", "value": "0"}]
+                }]
+            },
+            "header": {"musicDetailHeaderRenderer": {
+                "title": {"runs": [{"text": "Empty Playlist"}]},
+                "subtitle": {"runs": [
+                    {"text": "Playlist"},
+                    {"text": " • "},
+                    {"text": "0 songs"}
+                ]}
+            }},
+            "contents": {
+                "musicPlaylistShelfRenderer": {"contents": []},
+                "messageRenderer": {
+                    "text": {"runs": [{"text": "This playlist is empty"}]}
+                }
+            }
+        });
+        let instance = mock_instance_with_body(body).await;
+        let videos = instance.get_playlist_raw("VL1", 0).await.unwrap();
+        assert!(videos.is_empty());
     }
 
     #[tokio::test]
