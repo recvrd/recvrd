@@ -66,12 +66,12 @@ if ! grep -q '"tracks"' <<<"$search"; then
 fi
 echo "search: ok"
 
-video_id=$(printf '%s' "$search" | tr ',' '\n' | grep -m1 -o '"video_id":"[^"]*"' | cut -d'"' -f4)
-if [[ -z "$video_id" ]]; then
-  echo "error: search returned no video id" >&2
+track_id=$(printf '%s' "$search" | tr ',' '\n' | grep -m1 -o '"track_id":"[^"]*"' | cut -d'"' -f4)
+if [[ -z "$track_id" ]]; then
+  echo "error: search returned no track id" >&2
   exit 1
 fi
-curl -fsS --max-time 20 -o /dev/null "$base/api/tracks/$video_id/cover"
+curl -fsS --max-time 20 -o /dev/null "$base/api/tracks/youtube/$track_id/cover"
 echo "cover: ok"
 
 sse=$(curl -sS -N --max-time 2 "$base/api/events" || true)

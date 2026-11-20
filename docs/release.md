@@ -1,6 +1,6 @@
 # Release checklist
 
-The release version is `0.6.2`. The tag is `v0.6.2`.
+The release version is `0.6.3`. The tag is `v0.6.3`.
 
 ## Before the tag
 
@@ -58,16 +58,16 @@ The release version is `0.6.2`. The tag is `v0.6.2`.
 ## Tag and publish
 
 ```sh
-git tag -a v0.6.2 -m "ytermusicd v0.6.2"
-git push origin v0.6.2
+git tag -a v0.6.3 -m "ytermusicd v0.6.3"
+git push origin v0.6.3
 ```
 
 Create a GitHub release from the tag. The release workflow builds:
 
-- `ytermusicd-v0.6.2-x86_64-unknown-linux-gnu.tar.gz`
-- `ytermusicd-v0.6.2-aarch64-apple-darwin.tar.gz`
-- `ytermusicd-v0.6.2-x86_64-apple-darwin.tar.gz`
-- `ytermusicd-v0.6.2-x86_64-pc-windows-msvc.zip`
+- `ytermusicd-v0.6.3-x86_64-unknown-linux-gnu.tar.gz`
+- `ytermusicd-v0.6.3-aarch64-apple-darwin.tar.gz`
+- `ytermusicd-v0.6.3-x86_64-apple-darwin.tar.gz`
+- `ytermusicd-v0.6.3-x86_64-pc-windows-msvc.zip`
 - a SHA-256 file for each archive
 
 Each archive contains the `ytermusicd` daemon and the `ytmc` terminal
