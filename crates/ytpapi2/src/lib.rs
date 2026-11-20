@@ -177,6 +177,25 @@ fn parse_logged_in_flag(homepage: &str) -> Option<bool> {
     }
 }
 
+/// Find a JSON object key at any depth in a response.
+fn response_has_key(response: &Value, key: &str) -> bool {
+    match response {
+        Value::Object(map) => {
+            map.contains_key(key) || map.values().any(|value| response_has_key(value, key))
+        }
+        Value::Array(items) => items.iter().any(|value| response_has_key(value, key)),
+        _ => false,
+    }
+}
+
+/// A playlist page is an auth page when it asks the user to sign
+/// in, or when it has no playlist shelf at all. A real playlist,
+/// even an empty one, has a shelf and no sign-in prompt.
+fn playlist_page_is_auth_page(response: &Value) -> bool {
+    response_has_key(response, "signInEndpoint")
+        || !response_has_key(response, "musicPlaylistShelfRenderer")
+}
+
 /// Read the `logged_in` value from an InnerTube response. The value is
 /// in the `GFEEDBACK` service tracking parameters.
 fn response_logged_in(response: &Value) -> Option<bool> {
@@ -575,10 +594,18 @@ impl YoutubeMusicInstance {
         debug!("Playlist response: {playlist_json}");
         debug!("Continuations: {continuations:?}");
         let mut videos = parse_playlist(&playlist_json)?;
-        // A signed-out response with tracks is a public playlist. It
-        // plays without a session. A signed-out response with no
-        // tracks is an auth page, so report the expiry.
-        if videos.is_empty() && response_logged_in(&playlist_json) == Some(false) {
+        // An empty signed-out first page is an auth page only when
+        // it asks the user to sign in or has no playlist shelf. A
+        // real empty playlist has a shelf and no sign-in prompt.
+        // When a continuation token exists, the loop below fetches
+        // it before this conclusion, so a public playlist whose
+        // first page is empty still returns its tracks.
+        let signed_out = response_logged_in(&playlist_json) == Some(false);
+        if videos.is_empty()
+            && signed_out
+            && playlist_page_is_auth_page(&playlist_json)
+            && continuations.is_empty()
+        {
             return Err(YoutubeMusicError::AuthExpired(playlist_json));
         }
 
@@ -597,9 +624,18 @@ impl YoutubeMusicInstance {
             trace!("Fetched {new_count} videos");
             debug!("Playlist response: {playlist_json}");
             videos.extend(new_videos);
-            // Stop on an empty signed-out page. A signed-out page
-            // with tracks is a public playlist, so keep its pages.
-            if (signed_out && new_count == 0) || n_continuations == 0 {
+            // An empty signed-out page that asks the user to sign in,
+            // or has no shelf, ends the playlist. The session expired
+            // during pagination, so report it instead of a silent cut.
+            // A signed-out page with tracks is a public playlist, so
+            // keep its pages.
+            if new_count == 0
+                && signed_out
+                && playlist_page_is_auth_page(&playlist_json)
+            {
+                return Err(YoutubeMusicError::AuthExpired(playlist_json));
+            }
+            if new_count == 0 || n_continuations == 0 {
                 break;
             }
         }
@@ -1610,6 +1646,146 @@ mod browse_tests {
         );
         let videos = instance.get_playlist_raw("MPREb_test", 1).await.unwrap();
         assert_eq!(videos.len(), 2);
+    }
+
+    /// Build one playlist page: a shelf with `videos` tracks, an
+    /// optional continuation token, and the given `logged_in` flag.
+    fn playlist_page(logged_in: &str, videos: &[&str], continuation: Option<&str>) -> Value {
+        let contents: Vec<Value> = videos
+            .iter()
+            .map(|video| {
+                json!({
+                    "playlistItemData": {"videoId": video},
+                    "flexColumns": [{
+                        "musicResponsiveListItemFlexColumnRenderer": {
+                            "text": {"runs": [{"text": "Public Track"}]}
+                        }
+                    }]
+                })
+            })
+            .collect();
+        let mut body = json!({
+            "responseContext": {
+                "serviceTrackingParams": [{
+                    "service": "GFEEDBACK",
+                    "params": [{"key": "logged_in", "value": logged_in}]
+                }]
+            },
+            "contents": {
+                "musicPlaylistShelfRenderer": {"contents": contents}
+            }
+        });
+        if let Some(token) = continuation {
+            body["nextContinuationData"] = json!({
+                "continuation": token,
+                "clickTrackingParams": "tracking"
+            });
+        }
+        body
+    }
+
+    /// Build a signed-out page that asks the user to sign in. It
+    /// has no shelf and no tracks.
+    fn sign_in_page(logged_in: &str) -> Value {
+        json!({
+            "responseContext": {
+                "serviceTrackingParams": [{
+                    "service": "GFEEDBACK",
+                    "params": [{"key": "logged_in", "value": logged_in}]
+                }]
+            },
+            "contents": {
+                "messageRenderer": {
+                    "text": {"runs": [{"text": "Sign in to access tracks that you liked or saved"}]},
+                    "command": {"signInEndpoint": {}}
+                }
+            }
+        })
+    }
+
+    /// Serve one browse response per request, in order, and return
+    /// a test instance pointed at the mock server.
+    async fn mock_instance_with_pages(pages: Vec<Value>) -> YoutubeMusicInstance {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        use tokio::io::AsyncWriteExt;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let pages = Arc::new(pages);
+        let index = Arc::new(AtomicUsize::new(0));
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
+                let _ = super::search_pagination_tests::read_request(&mut socket).await;
+                let at = index.fetch_add(1, Ordering::SeqCst).min(pages.len() - 1);
+                let body = pages[at].to_string();
+                let reply = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                if socket.write_all(reply.as_bytes()).await.is_err() {
+                    return;
+                }
+            }
+        });
+        YoutubeMusicInstance::for_test(
+            format!("http://{address}"),
+            "test-key".to_string(),
+            "1.0".to_string(),
+            "SAPISID=x".to_string(),
+            None,
+        )
+    }
+
+    #[tokio::test]
+    async fn signed_out_empty_playlist_with_shelf_is_empty_not_expired() {
+        // A real empty playlist has a shelf and no sign-in prompt.
+        // It is empty, not an auth page.
+        let instance = mock_instance_with_body(playlist_page("0", &[], None)).await;
+        let videos = instance.get_playlist_raw("VL1", 0).await.unwrap();
+        assert!(videos.is_empty());
+    }
+
+    #[tokio::test]
+    async fn signed_out_empty_playlist_with_sign_in_prompt_returns_auth_expired() {
+        let instance = mock_instance_with_body(sign_in_page("0")).await;
+        let result = instance.get_playlist_raw("VL1", 0).await;
+        assert!(matches!(result, Err(YoutubeMusicError::AuthExpired(_))));
+    }
+
+    #[tokio::test]
+    async fn signed_out_first_page_empty_with_continuation_returns_tracks() {
+        // The first page is empty, but a continuation has tracks.
+        // The empty first page is not an auth page, so the tracks
+        // must come back.
+        let pages = vec![
+            playlist_page("0", &[], Some("token1")),
+            playlist_page("0", &["vid1"], None),
+        ];
+        let instance = mock_instance_with_pages(pages).await;
+        let videos = instance.get_playlist_raw("VL1", 1).await.unwrap();
+        assert_eq!(videos.len(), 1);
+        assert_eq!(videos[0].video_id, "vid1");
+    }
+
+    #[tokio::test]
+    async fn signed_out_continuation_empty_after_tracks_returns_auth_expired() {
+        // The session expires during pagination: the first page has
+        // tracks, the next page is an empty auth page. Report the
+        // expiry instead of a silent cut.
+        let pages = vec![
+            playlist_page("0", &["vid1"], Some("token1")),
+            sign_in_page("0"),
+        ];
+        let instance = mock_instance_with_pages(pages).await;
+        let result = instance.get_playlist_raw("VL1", 1).await;
+        assert!(matches!(result, Err(YoutubeMusicError::AuthExpired(_))));
     }
 
     #[tokio::test]
