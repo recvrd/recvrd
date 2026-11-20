@@ -643,10 +643,7 @@ impl YoutubeMusicInstance {
             // during pagination, so report it instead of a silent cut.
             // A signed-out page with tracks is a public playlist, so
             // keep its pages.
-            if new_count == 0
-                && signed_out
-                && playlist_page_is_auth_page(&playlist_json)
-            {
+            if new_count == 0 && signed_out && playlist_page_is_auth_page(&playlist_json) {
                 return Err(YoutubeMusicError::AuthExpired(playlist_json));
             }
             if new_count == 0 || n_continuations == 0 {
