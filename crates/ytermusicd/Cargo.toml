@@ -1,6 +1,6 @@
 [package]
 name = "ytermusicd"
-version = "0.6.1"
+version = "0.6.2"
 edition = "2024"
 license = "Apache-2.0"
 description = "Headless YouTube Music daemon with a web UI, MPRIS and MCP"

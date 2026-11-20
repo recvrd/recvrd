@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.6.2 — 2026-11-19
+
+### Fixed
+
+- Fix browser timer calls in the web UI. The event stream now starts, and the
+  `gg` and `dd` key sequences work.
+
+### Changed
+
+- Run CI on pull requests and manual dispatch. Remove six duplicate manual
+  workflows.
+- Run one build at a time for each release ref. Build release packages with
+  the committed `Cargo.lock` file.
+
 ## 0.6.1 — 2026-11-19
 
 ### Fixed
