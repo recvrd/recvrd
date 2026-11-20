@@ -68,8 +68,10 @@ export class Keymap {
   constructor(actions: KeymapActions, options: KeymapOptions = {}) {
     this.actions = actions;
     this.sequenceTimeoutMs = options.sequenceTimeoutMs ?? 650;
-    this.setTimeoutFn = options.setTimeoutFn ?? setTimeout;
-    this.clearTimeoutFn = options.clearTimeoutFn ?? clearTimeout;
+    // Browser timer functions require the global receiver when called through
+    // this class instance.
+    this.setTimeoutFn = options.setTimeoutFn ?? setTimeout.bind(globalThis);
+    this.clearTimeoutFn = options.clearTimeoutFn ?? clearTimeout.bind(globalThis);
   }
 
   handle(event: KeyboardEvent, context: KeymapContext = {}): boolean {

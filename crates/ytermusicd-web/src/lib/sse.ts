@@ -83,6 +83,8 @@ export class EventStream {
   private wakeInstalled = false;
 
   constructor(options: EventStreamOptions) {
+    // Browser timer functions require the global receiver when called through
+    // the options object.
     this.options = {
       url: options.url ?? '/api/events',
       create: options.create ?? defaultCreate,
@@ -95,10 +97,10 @@ export class EventStream {
       retryMaxMs: options.retryMaxMs ?? 30000,
       watchdogIntervalMs: options.watchdogIntervalMs ?? 5000,
       silenceMs: options.silenceMs ?? 45000,
-      setTimeoutFn: options.setTimeoutFn ?? setTimeout,
-      clearTimeoutFn: options.clearTimeoutFn ?? clearTimeout,
-      setIntervalFn: options.setIntervalFn ?? setInterval,
-      clearIntervalFn: options.clearIntervalFn ?? clearInterval,
+      setTimeoutFn: options.setTimeoutFn ?? setTimeout.bind(globalThis),
+      clearTimeoutFn: options.clearTimeoutFn ?? clearTimeout.bind(globalThis),
+      setIntervalFn: options.setIntervalFn ?? setInterval.bind(globalThis),
+      clearIntervalFn: options.clearIntervalFn ?? clearInterval.bind(globalThis),
       randomFn: options.randomFn ?? Math.random,
     };
   }

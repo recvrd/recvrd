@@ -38,12 +38,17 @@ function key(value: string, init: KeyboardEventInit = {}) {
   return new KeyboardEvent('keydown', { key: value, cancelable: true, ...init });
 }
 
+function requireGlobalReceiver(this: unknown): void {
+  if (this !== globalThis) throw new TypeError('Illegal invocation');
+}
+
 describe('keymap', () => {
   beforeEach(() => {
     vi.useFakeTimers();
   });
 
   afterEach(() => {
+    vi.unstubAllGlobals();
     vi.useRealTimers();
   });
 
@@ -250,5 +255,28 @@ describe('keymap', () => {
     expect(handler.move).not.toHaveBeenCalled();
     expect(keymap.handle(key('Escape'), { overlayOpen: true })).toBe(true);
     expect(handler.closeOverlays).toHaveBeenCalledOnce();
+  });
+
+  it('uses browser timers with the global receiver', () => {
+    const timeout = globalThis.setTimeout;
+    const clear = globalThis.clearTimeout;
+    vi.stubGlobal('setTimeout', function (this: unknown, handler: () => void, ms?: number) {
+      requireGlobalReceiver.call(this);
+      return timeout(handler, ms);
+    });
+    vi.stubGlobal('clearTimeout', function (this: unknown, handle: Parameters<typeof clearTimeout>[0]) {
+      requireGlobalReceiver.call(this);
+      clear(handle);
+    });
+    const handler = actions();
+    const keymap = new Keymap(handler);
+
+    expect(() => {
+      keymap.handle(key('g'));
+      keymap.handle(key('g'));
+      keymap.handle(key('d'));
+      keymap.dispose();
+    }).not.toThrow();
+    expect(handler.first).toHaveBeenCalledOnce();
   });
 });
