@@ -148,19 +148,46 @@ pub fn extract_playlist_info(value: &Value) -> Option<(String, String)> {
     Some((title, subtitles.get(1)?.clone()))
 }
 
-/// Read the playlist header: the title and the second subtitle run.
-/// A missing header means the page is not a playlist page.
+/// Find the first renderer with one of the given keys at any depth.
+fn find_renderer<'a>(value: &'a Value, keys: &[&str]) -> Option<&'a Value> {
+    match value {
+        Value::Object(map) => {
+            for key in keys {
+                if let Some(found) = map.get(*key) {
+                    return Some(found);
+                }
+            }
+            map.values().find_map(|value| find_renderer(value, keys))
+        }
+        Value::Array(items) => items.iter().find_map(|value| find_renderer(value, keys)),
+        _ => None,
+    }
+}
+
+/// Read the playlist or album header: the title and the second
+/// subtitle run. A missing header means the page is not a playlist or
+/// album page. Albums nest the header under the tab contents.
 pub fn playlist_header_info(value: &Value) -> Option<(String, String)> {
-    let header = value.get("header")?.get("musicDetailHeaderRenderer")?;
+    let header = find_renderer(
+        value,
+        &[
+            "musicDetailHeaderRenderer",
+            "musicResponsiveHeaderRenderer",
+            "musicEditablePlaylistDetailHeaderRenderer",
+        ],
+    )?;
     let title = get_text(header.get("title")?, false, false)?;
     let subtitles: Vec<String> = header
-        .get("subtitle")?
-        .get("runs")?
-        .as_array()?
-        .iter()
-        .flat_map(|run| get_text(run, false, false))
-        .filter(|run| run != " • ")
-        .collect();
+        .get("subtitle")
+        .and_then(|subtitle| subtitle.get("runs"))
+        .and_then(Value::as_array)
+        .map(|runs| {
+            runs.iter()
+                .flat_map(|run| get_text(run, false, false))
+                .filter(|run| run != " • ")
+                .collect()
+        })
+        .unwrap_or_default();
     Some((title, subtitles.into_iter().nth(1).unwrap_or_default()))
 }
 
@@ -376,6 +403,43 @@ mod tests {
             Some(("My Mix".to_string(), "12 songs".to_string()))
         );
         assert_eq!(playlist_header_info(&json!({"contents": {}})), None);
+    }
+
+    #[test]
+    fn extracts_an_album_header_info() {
+        // Albums nest the header under the tab contents and use
+        // musicResponsiveHeaderRenderer.
+        let value = json!({
+            "contents": {"twoColumnBrowseResultsRenderer": {"tabs": [{
+                "tabRenderer": {"content": {"sectionListRenderer": {"contents": [{
+                    "musicResponsiveHeaderRenderer": {
+                        "title": {"runs": [{"text": "An Album"}]},
+                        "subtitle": {"runs": [
+                            {"text": "Album"},
+                            {"text": " • "},
+                            {"text": "2025"}
+                        ]}
+                    }
+                }]}}}
+            }]}}
+        });
+        assert_eq!(
+            playlist_header_info(&value),
+            Some(("An Album".to_string(), "2025".to_string()))
+        );
+    }
+
+    #[test]
+    fn playlist_header_without_a_subtitle_keeps_the_title() {
+        let value = json!({
+            "header": {"musicDetailHeaderRenderer": {
+                "title": {"runs": [{"text": "No Subtitle"}]}
+            }}
+        });
+        assert_eq!(
+            playlist_header_info(&value),
+            Some(("No Subtitle".to_string(), String::new()))
+        );
     }
 
     #[test]

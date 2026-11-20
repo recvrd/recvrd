@@ -188,12 +188,18 @@ fn response_has_key(response: &Value, key: &str) -> bool {
     }
 }
 
-/// A playlist page is an auth page when it asks the user to sign
-/// in, or when it has no playlist shelf at all. A real playlist,
-/// even an empty one, has a shelf and no sign-in prompt.
+/// A playlist page is an auth page when it has no playlist or album
+/// header. A real playlist, even an empty one, has a header. Signed-out
+/// pages also put `signInEndpoint` in every item menu, so that key is
+/// not a reliable signal.
 fn playlist_page_is_auth_page(response: &Value) -> bool {
-    response_has_key(response, "signInEndpoint")
-        || !response_has_key(response, "musicPlaylistShelfRenderer")
+    ![
+        "musicDetailHeaderRenderer",
+        "musicResponsiveHeaderRenderer",
+        "musicEditablePlaylistDetailHeaderRenderer",
+    ]
+    .iter()
+    .any(|key| response_has_key(response, key))
 }
 
 /// Read the `logged_in` value from an InnerTube response. The value is
@@ -1571,29 +1577,10 @@ mod browse_tests {
 
     #[tokio::test]
     async fn signed_out_public_playlist_with_tracks_is_not_expired() {
-        // A signed-out public album still returns tracks. It plays
-        // without a session, so it must not look like an auth page.
-        let body = json!({
-            "responseContext": {
-                "serviceTrackingParams": [{
-                    "service": "GFEEDBACK",
-                    "params": [{"key": "logged_in", "value": "0"}]
-                }]
-            },
-            "contents": {
-                "musicPlaylistShelfRenderer": {
-                    "contents": [{
-                        "playlistItemData": {"videoId": "vid1"},
-                        "flexColumns": [{
-                            "musicResponsiveListItemFlexColumnRenderer": {
-                                "text": {"runs": ["Public Track"]}
-                            }
-                        }]
-                    }]
-                }
-            }
-        });
-        let instance = mock_instance_with_body(body).await;
+        // A signed-out public playlist still returns tracks. It
+        // plays without a session, so it must not look like an auth
+        // page.
+        let instance = mock_instance_with_body(playlist_page("0", &["vid1"], None)).await;
         let videos = instance.get_playlist_raw("MPREb_test", 0).await.unwrap();
         assert_eq!(videos.len(), 1);
         assert_eq!(videos[0].video_id, "vid1");
@@ -1601,66 +1588,18 @@ mod browse_tests {
 
     #[tokio::test]
     async fn signed_out_public_playlist_keeps_its_pages() {
-        use tokio::io::AsyncWriteExt;
-
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        tokio::spawn(async move {
-            loop {
-                let Ok((mut socket, _)) = listener.accept().await else {
-                    return;
-                };
-                let request = super::search_pagination_tests::read_request(&mut socket).await;
-                let continued = request.contains("continuation=token1");
-                let video = if continued { "vid2" } else { "vid1" };
-                let mut body = json!({
-                    "responseContext": {
-                        "serviceTrackingParams": [{
-                            "service": "GFEEDBACK",
-                            "params": [{"key": "logged_in", "value": "0"}]
-                        }]
-                    },
-                    "contents": {
-                        "musicPlaylistShelfRenderer": {
-                            "contents": [{
-                                "playlistItemData": {"videoId": video},
-                                "flexColumns": [{
-                                    "musicResponsiveListItemFlexColumnRenderer": {
-                                        "text": {"runs": ["Public Track"]}
-                                    }
-                                }]
-                            }]
-                        }
-                    }
-                });
-                if !continued {
-                    body["nextContinuationData"] = json!({
-                        "continuation": "token1",
-                        "clickTrackingParams": "tracking"
-                    });
-                }
-                let body = body.to_string();
-                let reply = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                    body.len(),
-                    body
-                );
-                let _ = socket.write_all(reply.as_bytes()).await;
-            }
-        });
-        let instance = YoutubeMusicInstance::for_test(
-            format!("http://{address}"),
-            "test-key".to_string(),
-            "1.0".to_string(),
-            "SAPISID=x".to_string(),
-            None,
-        );
+        let pages = vec![
+            playlist_page("0", &["vid1"], Some("token1")),
+            playlist_page("0", &["vid2"], None),
+        ];
+        let instance = mock_instance_with_pages(pages).await;
         let videos = instance.get_playlist_raw("MPREb_test", 1).await.unwrap();
         assert_eq!(videos.len(), 2);
     }
 
-    /// Build one playlist page: a shelf with `videos` tracks, an
-    /// optional continuation token, and the given `logged_in` flag.
+    /// Build one playlist page: a header, a shelf with `videos`
+    /// tracks, an optional continuation token, and the given
+    /// `logged_in` flag.
     fn playlist_page(logged_in: &str, videos: &[&str], continuation: Option<&str>) -> Value {
         let contents: Vec<Value> = videos
             .iter()
@@ -1682,6 +1621,16 @@ mod browse_tests {
                     "params": [{"key": "logged_in", "value": logged_in}]
                 }]
             },
+            "header": {
+                "musicDetailHeaderRenderer": {
+                    "title": {"runs": [{"text": "Public Playlist"}]},
+                    "subtitle": {"runs": [
+                        {"text": "Playlist"},
+                        {"text": " • "},
+                        {"text": "1 song"}
+                    ]}
+                }
+            },
             "contents": {
                 "musicPlaylistShelfRenderer": {"contents": contents}
             }
@@ -1696,7 +1645,7 @@ mod browse_tests {
     }
 
     /// Build a signed-out page that asks the user to sign in. It
-    /// has no shelf and no tracks.
+    /// has no playlist header and no tracks.
     fn sign_in_page(logged_in: &str) -> Value {
         json!({
             "responseContext": {
@@ -1756,10 +1705,58 @@ mod browse_tests {
 
     #[tokio::test]
     async fn signed_out_empty_playlist_with_shelf_is_empty_not_expired() {
-        // A real empty playlist has a shelf and no sign-in prompt.
-        // It is empty, not an auth page.
+        // A real empty playlist has a header and a shelf. It is
+        // empty, not an auth page.
         let instance = mock_instance_with_body(playlist_page("0", &[], None)).await;
         let videos = instance.get_playlist_raw("VL1", 0).await.unwrap();
+        assert!(videos.is_empty());
+    }
+
+    #[tokio::test]
+    async fn signed_out_empty_album_with_sign_in_buttons_is_not_expired() {
+        // A real signed-out album has a header and a shelf. Every item
+        // menu also contains signInEndpoint, so that key is noise.
+        // The header is the signal.
+        let body = json!({
+            "responseContext": {
+                "serviceTrackingParams": [{
+                    "service": "GFEEDBACK",
+                    "params": [{"key": "logged_in", "value": "0"}]
+                }]
+            },
+            "contents": {
+                "twoColumnBrowseResultsRenderer": {
+                    "tabs": [{
+                        "tabRenderer": {
+                            "content": {
+                                "sectionListRenderer": {
+                                    "contents": [
+                                        {"musicResponsiveHeaderRenderer": {
+                                            "title": {"runs": [{"text": "Empty Album"}]},
+                                            "subtitle": {"runs": [
+                                                {"text": "Album"},
+                                                {"text": " • "},
+                                                {"text": "2025"}
+                                            ]}
+                                        }},
+                                        {"musicShelfRenderer": {"contents": []}},
+                                        {"musicResponsiveListItemRenderer": {
+                                            "menu": {"menuRenderer": {"items": [{
+                                                "menuNavigationItemRenderer": {
+                                                    "navigationEndpoint": {"signInEndpoint": {}}
+                                                }
+                                            }]}}
+                                        }}
+                                    ]
+                                }
+                            }
+                        }
+                    }]
+                }
+            }
+        });
+        let instance = mock_instance_with_body(body).await;
+        let videos = instance.get_playlist_raw("MPREb_empty", 0).await.unwrap();
         assert!(videos.is_empty());
     }
 

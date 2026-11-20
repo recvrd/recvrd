@@ -52,10 +52,9 @@ tell the two apart without a client. RSS has no auth state, so RSS
 failures always return 502.
 
 A public playlist still loads and plays without a session. The daemon
-reports an expired session only for an empty signed-out response that
-asks the user to sign in or has no playlist shelf. A session that
-expires during pagination ends the load with 401 `auth_expired`
-instead of a cut list.
+reports an expired session only for an empty signed-out response that has
+no playlist or album header. A session that expires during pagination
+ends the load with 401 `auth_expired` instead of a cut list.
 
 `GET /api/status` itself returns 200 with an `auth.state` of `ok`, `missing`,
 `invalid` or `expired`, so clients can render an actionable auth message.
