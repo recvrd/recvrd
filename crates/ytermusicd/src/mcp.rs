@@ -626,9 +626,10 @@ impl ServerHandler for McpServer {
 }
 
 /// Run the stdio MCP proxy. It exits when stdin closes.
-pub async fn run(base_url: Option<String>) -> std::io::Result<()> {
+pub async fn run(base_url: Option<String>, debug: bool) -> std::io::Result<()> {
     let base_url = base_url.unwrap_or_else(|| ytermusicd_client::DEFAULT_URL.to_string());
-    let client = DaemonClient::new(base_url).map_err(std::io::Error::other)?;
+    let mut client = DaemonClient::new(base_url).map_err(std::io::Error::other)?;
+    client.set_debug(debug);
     let server = McpServer::new(client);
     log::info!(
         "MCP server ready with tools: {}",

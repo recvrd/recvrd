@@ -44,6 +44,12 @@ struct Cli {
     /// when one is detected, `halfblocks` always uses half-block cells.
     #[arg(long, env = "YTMC_COVER_MODE", default_value = "auto")]
     cover_mode: CoverMode,
+    /// Include the endpoint and the raw daemon response (truncated)
+    /// in invalid-response errors, instead of only the serde error.
+    /// Useful when the daemon and client disagree about a response
+    /// shape. Also settable with `YTMC_DEBUG=true`.
+    #[arg(long, env = "YTMC_DEBUG")]
+    debug: bool,
 }
 
 /// How cover art is rendered.
@@ -67,7 +73,8 @@ async fn main() {
 }
 
 async fn run(cli: Cli) -> io::Result<()> {
-    let client = DaemonClient::new(cli.url.clone()).map_err(io::Error::other)?;
+    let mut client = DaemonClient::new(cli.url.clone()).map_err(io::Error::other)?;
+    client.set_debug(cli.debug);
     let (event_tx, mut event_rx) = unbounded_channel::<DaemonEvent>();
     let (command_tx, command_rx) = unbounded_channel::<Command>();
     tokio::spawn(daemon::run_events(client.clone(), event_tx.clone()));
@@ -200,5 +207,13 @@ mod tests {
         assert_eq!(cli.cover_mode, CoverMode::Halfblocks);
         let cli = Cli::try_parse_from(["ytmc"]).unwrap();
         assert_eq!(cli.cover_mode, CoverMode::Auto);
+    }
+
+    #[test]
+    fn parses_the_debug_flag() {
+        let cli = Cli::try_parse_from(["ytmc"]).unwrap();
+        assert!(!cli.debug);
+        let cli = Cli::try_parse_from(["ytmc", "--debug"]).unwrap();
+        assert!(cli.debug);
     }
 }
