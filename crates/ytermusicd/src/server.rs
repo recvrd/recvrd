@@ -237,8 +237,15 @@ fn provider_failure<S: AudioSink + Send + 'static>(
     provider: ProviderId,
     error: String,
 ) -> ApiFailure {
-    let auth = provider_auth(state, provider);
-    if auth.state == AuthState::Expired && error.contains(AUTH_EXPIRED_MESSAGE) {
+    let live = state.music.auth_status(provider);
+    let auth = live.clone().unwrap_or_else(|| api_auth(&state.auth));
+    // A live provider state needs the matching error message. A
+    // transient failure while the state is Expired stays a 502. If
+    // the provider has no live state, the headers state is the only
+    // signal. An expired file then owns the failure.
+    let expired = auth.state == AuthState::Expired
+        && (live.is_none() || error.contains(AUTH_EXPIRED_MESSAGE));
+    if expired {
         ApiFailure::auth_expired(
             auth.message
                 .unwrap_or_else(|| format!("{provider}: {error}")),
@@ -1664,6 +1671,20 @@ mod tests {
         }))
     }
 
+    fn unavailable_expired_state() -> AppState<MockSink> {
+        let artwork = Arc::new(ArtworkCache::with_fetcher(
+            std::env::temp_dir().join("ytermusicd-test-covers"),
+            0,
+            Arc::new(FakeCovers::new()),
+        ));
+        test_state_with_auth(
+            AuthStatus::expired("/tmp/headers.txt", AUTH_EXPIRED_MESSAGE),
+            Arc::new(crate::music::UnavailableMusicApi),
+            Arc::new(MockDownloads::default()),
+            artwork,
+        )
+    }
+
     fn test_state_with(music: Arc<dyn MusicApi>) -> AppState<MockSink> {
         test_state_with_downloads(music, Arc::new(MockDownloads::default()))
     }
@@ -1693,6 +1714,20 @@ mod tests {
         downloads: Arc<dyn DownloadControl>,
         artwork: Arc<ArtworkCache>,
     ) -> AppState<MockSink> {
+        test_state_with_auth(
+            AuthStatus::ok("/tmp/headers.txt"),
+            music,
+            downloads,
+            artwork,
+        )
+    }
+
+    fn test_state_with_auth(
+        auth: AuthStatus,
+        music: Arc<dyn MusicApi>,
+        downloads: Arc<dyn DownloadControl>,
+        artwork: Arc<ArtworkCache>,
+    ) -> AppState<MockSink> {
         let service = PlaybackService::new(MockSink, "/tmp/ytermusicd-test", 50);
         let events = service.events();
         let playback = Arc::new(Mutex::new(service));
@@ -1702,14 +1737,7 @@ mod tests {
         ));
         let rss = fresh_rss();
         AppState::new(
-            AuthStatus::ok("/tmp/headers.txt"),
-            music,
-            playback,
-            events,
-            downloads,
-            artwork,
-            cache,
-            rss,
+            auth, music, playback, events, downloads, artwork, cache, rss,
         )
     }
 
@@ -2741,6 +2769,39 @@ mod tests {
             ..Default::default()
         });
         let (base, server) = start_server(test_state_with(music)).await;
+        let response = reqwest::Client::new()
+            .get(format!("{base}/api/playlists"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::BAD_GATEWAY);
+        let body: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(body["error"]["code"], "upstream_error");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn unavailable_client_with_an_expired_file_returns_401() {
+        // The homepage redirects to sign-in, so no client exists.
+        // The headers file state is the only signal, and it is expired.
+        let (base, server) = start_server(unavailable_expired_state()).await;
+        let response = reqwest::Client::new()
+            .get(format!("{base}/api/playlists"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::UNAUTHORIZED);
+        let body: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(body["error"]["code"], "auth_expired");
+        let message = body["error"]["message"].as_str().unwrap();
+        assert!(message.contains("restart the daemon"), "{message}");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn unavailable_client_with_a_valid_file_returns_502() {
+        let (base, server) =
+            start_server(test_state_with(Arc::new(crate::music::UnavailableMusicApi))).await;
         let response = reqwest::Client::new()
             .get(format!("{base}/api/playlists"))
             .send()
