@@ -135,33 +135,82 @@ pub fn get_playlist_search(value: &Value) -> Option<YoutubeMusicPlaylistRef> {
 }
 
 pub fn extract_playlist_info(value: &Value) -> Option<(String, String)> {
-    let header = value.get("header")?.get("musicDetailHeaderRenderer")?;
+    // Playlist headers sit at the top level; album headers nest
+    // under the tab contents, so search the whole page.
+    if let Some(header) = find_renderer(
+        value,
+        &[
+            "musicDetailHeaderRenderer",
+            "musicEditablePlaylistDetailHeaderRenderer",
+        ],
+    ) {
+        let title = get_text(header.get("title")?, false, false)?;
+        let subtitles = subtitle_runs(header);
+        return Some((title, subtitles.get(1)?.clone()));
+    }
+    let header = find_renderer(value, &["musicResponsiveHeaderRenderer"])?;
     let title = get_text(header.get("title")?, false, false)?;
-    let subtitles = header
-        .get("subtitle")?
-        .get("runs")?
-        .as_array()?
-        .iter()
-        .flat_map(|x| get_text(x, false, false))
-        .filter(|x| x != " • ")
-        .collect::<Vec<String>>();
-    Some((title, subtitles.get(1)?.clone()))
+    // The first subtitle run is the type ("Album"). The artist is
+    // the first later run that is neither a year nor a track count.
+    let artist = subtitle_runs(header)
+        .into_iter()
+        .skip(1)
+        .find(|run| !is_year(run) && !is_track_count(run))
+        .unwrap_or_default();
+    Some((title, artist))
 }
 
-/// Find the first renderer with one of the given keys at any depth.
+/// Read the subtitle runs of a header, without the separators.
+fn subtitle_runs(header: &Value) -> Vec<String> {
+    header
+        .get("subtitle")
+        .and_then(|subtitle| subtitle.get("runs"))
+        .and_then(Value::as_array)
+        .map(|runs| {
+            runs.iter()
+                .flat_map(|run| get_text(run, false, false))
+                .filter(|run| run != " • ")
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// A year is four digits, such as "2025".
+fn is_year(run: &str) -> bool {
+    run.len() == 4 && run.chars().all(|c| c.is_ascii_digit())
+}
+
+/// A track count is a number followed by "songs", such as "12 songs".
+fn is_track_count(run: &str) -> bool {
+    run.split_once(' ').is_some_and(|(count, rest)| {
+        !count.is_empty()
+            && count.chars().all(|c| c.is_ascii_digit())
+            && rest.starts_with("song")
+    })
+}
+
+/// Find the first renderer with one of the given keys. The search
+/// is breadth-first: it checks each level before it goes deeper,
+/// so a top-level header wins over a nested section header. A
+/// nested header still matches when no shallower header exists.
 fn find_renderer<'a>(value: &'a Value, keys: &[&str]) -> Option<&'a Value> {
-    match value {
-        Value::Object(map) => {
-            for key in keys {
-                if let Some(found) = map.get(*key) {
-                    return Some(found);
+    use std::collections::VecDeque;
+    let mut queue: VecDeque<&Value> = VecDeque::from([value]);
+    while let Some(value) = queue.pop_front() {
+        match value {
+            Value::Object(map) => {
+                for key in keys {
+                    if let Some(found) = map.get(*key) {
+                        return Some(found);
+                    }
                 }
+                queue.extend(map.values());
             }
-            map.values().find_map(|value| find_renderer(value, keys))
+            Value::Array(items) => queue.extend(items),
+            _ => {}
         }
-        Value::Array(items) => items.iter().find_map(|value| find_renderer(value, keys)),
-        _ => None,
     }
+    None
 }
 
 /// Read the playlist or album header: the title and the second
@@ -440,6 +489,105 @@ mod tests {
             playlist_header_info(&value),
             Some(("No Subtitle".to_string(), String::new()))
         );
+    }
+
+    #[test]
+    fn extracts_album_playlist_info() {
+        // The album subtitle lists the type, the artist, and the
+        // year. The fill takes the artist, never the year.
+        let value = json!({
+            "contents": {"twoColumnBrowseResultsRenderer": {"tabs": [{
+                "tabRenderer": {"content": {"sectionListRenderer": {"contents": [{
+                    "musicResponsiveHeaderRenderer": {
+                        "title": {"runs": [{"text": "An Album"}]},
+                        "subtitle": {"runs": [
+                            {"text": "Album"},
+                            {"text": " • "},
+                            {"text": "The Artist"},
+                            {"text": " • "},
+                            {"text": "2025"}
+                        ]}
+                    }
+                }]}}}
+            }]}}
+        });
+        assert_eq!(
+            extract_playlist_info(&value),
+            Some(("An Album".to_string(), "The Artist".to_string()))
+        );
+    }
+
+    #[test]
+    fn extracts_album_playlist_info_with_year_before_artist() {
+        // The order of the artist and the year varies, so the fill
+        // skips the year wherever it sits.
+        let value = json!({
+            "contents": {"twoColumnBrowseResultsRenderer": {"tabs": [{
+                "tabRenderer": {"content": {"sectionListRenderer": {"contents": [{
+                    "musicResponsiveHeaderRenderer": {
+                        "title": {"runs": [{"text": "An Album"}]},
+                        "subtitle": {"runs": [
+                            {"text": "Album"},
+                            {"text": " • "},
+                            {"text": "2025"},
+                            {"text": " • "},
+                            {"text": "The Artist"}
+                        ]}
+                    }
+                }]}}}
+            }]}}
+        });
+        assert_eq!(
+            extract_playlist_info(&value),
+            Some(("An Album".to_string(), "The Artist".to_string()))
+        );
+    }
+
+    #[test]
+    fn extracts_playlist_info_unchanged() {
+        let value = json!({
+            "header": {"musicDetailHeaderRenderer": {
+                "title": {"runs": [{"text": "My Mix"}]},
+                "subtitle": {"runs": [
+                    {"text": "Playlist"},
+                    {"text": " • "},
+                    {"text": "The Author"}
+                ]}
+            }}
+        });
+        assert_eq!(
+            extract_playlist_info(&value),
+            Some(("My Mix".to_string(), "The Author".to_string()))
+        );
+    }
+
+    #[test]
+    fn find_renderer_prefers_the_shallowest_match() {
+        let value = json!({
+            "header": {"musicDetailHeaderRenderer": {
+                "title": {"runs": [{"text": "Top Header"}]}
+            }},
+            "contents": {"sectionListRenderer": {"contents": [{
+                "musicDetailHeaderRenderer": {
+                    "title": {"runs": [{"text": "Nested Header"}]}
+                }
+            }]}}
+        });
+        let header = find_renderer(&value, &["musicDetailHeaderRenderer"]).unwrap();
+        let title = get_text(header.get("title").unwrap(), false, false);
+        assert_eq!(title.as_deref(), Some("Top Header"));
+    }
+
+    #[test]
+    fn find_renderer_finds_a_nested_match() {
+        let value = json!({
+            "contents": {"sectionListRenderer": {"contents": [{
+                "musicDetailHeaderRenderer": {
+                    "title": {"runs": [{"text": "Nested Header"}]}
+                }
+            }]}}
+        });
+        assert!(find_renderer(&value, &["musicDetailHeaderRenderer"]).is_some());
     }
 
     #[test]

@@ -1800,6 +1800,58 @@ mod browse_tests {
     }
 
     #[tokio::test]
+    async fn signed_out_album_track_gets_header_fill() {
+        // Album tracks carry no author, so the header fill sets the
+        // album title and the artist from the album header.
+        let body = json!({
+            "responseContext": {
+                "serviceTrackingParams": [{
+                    "service": "GFEEDBACK",
+                    "params": [{"key": "logged_in", "value": "0"}]
+                }]
+            },
+            "contents": {
+                "twoColumnBrowseResultsRenderer": {
+                    "tabs": [{
+                        "tabRenderer": {
+                            "content": {
+                                "sectionListRenderer": {
+                                    "contents": [
+                                        {"musicResponsiveHeaderRenderer": {
+                                            "title": {"runs": [{"text": "An Album"}]},
+                                            "subtitle": {"runs": [
+                                                {"text": "Album"},
+                                                {"text": " • "},
+                                                {"text": "The Artist"},
+                                                {"text": " • "},
+                                                {"text": "2025"}
+                                            ]}
+                                        }},
+                                        {"musicShelfRenderer": {"contents": [{
+                                            "playlistItemData": {"videoId": "vid1"},
+                                            "flexColumns": [{
+                                                "musicResponsiveListItemFlexColumnRenderer": {
+                                                    "text": {"runs": [{"text": "Album Track"}]}
+                                                }
+                                            }]
+                                        }]}}
+                                    ]
+                                }
+                            }
+                        }
+                    }]
+                }
+            }
+        });
+        let instance = mock_instance_with_body(body).await;
+        let videos = instance.get_playlist_raw("MPREb_1", 0).await.unwrap();
+        assert_eq!(videos.len(), 1);
+        assert_eq!(videos[0].title, "Album Track");
+        assert_eq!(videos[0].album, "An Album");
+        assert_eq!(videos[0].author, "The Artist");
+    }
+
+    #[tokio::test]
     async fn signed_out_private_playlist_with_header_and_prompt_returns_auth_expired() {
         // A signed-out private playlist has a header, but YouTube
         // gates it with a sign-in prompt and no tracks. The header
