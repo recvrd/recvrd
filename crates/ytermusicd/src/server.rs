@@ -397,7 +397,7 @@ async fn create_playlist<S: AudioSink + Send + 'static>(
         .music
         .create_playlist(&request)
         .await
-        .map_err(playlist_failure)?;
+        .map_err(|error| edit_failure(&state, error))?;
     Ok((StatusCode::CREATED, Json(playlist)))
 }
 
@@ -415,7 +415,7 @@ async fn update_playlist<S: AudioSink + Send + 'static>(
         .update_playlist(&id, &request)
         .await
         .map(Json)
-        .map_err(playlist_failure)
+        .map_err(|error| edit_failure(&state, error))
 }
 
 async fn delete_playlist<S: AudioSink + Send + 'static>(
@@ -427,7 +427,7 @@ async fn delete_playlist<S: AudioSink + Send + 'static>(
         .music
         .delete_playlist(&id)
         .await
-        .map_err(playlist_failure)?;
+        .map_err(|error| edit_failure(&state, error))?;
     Ok(Json(OkResponse { ok: true }))
 }
 
@@ -443,7 +443,7 @@ async fn add_playlist_tracks<S: AudioSink + Send + 'static>(
         .add_playlist_tracks(&id, &request.track_ids)
         .await
         .map(Json)
-        .map_err(playlist_failure)
+        .map_err(|error| edit_failure(&state, error))
 }
 
 async fn remove_playlist_tracks<S: AudioSink + Send + 'static>(
@@ -458,7 +458,7 @@ async fn remove_playlist_tracks<S: AudioSink + Send + 'static>(
         .remove_playlist_tracks(&id, &request.indices)
         .await
         .map(Json)
-        .map_err(playlist_failure)
+        .map_err(|error| edit_failure(&state, error))
 }
 
 async fn move_playlist_track<S: AudioSink + Send + 'static>(
@@ -472,7 +472,7 @@ async fn move_playlist_track<S: AudioSink + Send + 'static>(
         .move_playlist_track(&id, request.from, request.to)
         .await
         .map(Json)
-        .map_err(playlist_failure)
+        .map_err(|error| edit_failure(&state, error))
 }
 
 const MAX_PLAYLIST_TITLE: usize = 150;
@@ -603,6 +603,28 @@ fn playlist_failure(error: PlaylistEditError) -> ApiFailure {
         PlaylistEditError::AuthExpired(message) => ApiFailure::auth_expired(message),
         PlaylistEditError::Upstream(message) => ApiFailure::upstream(message),
     }
+}
+
+/// Map a playlist edit error. An unavailable client with an expired
+/// headers file is a 401, like the read paths. Every other edit
+/// error keeps its typed mapping.
+fn edit_failure<S: AudioSink + Send + 'static>(
+    state: &AppState<S>,
+    error: PlaylistEditError,
+) -> ApiFailure {
+    if let PlaylistEditError::Upstream(message) = &error
+        && message == crate::music::CLIENT_UNAVAILABLE
+    {
+        let auth = provider_auth(state, ProviderId::Youtube);
+        let live = state.music.auth_status(ProviderId::Youtube);
+        if live.is_none() && auth.state == AuthState::Expired {
+            return ApiFailure::auth_expired(
+                auth.message
+                    .unwrap_or_else(|| AUTH_EXPIRED_MESSAGE.to_string()),
+            );
+        }
+    }
+    playlist_failure(error)
 }
 
 #[derive(Debug, Deserialize)]
@@ -2907,6 +2929,49 @@ mod tests {
             start_server(test_state_with(Arc::new(crate::music::UnavailableMusicApi))).await;
         let response = reqwest::Client::new()
             .get(format!("{base}/api/playlists"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::BAD_GATEWAY);
+        let body: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(body["error"]["code"], "upstream_error");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn unavailable_client_with_an_expired_file_returns_401_for_edits() {
+        // The edit path uses the same no-live-state rule as the
+        // read paths. An expired file owns the failure.
+        let (base, server) = start_server(unavailable_expired_state()).await;
+        let response = reqwest::Client::new()
+            .post(format!("{base}/api/playlists"))
+            .json(&CreatePlaylistRequest {
+                title: "Mix".to_string(),
+                description: String::new(),
+                privacy: ytermusicd_api::PlaylistPrivacy::Private,
+            })
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::UNAUTHORIZED);
+        let body: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(body["error"]["code"], "auth_expired");
+        let message = body["error"]["message"].as_str().unwrap();
+        assert!(message.contains("restart the daemon"), "{message}");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn unavailable_client_with_a_valid_file_returns_502_for_edits() {
+        let (base, server) =
+            start_server(test_state_with(Arc::new(crate::music::UnavailableMusicApi))).await;
+        let response = reqwest::Client::new()
+            .post(format!("{base}/api/playlists"))
+            .json(&CreatePlaylistRequest {
+                title: "Mix".to_string(),
+                description: String::new(),
+                privacy: ytermusicd_api::PlaylistPrivacy::Private,
+            })
             .send()
             .await
             .unwrap();
