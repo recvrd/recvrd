@@ -52,6 +52,8 @@ The release version is `0.6.1`. The tag is `v0.6.1`.
    ```
 
 9. Update `CHANGELOG.md` and `Cargo.toml` versions. Commit the changes.
+10. Open a pull request for the version commit. Merge it after every CI check
+    passes.
 
 ## Tag and publish
 
