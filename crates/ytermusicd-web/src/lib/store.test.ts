@@ -565,7 +565,7 @@ describe('AppStore', () => {
     await store.init();
 
     expect(store.activeProviderInfo?.auth.state).toBe('expired');
-    expect(store.error).toContain('session expired');
+    expect(store.error).toBeNull();
     store.dispose();
   });
 

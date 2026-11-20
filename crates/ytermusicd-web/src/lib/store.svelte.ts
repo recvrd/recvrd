@@ -343,7 +343,7 @@ export class AppStore {
         this.rssFeeds = await this.api.rssFeeds();
       }
     } catch (error) {
-      this.error = describeError(error, this.activeProviderName);
+      this.setLoadError(error);
       this.handleAuthError(error);
     } finally {
       this.playlistsLoading = false;
@@ -446,7 +446,7 @@ export class AppStore {
     try {
       this.playlist = await this.api.playlist(id, this.activeProvider);
     } catch (error) {
-      this.error = describeError(error, this.activeProviderName);
+      this.setLoadError(error);
       this.handleAuthError(error);
     } finally {
       this.playlistLoading = false;
@@ -1208,6 +1208,12 @@ export class AppStore {
       void this.loadProviders();
       void this.refreshStatus();
     }
+  }
+
+  /// Keep the auth banner as the only message for an expired session.
+  private setLoadError(error: unknown): void {
+    if (error instanceof ApiError && error.code === 'auth_expired') return;
+    this.error = describeError(error, this.activeProviderName);
   }
 
   private scheduleStatusRefresh(): void {
