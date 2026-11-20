@@ -120,7 +120,8 @@ Never commit the test account's `headers.txt` or `account_id.txt`.
 
 ## CI
 
-Every push and pull request runs `.github/workflows/ci.yml`:
+Each pull request to `main` runs `.github/workflows/ci.yml`. You can also run
+it with `workflow_dispatch`. The `rust` job runs:
 
 - `cargo fmt --all -- --check`
 - `cargo clippy --workspace --all-targets -- -D warnings`

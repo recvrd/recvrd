@@ -5,6 +5,10 @@ on:
     types: [published]
   workflow_dispatch:
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 permissions:
   contents: write
 
@@ -62,7 +66,7 @@ jobs:
 
       - name: Build ytermusicd and ytmc
         run: |
-          cargo build --release --target ${{ matrix.target }} -p ytermusicd -p ytmc
+          cargo build --release --locked --target ${{ matrix.target }} -p ytermusicd -p ytmc
 
       - name: Package (Unix)
         if: runner.os != 'Windows'
