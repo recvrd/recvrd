@@ -7,11 +7,11 @@ edition = "2024"
 
 [dependencies]
 common-structs.workspace = true
-reqwest = { version = "0.11.24", features = [
+reqwest = { version = "0.13", features = [
     "gzip",
     "deflate",
     "cookies",
-    "rustls-tls",
+    "rustls",
 ], default-features = false }
 serde = { version = "1.0.196", features = ["derive"] }
 serde_json = "1.0.113"

@@ -21,7 +21,7 @@ mime_guess = "2"
 player.workspace = true
 provider-rss.workspace = true
 provider-youtube.workspace = true
-reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls", "stream"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "stream"] }
 rmcp = { version = "3.10", features = ["transport-io"] }
 rust-embed = { version = "8", features = ["interpolate-folder-path"] }
 schemars = "1.2"
