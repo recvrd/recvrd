@@ -492,7 +492,7 @@ impl DaemonClient {
         )
     }
 
-    /// Fetch cover art as JPEG bytes.
+    /// Fetch cover art bytes.
     pub async fn cover(&self, key: &TrackKey) -> Result<Vec<u8>, DaemonError> {
         let response = self
             .http

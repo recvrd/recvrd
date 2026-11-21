@@ -1,4 +1,4 @@
-//! Convert JPEG cover art to terminal half-block cells.
+//! Convert cover art to terminal half-block cells.
 //!
 //! The half-block renderer is the fallback. When the terminal supports a
 //! graphics protocol, the decoded image is handed to `ratatui-image`
@@ -38,9 +38,9 @@ impl CoverArt {
     }
 }
 
-/// Decode JPEG bytes into an image for the graphics-protocol renderer.
+/// Decode cover art bytes into an image for the graphics-protocol renderer.
 /// Returns `None` when the bytes are not a decodable image.
-pub fn decode_jpeg(bytes: &[u8]) -> Option<DynamicImage> {
+pub fn decode_image(bytes: &[u8]) -> Option<DynamicImage> {
     image::load_from_memory(bytes).ok()
 }
 
@@ -72,6 +72,29 @@ pub fn render_image(image: &DynamicImage, width: u16, height: u16) -> CoverArt {
 mod tests {
     use super::*;
     use image::RgbImage;
+
+    fn encode(image: &DynamicImage, format: image::ImageFormat) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        image
+            .write_to(&mut std::io::Cursor::new(&mut bytes), format)
+            .unwrap();
+        bytes
+    }
+
+    #[test]
+    fn decodes_png_jpeg_and_webp_covers() {
+        let image = DynamicImage::ImageRgb8(RgbImage::from_pixel(2, 2, image::Rgb([10, 20, 30])));
+        for format in [
+            image::ImageFormat::Png,
+            image::ImageFormat::Jpeg,
+            image::ImageFormat::WebP,
+        ] {
+            let bytes = encode(&image, format);
+            let decoded =
+                decode_image(&bytes).unwrap_or_else(|| panic!("could not decode {format:?}"));
+            assert_eq!((decoded.width(), decoded.height()), (2, 2));
+        }
+    }
 
     #[test]
     fn resizes_to_the_requested_cell_count() {
