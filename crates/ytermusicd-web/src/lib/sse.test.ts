@@ -176,6 +176,35 @@ describe('EventStream', () => {
     stream.close();
   });
 
+  it('reconnects after 20 s of silence by default and a heartbeat resets the timer', () => {
+    const sources: FakeEventSource[] = [];
+    const stream = new EventStream({
+      create: (url) => {
+        const source = new FakeEventSource(url);
+        sources.push(source);
+        return source;
+      },
+      onEvent: () => {},
+      onState: () => {},
+      watchdogIntervalMs: 1000,
+    });
+
+    stream.connect();
+    sources[0].open();
+    vi.advanceTimersByTime(19000);
+    expect(sources).toHaveLength(1);
+
+    sources[0].emitNamed('heartbeat', {});
+    vi.advanceTimersByTime(19000);
+    expect(sources).toHaveLength(1);
+
+    vi.advanceTimersByTime(1000);
+    expect(sources).toHaveLength(2);
+    expect(sources[0].closed).toBe(true);
+    expect(sources[1].closed).toBe(false);
+    stream.close();
+  });
+
   it('heartbeat does not change the last event id', () => {
     const sources: FakeEventSource[] = [];
     const stream = new EventStream({

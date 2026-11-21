@@ -69,10 +69,19 @@ export interface StoreOptions {
   searchDebounceMs?: number;
   setTimeoutFn?: typeof setTimeout;
   clearTimeoutFn?: typeof clearTimeout;
+  setIntervalFn?: typeof setInterval;
+  clearIntervalFn?: typeof clearInterval;
 }
 
 const DEFAULT_TOAST_TTL = 6000;
 const DEFAULT_SEARCH_DEBOUNCE = 250;
+
+/// How often the playback watchdog checks for stalled events.
+const PLAYBACK_WATCH_INTERVAL_MS = 1000;
+/// Silence after which a playing track re-reads its position from the daemon.
+const PLAYBACK_STALE_REFRESH_MS = 2000;
+/// Silence after which a playing track rebuilds the event stream.
+const PLAYBACK_STALE_RETRY_MS = 5000;
 
 export function reorderQueue(queue: Queue, from: number, to: number): Queue {
   const items = [...queue.items];
@@ -154,6 +163,10 @@ export class AppStore {
   private toastSeq = 0;
   private searchTimer: ReturnType<typeof setTimeout> | null = null;
   private statusRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  private playbackWatchTimer: ReturnType<typeof setInterval> | null = null;
+  private lastPlaybackEventMs: number | null = null;
+  private playbackStaleRefreshed = false;
+  private playbackStaleRetried = false;
 
   constructor(api: YtermusicdApi = createApi(), options: StoreOptions = {}) {
     this.api = api;
@@ -176,8 +189,10 @@ export class AppStore {
       // After a reconnect (suspend resume, watchdog, or manual retry),
       // re-read status, providers, and queue. The position matches the
       // daemon, and the auth banner clears after a daemon restart
-      // with a fresh cookie.
+      // with a fresh cookie. A new connection starts a new watch
+      // period: the old silence no longer counts against it.
       onReconnect: () => {
+        this.resetPlaybackWatch();
         void this.refreshStatus();
         void this.loadProviders();
         void this.refreshQueue();
@@ -204,6 +219,7 @@ export class AppStore {
     this.events.close();
     this.clearSearchTimer();
     this.clearStatusRefreshTimer();
+    this.clearPlaybackWatchTimer();
     for (const id of this.liveToasts) {
       const clear = this.options.clearTimeoutFn ?? clearTimeout;
       clear(id);
@@ -1114,9 +1130,11 @@ export class AppStore {
         this.status = event.status;
         this.queue = event.queue;
         this.volume = event.status.playback.volume;
+        this.notePlaybackEvent();
         break;
       case 'playback':
         this.patchPlayback(event.playback);
+        this.notePlaybackEvent();
         break;
       case 'queue':
         this.queue = event.queue;
@@ -1182,6 +1200,7 @@ export class AppStore {
   private applyStatus(status: Status): void {
     this.status = status;
     this.volume = status.playback.volume;
+    this.updatePlaybackWatch();
   }
 
   private patchPlayback(patch: Partial<Status['playback']>): void {
@@ -1191,6 +1210,7 @@ export class AppStore {
       playback: { ...this.status.playback, ...patch },
     };
     if (patch.volume !== undefined) this.volume = patch.volume;
+    this.updatePlaybackWatch();
   }
 
   private report(error: unknown): void {
@@ -1227,6 +1247,82 @@ export class AppStore {
       this.statusRefreshTimer = null;
       void this.refreshStatus();
     }, 300);
+  }
+
+  /// Record a playback event from the stream. Only stream events move
+  /// this clock: a REST status refresh must not hide a dead stream.
+  /// The daemon publishes a playback event every 500 ms while it plays,
+  /// so 2 s without one means the stream stopped.
+  private notePlaybackEvent(): void {
+    this.lastPlaybackEventMs = Date.now();
+    this.playbackStaleRefreshed = false;
+    this.playbackStaleRetried = false;
+    this.updatePlaybackWatch();
+  }
+
+  /// Start a new watch period after a reconnect. The old silence no
+  /// longer counts against the new connection.
+  private resetPlaybackWatch(): void {
+    this.lastPlaybackEventMs = Date.now();
+    this.playbackStaleRefreshed = false;
+    this.playbackStaleRetried = false;
+    this.updatePlaybackWatch();
+  }
+
+  /// Run the watchdog only while playback runs. Pause, stop, and
+  /// dispose clear it.
+  private updatePlaybackWatch(): void {
+    if (this.status?.playback.state !== 'playing') {
+      this.clearPlaybackWatchTimer();
+      this.lastPlaybackEventMs = null;
+      this.playbackStaleRefreshed = false;
+      this.playbackStaleRetried = false;
+      return;
+    }
+    if (this.lastPlaybackEventMs === null) this.lastPlaybackEventMs = Date.now();
+    this.startPlaybackWatchTimer();
+  }
+
+  private startPlaybackWatchTimer(): void {
+    if (this.playbackWatchTimer !== null) return;
+    // Browser timer functions require the global receiver when called
+    // through the options object.
+    const interval = this.options.setIntervalFn ?? setInterval.bind(globalThis);
+    this.playbackWatchTimer = interval(
+      () => this.checkPlaybackStaleness(),
+      PLAYBACK_WATCH_INTERVAL_MS,
+    );
+  }
+
+  private clearPlaybackWatchTimer(): void {
+    if (this.playbackWatchTimer !== null) {
+      const clear = this.options.clearIntervalFn ?? clearInterval.bind(globalThis);
+      clear(this.playbackWatchTimer);
+      this.playbackWatchTimer = null;
+    }
+  }
+
+  /// Check a playing track for stalled playback events. At 2 s without
+  /// an event, re-read the status: the daemon computes the live position
+  /// from the audio clock, so the bar advances again. At 5 s without
+  /// an event, rebuild the stream. Each step runs once per watch
+  /// period, until a new event or a reconnect starts a new period.
+  private checkPlaybackStaleness(): void {
+    const playback = this.status?.playback;
+    if (!playback || playback.state !== 'playing' || this.lastPlaybackEventMs === null) {
+      this.clearPlaybackWatchTimer();
+      return;
+    }
+    const silentMs = Date.now() - this.lastPlaybackEventMs;
+    if (silentMs >= PLAYBACK_STALE_RETRY_MS && !this.playbackStaleRetried) {
+      this.playbackStaleRetried = true;
+      this.events.retry();
+      return;
+    }
+    if (silentMs >= PLAYBACK_STALE_REFRESH_MS && !this.playbackStaleRefreshed) {
+      this.playbackStaleRefreshed = true;
+      void this.refreshStatus();
+    }
   }
 
   private clearStatusRefreshTimer(): void {

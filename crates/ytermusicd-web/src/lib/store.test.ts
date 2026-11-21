@@ -100,6 +100,192 @@ describe('AppStore', () => {
     store.dispose();
   });
 
+  it('sends a fresh status on reconnect before new events apply', async () => {
+    const { api, store, sources } = setup();
+    await store.init();
+    expect(api.status).toHaveBeenCalledOnce();
+
+    sources[0].open();
+    sources[0].fail();
+    // Backoff is the default 1000 ms; advancing past the maximum
+    // delay reconnects it.
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(sources).toHaveLength(2);
+    sources[1].open();
+
+    // The reconnect refresh runs before any event on the new stream.
+    expect(api.status).toHaveBeenCalledTimes(2);
+    sources[1].emit({
+      type: 'playback',
+      playback: {
+        state: 'playing',
+        current: makeTrack('v1'),
+        position_secs: 20,
+        volume: 50,
+        repeat: 'off',
+        shuffle: false,
+      },
+    });
+    expect(store.status?.playback.position_secs).toBe(20);
+    store.dispose();
+  });
+
+  it('refreshes status after 2 s without playback events and retries the stream after 5 s', async () => {
+    const { api, store, sources } = setup();
+    api.status = vi.fn(async () =>
+      makeStatus({
+        playback: {
+          state: 'playing',
+          current: makeTrack('v1'),
+          position_secs: 12,
+          volume: 50,
+          repeat: 'off',
+          shuffle: false,
+        },
+      }),
+    );
+    await store.init();
+    expect(api.status).toHaveBeenCalledOnce();
+    expect(store.status?.playback.position_secs).toBe(12);
+
+    sources[0].open();
+    sources[0].emit({
+      type: 'playback',
+      playback: {
+        state: 'playing',
+        current: makeTrack('v1'),
+        position_secs: 12,
+        volume: 50,
+        repeat: 'off',
+        shuffle: false,
+      },
+    });
+
+    // The daemon reports a later position when the status is re-read.
+    api.status = vi.fn(async () =>
+      makeStatus({
+        playback: {
+          state: 'playing',
+          current: makeTrack('v1'),
+          position_secs: 14,
+          volume: 50,
+          repeat: 'off',
+          shuffle: false,
+        },
+      }),
+    );
+
+    await vi.advanceTimersByTimeAsync(1999);
+    expect(api.status).not.toHaveBeenCalled();
+    expect(sources).toHaveLength(1);
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(api.status).toHaveBeenCalledOnce();
+    await vi.waitFor(() => {
+      expect(store.status?.playback.position_secs).toBe(14);
+    });
+
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(sources).toHaveLength(2);
+    expect(sources[0].closed).toBe(true);
+    expect(sources[1].closed).toBe(false);
+    store.dispose();
+  });
+
+  it('does not start the fallback timer when paused', async () => {
+    const { api, store, sources } = setup();
+    api.status = vi.fn(async () =>
+      makeStatus({
+        playback: {
+          state: 'paused',
+          current: makeTrack('v1'),
+          position_secs: 10,
+          volume: 50,
+          repeat: 'off',
+          shuffle: false,
+        },
+      }),
+    );
+    await store.init();
+
+    sources[0].open();
+    sources[0].emit({
+      type: 'playback',
+      playback: {
+        state: 'paused',
+        current: makeTrack('v1'),
+        position_secs: 10,
+        volume: 50,
+        repeat: 'off',
+        shuffle: false,
+      },
+    });
+
+    await vi.advanceTimersByTimeAsync(10000);
+    expect(api.status).toHaveBeenCalledOnce();
+    expect(sources).toHaveLength(1);
+    store.dispose();
+  });
+
+  it('does not start the fallback timer when stopped', async () => {
+    const { api, store, sources } = setup();
+    await store.init();
+    expect(store.status?.playback.state).toBe('stopped');
+
+    await vi.advanceTimersByTimeAsync(10000);
+    expect(api.status).toHaveBeenCalledOnce();
+    expect(sources).toHaveLength(1);
+    store.dispose();
+  });
+
+  it('clears the fallback timer on pause', async () => {
+    const { api, store, sources } = setup();
+    api.status = vi.fn(async () =>
+      makeStatus({
+        playback: {
+          state: 'playing',
+          current: makeTrack('v1'),
+          position_secs: 12,
+          volume: 50,
+          repeat: 'off',
+          shuffle: false,
+        },
+      }),
+    );
+    await store.init();
+
+    sources[0].open();
+    sources[0].emit({
+      type: 'playback',
+      playback: {
+        state: 'playing',
+        current: makeTrack('v1'),
+        position_secs: 12,
+        volume: 50,
+        repeat: 'off',
+        shuffle: false,
+      },
+    });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(api.status).toHaveBeenCalledOnce();
+
+    sources[0].emit({
+      type: 'playback',
+      playback: {
+        state: 'paused',
+        current: makeTrack('v1'),
+        position_secs: 12,
+        volume: 50,
+        repeat: 'off',
+        shuffle: false,
+      },
+    });
+    await vi.advanceTimersByTimeAsync(10000);
+    expect(api.status).toHaveBeenCalledOnce();
+    expect(sources).toHaveLength(1);
+    store.dispose();
+  });
+
   it('clears the expired banner after the event stream reconnects', async () => {
     const { api, store, sources } = setup();
     api.providers = vi.fn(async () => [

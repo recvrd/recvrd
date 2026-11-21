@@ -24,7 +24,7 @@ export interface EventStreamOptions {
   retryMaxMs?: number;
   /** How often the watchdog checks for silence. Defaults to 5000. */
   watchdogIntervalMs?: number;
-  /** Silence that counts as a dead stream. Defaults to 45000. */
+  /** Silence that counts as a dead stream. Defaults to 20000. */
   silenceMs?: number;
   setTimeoutFn?: typeof setTimeout;
   clearTimeoutFn?: typeof clearTimeout;
@@ -96,7 +96,7 @@ export class EventStream {
       retryBaseMs: options.retryBaseMs ?? 1000,
       retryMaxMs: options.retryMaxMs ?? 30000,
       watchdogIntervalMs: options.watchdogIntervalMs ?? 5000,
-      silenceMs: options.silenceMs ?? 45000,
+      silenceMs: options.silenceMs ?? 20000,
       setTimeoutFn: options.setTimeoutFn ?? setTimeout.bind(globalThis),
       clearTimeoutFn: options.clearTimeoutFn ?? clearTimeout.bind(globalThis),
       setIntervalFn: options.setIntervalFn ?? setInterval.bind(globalThis),
