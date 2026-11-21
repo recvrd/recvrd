@@ -37,7 +37,8 @@ const MAX_BROWSE_RETRIES: u32 = 2;
 
 #[cfg(test)]
 fn headers_path() -> PathBuf {
-    std::env::var_os("YTERMUSICD_HEADERS")
+    std::env::var_os("RECVRD_HEADERS")
+        .or_else(|| std::env::var_os("YTERMUSICD_HEADERS"))
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../headers.txt"))
 }
@@ -49,7 +50,7 @@ fn get_headers() -> HeaderMap {
     let file = std::fs::read_to_string(&path).unwrap_or_else(|e| {
         panic!(
             "failed to read headers from {}: {e}\n\
-             set YTERMUSICD_HEADERS or place headers.txt at the repository root",
+             set RECVRD_HEADERS or place headers.txt at the repository root",
             path.display()
         )
     });

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/common-structs","crates/database", "crates/download-manager","crates/player", "crates/provider-rss", "crates/provider-youtube", "crates/ytermusic", "crates/ytmc", "crates/ytermusicd", "crates/ytermusicd-api", "crates/ytermusicd-client", "crates/ytermusicd-core", "crates/ytpapi2"]
+members = ["crates/common-structs","crates/database", "crates/download-manager","crates/player", "crates/provider-rss", "crates/provider-youtube", "crates/ytermusic", "crates/recvc", "crates/recvrd", "crates/recvrd-api", "crates/recvrd-client", "crates/recvrd-core", "crates/ytpapi2"]
 
 [workspace.dependencies]
 player = { path = "crates/player" }
@@ -10,6 +10,6 @@ ytpapi2 = { path = "crates/ytpapi2" }
 database = { path = "crates/database" }
 download-manager = { path = "crates/download-manager" }
 common-structs = { path = "crates/common-structs" }
-ytermusicd-core = { path = "crates/ytermusicd-core" }
-ytermusicd-api = { path = "crates/ytermusicd-api" }
-ytermusicd-client = { path = "crates/ytermusicd-client" }
+recvrd-core = { path = "crates/recvrd-core" }
+recvrd-api = { path = "crates/recvrd-api" }
+recvrd-client = { path = "crates/recvrd-client" }

@@ -4,7 +4,7 @@ use unicode_bidi::{BidiInfo, Level};
 
 /// Get directories for the legacy TUI project for config, cache, etc.
 pub fn get_project_dirs() -> Option<ProjectDirs> {
-    ytermusicd_core::Paths::legacy_project_dirs()
+    recvrd_core::Paths::legacy_project_dirs()
 }
 /// Invert a style
 pub fn invert(style: Style) -> Style {

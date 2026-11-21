@@ -1,0 +1,23 @@
+[Unit]
+Description=recvrd headless YouTube Music daemon
+Documentation=https://github.com/recvrd/recvrd
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=PATH=%h/.nix-profile/bin:/run/current-system/sw/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/env recvrd serve
+EnvironmentFile=-%h/.config/recvrd/env
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=20s
+StateDirectory=recvrd
+CacheDirectory=recvrd
+ConfigurationDirectory=recvrd
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target
+Alias=ytermusicd.service

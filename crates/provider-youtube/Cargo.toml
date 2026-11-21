@@ -3,7 +3,7 @@ name = "provider-youtube"
 version = "0.6.3"
 edition = "2024"
 license = "Apache-2.0"
-description = "YouTube Music provider for ytermusicd"
+description = "YouTube Music provider for recvrd"
 
 [dependencies]
 async-trait = "0.1"
@@ -13,8 +13,8 @@ log = "0.4"
 reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
 serde_json = "1"
 tokio = { version = "1", features = ["io-util", "process"] }
-ytermusicd-api.workspace = true
-ytermusicd-core.workspace = true
+recvrd-api.workspace = true
+recvrd-core.workspace = true
 ytpapi2.workspace = true
 
 # --- YouTube download backend ---

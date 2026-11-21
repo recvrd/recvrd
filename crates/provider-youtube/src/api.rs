@@ -8,7 +8,7 @@ use std::{
 
 use async_trait::async_trait;
 use common_structs::ProviderId;
-use ytermusicd_api::{
+use recvrd_api::{
     AuthState, AuthStatus, CreatePlaylistRequest, MusicApi, Playlist, PlaylistDetail,
     PlaylistEditError, PlaylistPrivacy, SearchResults, Track, UpdatePlaylistRequest,
 };
@@ -26,9 +26,7 @@ pub const AUTH_EXPIRED_MESSAGE: &str = "The YouTube Music session expired. Updat
 
 /// Build an authenticated YouTube Music client from core auth.
 /// The header types come from `ytpapi2`, so they match the client.
-pub async fn connect(
-    auth: &ytermusicd_core::Auth,
-) -> Result<YoutubeMusicInstance, YoutubeMusicError> {
+pub async fn connect(auth: &recvrd_core::Auth) -> Result<YoutubeMusicInstance, YoutubeMusicError> {
     let mut headers = HeaderMap::new();
     headers.insert(
         COOKIE,
@@ -438,8 +436,8 @@ pub fn track_dto(track: YoutubeMusicVideoRef) -> Track {
 
 /// Convert a YouTube reference to a provider-neutral core track.
 /// The playlist item ID does not survive the conversion.
-pub fn track_from_ref(reference: &YoutubeMusicVideoRef) -> ytermusicd_core::Track {
-    ytermusicd_core::Track {
+pub fn track_from_ref(reference: &YoutubeMusicVideoRef) -> recvrd_core::Track {
+    recvrd_core::Track {
         provider: reference.provider,
         track_id: reference.video_id.clone(),
         title: reference.title.clone(),
@@ -451,7 +449,7 @@ pub fn track_from_ref(reference: &YoutubeMusicVideoRef) -> ytermusicd_core::Trac
 
 /// Convert a core track back to a YouTube reference. The playlist
 /// item ID is empty: a plain track has no playlist position.
-pub fn ref_from_track(track: &ytermusicd_core::Track) -> YoutubeMusicVideoRef {
+pub fn ref_from_track(track: &recvrd_core::Track) -> YoutubeMusicVideoRef {
     YoutubeMusicVideoRef {
         video_id: track.track_id.clone(),
         title: track.title.clone(),

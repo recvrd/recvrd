@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Rename the project to `recvrd`. The daemon is `recvrd`, the terminal client
+  is `recvc`, and the crates are `recvrd-*`. The old `ytermusicd` and `ytmc`
+  binaries, `YTERMUSICD_*` variables and Nix options remain aliases for one
+  release.
+- Move the XDG directories from `ytermusicd` to `recvrd` on first start.
+- Change the MPRIS name, API name, web title and `localStorage` keys to
+  `recvrd`.
+
 ## 0.6.3 — 2026-11-20
 
 ### Fixed

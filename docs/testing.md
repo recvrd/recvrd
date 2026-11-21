@@ -36,7 +36,7 @@ for non-Nix setups.
    cookies, a network connection, an audio device or DBus.
 3. **Credentialed tests** are marked `#[ignore]`. The `ytpapi2` tests are the
    current example: they read a real `headers.txt` and call YouTube Music.
-4. **Web tests** use Vitest and Testing Library in `crates/ytermusicd-web`.
+4. **Web tests** use Vitest and Testing Library in `crates/recvrd-web`.
 5. **Terminal client tests** use `ratatui::backend::TestBackend`. They render at
    80x24 and 120x40, and they need no TTY or network.
 6. **Smoke tests** run against a real daemon and are scripted in
@@ -53,7 +53,7 @@ cargo test --workspace
 Run them explicitly with a headers file:
 
 ```sh
-YTERMUSICD_HEADERS="$HOME/.config/ytermusicd/headers.txt" \
+RECVRD_HEADERS="$HOME/.config/recvrd/headers.txt" \
   cargo test -p ytpapi2 -- --include-ignored
 ```
 
@@ -63,7 +63,7 @@ root `headers.txt` is already gitignored.
 ### Fixtures and mocks
 
 Current offline coverage is in `crates/ytpapi2`, `crates/provider-youtube`,
-`crates/ytermusicd-core`, `crates/ytermusicd` and `crates/ytermusicd-web`:
+`crates/recvrd-core`, `crates/recvrd` and `crates/recvrd-web`:
 
 - `string_utils` tests cover cookie/header parsing helpers.
 - `json_extractor` tests cover search, playlist, continuation, album and
@@ -73,10 +73,10 @@ Current offline coverage is in `crates/ytpapi2`, `crates/provider-youtube`,
   auth/rate-limit response mapping.
 - `provider-youtube` tests cover the DTO conversions, playlist error mapping,
   cover URLs and the yt-dlp invocation with a fake script.
-- `ytermusicd-core` tests cover auth/config/paths, queue transitions,
+- `recvrd-core` tests cover auth/config/paths, queue transitions,
   repeat/shuffle restoration, download-failure handling, playback position and
   event-bus replay using a mock audio sink.
-- `ytermusicd` integration tests start the router on an ephemeral port and
+- `recvrd` integration tests start the router on an ephemeral port and
   cover every REST endpoint, playlist edit validation, SSE replay, cover art
   caching, download retry, static serving and upstream error envelopes.
 - Web tests cover the API client, event stream, store, keymap, track table,
@@ -138,7 +138,7 @@ embeds the assets, publishes SHA-256 checksums, and can be dry-run with
 Start the daemon:
 
 ```sh
-cargo run -p ytermusicd -- serve
+cargo run -p recvrd -- serve
 ```
 
 Then, in another shell:
@@ -146,7 +146,7 @@ Then, in another shell:
 ```sh
 just smoke
 # or
-YTERMUSICD_URL=http://127.0.0.1:8080 ./scripts/smoke.sh
+RECVRD_URL=http://127.0.0.1:8080 ./scripts/smoke.sh
 ```
 
 The script checks `/api/status`, search, at least one SSE event, and MPRIS via
@@ -156,7 +156,7 @@ check; without them it returns 502 and the smoke test fails.
 For a complete local smoke test, use a temporary daemon and real headers:
 
 ```sh
-YTERMUSICD_HEADERS="$HOME/.config/ytermusicd/headers.txt" just smoke-local
+RECVRD_HEADERS="$HOME/.config/recvrd/headers.txt" just smoke-local
 ```
 
 `smoke-local` builds the binary, starts it on an ephemeral port with temporary
@@ -167,5 +167,5 @@ XDG directories, then checks status, the web page, search, SSE and the MCP
 
 The daemon, REST/SSE API, web UI, MPRIS, MCP, playlist editing and systemd/Nix
 packaging exist. Live playlist mutation tests need a test account. See
-[#51](https://github.com/suorcd/ytermusicd/issues/51) and
+[#51](https://github.com/recvrd/recvrd/issues/51) and
 [decision 0005](decisions/0005-playlist-editing.md).

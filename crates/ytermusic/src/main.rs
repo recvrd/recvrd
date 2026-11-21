@@ -6,6 +6,7 @@ use structures::performance::STARTUP_TIME;
 use term::{Manager, ManagerMessage};
 use tokio::select;
 
+use recvrd_core::{Auth, LoadedAuth, Paths, resolve_auth};
 use std::{
     future::Future,
     panic,
@@ -13,7 +14,6 @@ use std::{
     sync::RwLock,
 };
 use systems::{logger::init, player::player_system};
-use ytermusicd_core::{Auth, LoadedAuth, Paths, resolve_auth};
 
 use crate::{
     consts::HEADER_TUTORIAL,

@@ -1,6 +1,6 @@
-# Terminal client (`ytmc`)
+# Terminal client (`recvc`)
 
-`ytmc` is a terminal client for the daemon. It is a thin client: the
+`recvc` is a terminal client for the daemon. It is a thin client: the
 daemon owns playback, queue, downloads and auth. The client uses the REST and
 SSE API, so it shows the same state as the web UI, MPRIS and the MCP proxy.
 
@@ -9,7 +9,7 @@ state with the daemon. See [legacy-tui.md](legacy-tui.md) for that client.
 
 ## Requirements
 
-- A running `ytermusicd` daemon.
+- A running `recvrd` daemon.
 - A terminal of at least 80x24 for the full layout. The client hides the sidebar
   below 60 columns.
 - A terminal with mouse reporting for mouse actions. Keyboard actions always
@@ -18,24 +18,24 @@ state with the daemon. See [legacy-tui.md](legacy-tui.md) for that client.
 ## Run the client
 
 ```sh
-nix run .#ytmc
+nix run .#recvc
 ```
 
 From the repository:
 
 ```sh
 nix develop
-cargo run -p ytmc
+cargo run -p recvc
 # or
 just tui
 ```
 
 The default URL is `http://127.0.0.1:8080`. Use `--url` or
-`YTERMUSICD_URL` for another daemon:
+`RECVRD_URL` for another daemon:
 
 ```sh
-ytmc --url http://127.0.0.1:9000
-YTERMUSICD_URL=http://127.0.0.1:9000 ytmc
+recvc --url http://127.0.0.1:9000
+RECVRD_URL=http://127.0.0.1:9000 recvc
 ```
 
 The client does not read `headers.txt`. It shows an auth banner when the daemon
@@ -115,7 +115,7 @@ a truecolor terminal for correct colors.
 The detection query can add a short delay at startup on a terminal that does
 not answer it.
 
-Use `--cover-mode halfblocks` or `YTMC_COVER_MODE=halfblocks` to force the
+Use `--cover-mode halfblocks` or `RECVC_COVER_MODE=halfblocks` to force the
 half-block renderer.
 
 ## Limits
@@ -129,7 +129,7 @@ half-block renderer.
 ## Troubleshooting
 
 **The header shows `offline`.** Start the daemon. Check `--url` and
-`YTERMUSICD_URL`. The client reconnects with backoff.
+`RECVRD_URL`. The client reconnects with backoff.
 
 **The banner shows `Auth`.** Refresh `headers.txt` and restart the daemon. See
 [Authentication](../README.md#authentication).

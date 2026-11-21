@@ -6,7 +6,7 @@
 
 ## Context
 
-`ytermusicd` is a fork of [ccgauche/ytermusic](https://github.com/ccgauche/ytermusic).
+`recvrd` is a fork of [ccgauche/ytermusic](https://github.com/ccgauche/ytermusic).
 The fork adds a daemon, HTTP/SSE API, web UI, MCP proxy and packaging on top of
 the upstream TUI. The build plan lists "fork-first vs upstream draft PR" as an
 open question.
@@ -18,7 +18,7 @@ should not block on upstream review.
 
 ## Decision
 
-- **Primary development happens in the fork** (`suorcd/ytermusicd`).
+- **Primary development happens in the fork** (`recvrd/recvrd`).
 - **Upstream generic, self-contained fixes when practical.** Open a focused
   upstream PR or issue for changes that stand alone and do not depend on the
   daemon/API/web.

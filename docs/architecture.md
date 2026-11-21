@@ -10,7 +10,7 @@
 
 ## Process model
 
-`ytermusicd serve` starts one process with:
+`recvrd serve` starts one process with:
 
 - a multi-threaded Tokio runtime and one HTTP listener;
 - one audio sink and one queue service;
@@ -25,12 +25,12 @@ SIGINT/SIGTERM. State is owned by the daemon, not by an individual client.
 
 | Component | Status | Responsibility |
 | --- | --- | --- |
-| `crates/ytermusicd` | Current | CLI, HTTP/SSE server, MPRIS integration, MCP proxy entrypoint |
-| `ytermusicd-core` | Current (#6/#7) | Auth, config, paths, queue/playback and event bus |
-| `ytermusicd-api` | Current (#11) | Shared DTOs, event types and generated TypeScript |
-| `crates/ytermusicd-web` | Current (#14–#17) | Svelte 5 web UI (embedded at build time) |
-| `crates/ytermusicd-client` | Current | HTTP and SSE client shared by the terminal client and MCP |
-| `crates/ytmc` | Current | Terminal client (`ytmc`) |
+| `crates/recvrd` | Current | CLI, HTTP/SSE server, MPRIS integration, MCP proxy entrypoint |
+| `recvrd-core` | Current (#6/#7) | Auth, config, paths, queue/playback and event bus |
+| `recvrd-api` | Current (#11) | Shared DTOs, event types and generated TypeScript |
+| `crates/recvrd-web` | Current (#14–#17) | Svelte 5 web UI (embedded at build time) |
+| `crates/recvrd-client` | Current | HTTP and SSE client shared by the terminal client and MCP |
+| `crates/recvc` | Current | Terminal client (`recvc`) |
 | `crates/ytpapi2` | Current | YouTube Music API client |
 | `crates/provider-youtube` | Current | YouTube Music provider: API client, cover fetcher, downloads |
 | `crates/provider-rss` | Current | RSS provider: feed parser, store, fetcher, downloader |
@@ -78,9 +78,10 @@ routing fallback. See [docs/web.md](web.md).
   `state.json.bad`).
 - **Legacy**: `last-playlist.json` from the TUI.
 
-The daemon uses the `com/suorcd/ytermusicd` directories and falls back to the
-legacy `com/ccgauche/ytermusic` headers file with a warning. The legacy TUI
-keeps its existing cache/config directories.
+The daemon uses the `com/suorcd/recvrd` directories. On the first start it
+moves the `com/suorcd/ytermusicd` directories to the new paths. It falls back
+to the upstream `com/ccgauche/ytermusic` headers file with a warning. The
+legacy TUI keeps its existing cache/config directories.
 
 ## Downloads
 
@@ -121,7 +122,7 @@ feeds at startup and exposes feed management at `/api/rss/feeds`.
 ## API
 
 The full contract and curl examples live in [docs/api.md](api.md). DTOs come
-from `ytermusicd-api`, which also generates the TypeScript bindings consumed by
+from `recvrd-api`, which also generates the TypeScript bindings consumed by
 the web UI and MCP proxy.
 
 - REST: status, playlists, playlist edits, playlist detail, search, cover art,
@@ -137,22 +138,22 @@ the web UI and MCP proxy.
 
 ## Terminal client
 
-`ytmc` is a thin client of the daemon. It uses `ytermusicd-api` DTOs
-and `ytermusicd-client` for REST and SSE. It does not read cookies, the database
+`recvc` is a thin client of the daemon. It uses `recvrd-api` DTOs
+and `recvrd-client` for REST and SSE. It does not read cookies, the database
 or the player. The daemon owns all state.
 
 The client shows the library, one playlist, the queue, search, the now-playing
 bar and cover art. It supports vim keys and mouse actions. It reconnects with
 backoff and sends `Last-Event-ID` to replay missed events. See [tui.md](tui.md).
 
-The MCP proxy uses the same `ytermusicd-client` layer. A new daemon endpoint
+The MCP proxy uses the same `recvrd-client` layer. A new daemon endpoint
 needs one client method, and both clients can use it.
 
 ## Media controls (MPRIS)
 
 On Linux the daemon starts a `souvlaki` MPRIS client on a dedicated thread when
-`player.dbus = true` (the default). Clients see the identity `ytermusic` and
-display name `ytermusicd`. `playerctl -l` lists it while the daemon runs.
+`player.dbus = true` (the default). Clients see the identity and display name
+`recvrd`. `playerctl -l` lists it while the daemon runs.
 
 - Supported: play/pause/toggle, next, previous, stop, seek forward/backward by
   the requested amount, set position and set volume.
@@ -170,11 +171,11 @@ display name `ytermusicd`. `playerctl -l` lists it while the daemon runs.
 
 ## MCP
 
-`ytermusicd mcp` is a stdio proxy to the REST API. It uses `rmcp` and holds no
+`recvrd mcp` is a stdio proxy to the REST API. It uses `rmcp` and holds no
 playback state. The proxy has 33 tools: search, playlists, playlist edits,
 playback transport, seek, shuffle, repeat, queue management, queue add, now
 playing, volume, download status and RSS feed management. It reads
-the daemon URL from `--url` or `YTERMUSICD_URL`, applies a 30-second timeout, and
+the daemon URL from `--url` or `RECVRD_URL`, applies a 30-second timeout, and
 exits when stdin closes. See [docs/mcp.md](mcp.md). Lyrics and HTTP transport
 are post-v1.
 

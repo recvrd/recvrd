@@ -14,9 +14,9 @@ use std::{
 use async_trait::async_trait;
 use common_structs::{ProviderId, TrackKey};
 use download_manager::{DownloadError, TrackDownloader};
+use recvrd_api::{MusicApi, Playlist, PlaylistEditError, RssFeed, SearchResults, Track};
+use recvrd_core::{CoverFetcher, Track as CoreTrack};
 use reqwest::header::{CONTENT_TYPE, ETAG, IF_MODIFIED_SINCE, IF_NONE_MATCH, LAST_MODIFIED};
-use ytermusicd_api::{MusicApi, Playlist, PlaylistEditError, RssFeed, SearchResults, Track};
-use ytermusicd_core::{CoverFetcher, Track as CoreTrack};
 
 use crate::{
     feed::{Feed, episode_id, feed_id, parse_feed},
@@ -62,7 +62,7 @@ impl RssProvider {
         }
         Self {
             client: reqwest::Client::builder()
-                .user_agent(concat!("ytermusicd/", env!("CARGO_PKG_VERSION")))
+                .user_agent(concat!("recvrd/", env!("CARGO_PKG_VERSION")))
                 .timeout(Duration::from_secs(30))
                 .build()
                 .unwrap_or_default(),
@@ -455,7 +455,7 @@ impl MusicApi for RssProvider {
 
     async fn create_playlist(
         &self,
-        _request: &ytermusicd_api::CreatePlaylistRequest,
+        _request: &recvrd_api::CreatePlaylistRequest,
     ) -> Result<Playlist, PlaylistEditError> {
         Err(edit_unsupported("creating playlists"))
     }
@@ -463,7 +463,7 @@ impl MusicApi for RssProvider {
     async fn update_playlist(
         &self,
         _id: &str,
-        _request: &ytermusicd_api::UpdatePlaylistRequest,
+        _request: &recvrd_api::UpdatePlaylistRequest,
     ) -> Result<Playlist, PlaylistEditError> {
         Err(edit_unsupported("renaming playlists"))
     }
@@ -922,10 +922,10 @@ mod tests {
     async fn rss_rejects_playlist_edits() {
         let (provider, _dir) = provider();
         let result = provider
-            .create_playlist(&ytermusicd_api::CreatePlaylistRequest {
+            .create_playlist(&recvrd_api::CreatePlaylistRequest {
                 title: "Mix".to_string(),
                 description: String::new(),
-                privacy: ytermusicd_api::PlaylistPrivacy::Private,
+                privacy: recvrd_api::PlaylistPrivacy::Private,
             })
             .await;
         assert!(matches!(result, Err(PlaylistEditError::Invalid(_))));

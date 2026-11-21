@@ -29,7 +29,7 @@ Version 1 is read-only for playlists. These actions are post-v1:
 - add, remove and reorder playlist tracks;
 - MCP tools for playlist changes.
 
-The follow-up is tracked in [#51](https://github.com/suorcd/ytermusicd/issues/51).
+The follow-up is tracked in [#51](https://github.com/recvrd/recvrd/issues/51).
 
 ## Post-v1 update
 

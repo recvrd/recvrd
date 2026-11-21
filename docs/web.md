@@ -1,7 +1,7 @@
 # Web UI
 
 The web UI is a Svelte 5, Vite and TypeScript app in
-`crates/ytermusicd-web`. It uses the REST and SSE API only. It keeps no state
+`crates/recvrd-web`. It uses the REST and SSE API only. It keeps no state
 of its own that the daemon does not own.
 
 ## Development
@@ -24,14 +24,14 @@ Type-check and build:
 ```sh
 just web-check
 # or
-cd crates/ytermusicd-web
+cd crates/recvrd-web
 npm run check
 npm run build
 ```
 
 ## Production serving
 
-The daemon embeds `crates/ytermusicd-web/dist` at build time with `rust-embed`.
+The daemon embeds `crates/recvrd-web/dist` at build time with `rust-embed`.
 It serves the app at `/` and falls back to `index.html` for client-side routes.
 Unknown files under `/assets/` return 404. Unknown `/api` paths return 404 and
 never return `index.html`.
@@ -52,12 +52,14 @@ artifacts contain the real app.
   and download state.
 
 The top bar has a provider selector. It lists every provider from
-`GET /api/providers`. The choice is stored in `localStorage`, and library,
-playlist and search requests use it. The library header shows the active
-provider name. Actions a provider does not support are hidden: the *New
-playlist* button and the playlist edit actions appear only when the active
-provider reports the matching capability. The auth banner shows the auth
-state of the active provider.
+`GET /api/providers`. The choice is stored in `localStorage` under
+`recvrd.provider`, and library, playlist and search requests use it. The web UI
+reads the old `ytermusicd.provider` key when the new key is absent. The player
+layout key uses the same `recvrd.*` and `ytermusicd.*` pattern. The library
+header shows the active provider name. Actions a provider does not support are
+hidden: the *New playlist* button and the playlist edit actions appear only
+when the active provider reports the matching capability. The auth banner shows
+the auth state of the active provider.
 
 With the RSS provider active, the library shows *Add feed* and *Refresh
 feeds* in the header, and each feed card has *Refresh* and *Remove*
@@ -179,7 +181,7 @@ table.
 ## Tests
 
 ```sh
-cd crates/ytermusicd-web
+cd crates/recvrd-web
 npm test
 ```
 
