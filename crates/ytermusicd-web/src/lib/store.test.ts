@@ -326,6 +326,176 @@ describe('AppStore', () => {
     store.dispose();
   });
 
+  it('ignores a stale status refresh after a newer playback event', async () => {
+    const { api, store, sources } = setup();
+    await store.init();
+    sources[0].open();
+    sources[0].emit({
+      type: 'playback',
+      playback: {
+        state: 'playing',
+        current: makeTrack('v1'),
+        position_secs: 12,
+        volume: 50,
+        repeat: 'off',
+        shuffle: false,
+      },
+    });
+    expect(store.status?.playback.position_secs).toBe(12);
+
+    // Hold the refresh response while a newer event arrives.
+    let resolveStatus!: (status: ReturnType<typeof makeStatus>) => void;
+    api.status = vi.fn(
+      () =>
+        new Promise<ReturnType<typeof makeStatus>>((resolve) => {
+          resolveStatus = resolve;
+        }),
+    );
+    const refresh = store.refreshStatus();
+    expect(api.status).toHaveBeenCalledTimes(1);
+
+    sources[0].emit({
+      type: 'playback',
+      playback: {
+        state: 'playing',
+        current: makeTrack('v1'),
+        position_secs: 30,
+        volume: 50,
+        repeat: 'off',
+        shuffle: false,
+      },
+    });
+    expect(store.status?.playback.position_secs).toBe(30);
+
+    resolveStatus(
+      makeStatus({
+        playback: {
+          state: 'playing',
+          current: makeTrack('v1'),
+          position_secs: 14,
+          volume: 50,
+          repeat: 'off',
+          shuffle: false,
+        },
+      }),
+    );
+    await refresh;
+    expect(store.status?.playback.position_secs).toBe(30);
+    store.dispose();
+  });
+
+  it('ignores a stale status refresh after a seek', async () => {
+    const { api, store, sources } = setup();
+    await store.init();
+    sources[0].open();
+    sources[0].emit({
+      type: 'playback',
+      playback: {
+        state: 'playing',
+        current: makeTrack('v1'),
+        position_secs: 12,
+        volume: 50,
+        repeat: 'off',
+        shuffle: false,
+      },
+    });
+    expect(store.status?.playback.position_secs).toBe(12);
+
+    // Hold the refresh response while the user seeks.
+    let resolveStatus!: (status: ReturnType<typeof makeStatus>) => void;
+    api.status = vi.fn(
+      () =>
+        new Promise<ReturnType<typeof makeStatus>>((resolve) => {
+          resolveStatus = resolve;
+        }),
+    );
+    const refresh = store.refreshStatus();
+    expect(api.status).toHaveBeenCalledTimes(1);
+
+    await store.seek(45);
+    expect(store.status?.playback.position_secs).toBe(45);
+
+    resolveStatus(
+      makeStatus({
+        playback: {
+          state: 'playing',
+          current: makeTrack('v1'),
+          position_secs: 14,
+          volume: 50,
+          repeat: 'off',
+          shuffle: false,
+        },
+      }),
+    );
+    await refresh;
+    expect(store.status?.playback.position_secs).toBe(45);
+    store.dispose();
+  });
+
+  it('ignores a stale reconnect refresh after a newer playback event', async () => {
+    const { api, store, sources } = setup();
+    await store.init();
+    sources[0].open();
+    sources[0].emit({
+      type: 'playback',
+      playback: {
+        state: 'playing',
+        current: makeTrack('v1'),
+        position_secs: 12,
+        volume: 50,
+        repeat: 'off',
+        shuffle: false,
+      },
+    });
+
+    // Hold the reconnect refresh while a newer event arrives.
+    let resolveStatus!: (status: ReturnType<typeof makeStatus>) => void;
+    api.status = vi.fn(
+      () =>
+        new Promise<ReturnType<typeof makeStatus>>((resolve) => {
+          resolveStatus = resolve;
+        }),
+    );
+    sources[0].fail();
+    // Backoff is the default 1000 ms; advancing past the maximum
+    // delay reconnects it.
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(sources).toHaveLength(2);
+    sources[1].open();
+    expect(api.status).toHaveBeenCalledTimes(1);
+
+    sources[1].emit({
+      type: 'playback',
+      playback: {
+        state: 'playing',
+        current: makeTrack('v1'),
+        position_secs: 30,
+        volume: 50,
+        repeat: 'off',
+        shuffle: false,
+      },
+    });
+    expect(store.status?.playback.position_secs).toBe(30);
+
+    resolveStatus(
+      makeStatus({
+        playback: {
+          state: 'playing',
+          current: makeTrack('v1'),
+          position_secs: 14,
+          volume: 50,
+          repeat: 'off',
+          shuffle: false,
+        },
+      }),
+    );
+    // Flush the refresh promise so a stale apply would land first.
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(store.status?.playback.position_secs).toBe(30);
+    store.dispose();
+  });
+
   it('does not start the fallback timer when paused', async () => {
     const { api, store, sources } = setup();
     api.status = vi.fn(async () =>

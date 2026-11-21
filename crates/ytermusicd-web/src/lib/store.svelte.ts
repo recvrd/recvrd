@@ -173,6 +173,9 @@ export class AppStore {
   private playbackStaleRefreshed = false;
   private playbackStaleRetried = false;
   private playbackStaleRetryCount = 0;
+  /// Generation of the playback state. A status refresh applies only
+  /// when this value is unchanged since the request started.
+  private statusGeneration = 0;
 
   constructor(api: YtermusicdApi = createApi(), options: StoreOptions = {}) {
     this.api = api;
@@ -304,9 +307,13 @@ export class AppStore {
   }
 
   async refreshStatus(): Promise<void> {
+    const generation = this.statusGeneration;
     try {
-      this.applyStatus(await this.api.status());
+      const status = await this.api.status();
+      if (this.statusGeneration !== generation) return;
+      this.applyStatus(status);
     } catch (error) {
+      if (this.statusGeneration !== generation) return;
       this.error = describeError(error, this.activeProviderName);
     }
   }
@@ -1203,9 +1210,16 @@ export class AppStore {
     );
   }
 
+  /// Mark the playback state as newer. An in-flight status refresh
+  /// must not overwrite state that arrived after the request started.
+  private bumpStatusGeneration(): void {
+    this.statusGeneration += 1;
+  }
+
   private applyStatus(status: Status): void {
     this.status = status;
     this.volume = status.playback.volume;
+    this.bumpStatusGeneration();
     this.updatePlaybackWatch();
   }
 
@@ -1216,6 +1230,7 @@ export class AppStore {
       playback: { ...this.status.playback, ...patch },
     };
     if (patch.volume !== undefined) this.volume = patch.volume;
+    this.bumpStatusGeneration();
     this.updatePlaybackWatch();
   }
 
@@ -1265,6 +1280,7 @@ export class AppStore {
     this.playbackStaleRefreshed = false;
     this.playbackStaleRetried = false;
     this.playbackStaleRetryCount = 0;
+    this.bumpStatusGeneration();
     this.updatePlaybackWatch();
   }
 
