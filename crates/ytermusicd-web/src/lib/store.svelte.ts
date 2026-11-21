@@ -85,6 +85,8 @@ const PLAYBACK_STALE_RETRY_BASE_MS = 5000;
 /// Longest silence before a rebuild. The threshold doubles after each
 /// silent rebuild, up to this cap.
 const PLAYBACK_STALE_RETRY_MAX_MS = 60000;
+/// Highest retry count. The 60 s cap makes larger values unnecessary.
+const PLAYBACK_STALE_RETRY_MAX_COUNT = 4;
 
 export function reorderQueue(queue: Queue, from: number, to: number): Queue {
   const items = [...queue.items];
@@ -1339,7 +1341,10 @@ export class AppStore {
     const silentMs = Date.now() - this.lastPlaybackEventMs;
     if (silentMs >= this.playbackStaleRetryMs() && !this.playbackStaleRetried) {
       this.playbackStaleRetried = true;
-      this.playbackStaleRetryCount += 1;
+      this.playbackStaleRetryCount = Math.min(
+        this.playbackStaleRetryCount + 1,
+        PLAYBACK_STALE_RETRY_MAX_COUNT,
+      );
       this.events.retry();
       return;
     }

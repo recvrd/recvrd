@@ -222,8 +222,9 @@ describe('AppStore', () => {
     };
     sources[0].emit(playing);
 
-    // The rebuilt stream sends heartbeats but no playback events, so
-    // the watchdog stays quiet and only the store retry rebuilds it.
+    // The rebuilt streams send heartbeats but no playback events.
+    // The heartbeats keep the EventStream 20 s silence watchdog quiet,
+    // so the source counts measure the store retry, not an SSE reconnect.
     // Advance in 5 s steps and heartbeat the newest source each step.
     const heartbeatNewest = () => {
       const current = sources[sources.length - 1];
