@@ -171,7 +171,8 @@ fn render_frame(
     set_cursor(frame, area, app);
 }
 
-fn render_header(frame: &mut Frame, area: Rect, app: &App) {
+/// Build the header line for the current app state.
+fn header_spans(app: &App) -> Vec<Span<'static>> {
     let (label, color) = match app.connection {
         Connection::Connecting => ("connecting", WARNING),
         Connection::Online => ("online", SUCCESS),
@@ -185,13 +186,19 @@ fn render_header(frame: &mut Frame, area: Rect, app: &App) {
         Span::styled("· ", Style::default().fg(FG_MUTED)),
         Span::styled(app.url.clone(), Style::default().fg(FG_MUTED)),
         Span::styled(" · ", Style::default().fg(FG_MUTED)),
+        Span::styled(app.provider_name(), Style::default().fg(ACCENT_2)),
+        Span::styled(" · ", Style::default().fg(FG_MUTED)),
         Span::styled(label, Style::default().fg(color)),
     ];
     if app.auth_problem().is_some() {
         spans.push(Span::styled(" · auth error", Style::default().fg(DANGER)));
     }
+    spans
+}
+
+fn render_header(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(
-        Paragraph::new(Line::from(spans)).style(Style::default().bg(BG_RAISED)),
+        Paragraph::new(Line::from(header_spans(app))).style(Style::default().bg(BG_RAISED)),
         area,
     );
 }
@@ -418,6 +425,15 @@ mod tests {
         let text = render_to_text(&mut app, 120, 40);
         assert!(text.contains("Search"));
         assert!(text.contains("song"));
+    }
+
+    #[test]
+    fn renders_the_active_provider_in_the_queue_view() {
+        let mut app = app();
+        app.provider = ProviderId::Rss;
+        app.screen = crate::app::Screen::Queue;
+        let text = render_to_text(&mut app, 120, 40);
+        assert!(text.contains("RSS"), "{text}");
     }
 
     #[test]
