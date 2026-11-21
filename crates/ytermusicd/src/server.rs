@@ -705,22 +705,38 @@ async fn cover<S: AudioSink + Send + 'static>(
         .await
         .map_err(|error| ApiFailure::internal(format!("could not read cover art: {error}")))?;
     let etag = format!("\"{key}-{}\"", bytes.len());
+    let content_type = cover_content_type(&bytes);
     let matches = headers
         .get(header::IF_NONE_MATCH)
         .and_then(|value| value.to_str().ok())
         == Some(etag.as_str());
     if matches {
         let mut response = StatusCode::NOT_MODIFIED.into_response();
-        set_cover_headers(response.headers_mut(), &etag);
+        set_cover_headers(response.headers_mut(), &etag, content_type);
         return Ok(response);
     }
     let mut response = bytes.into_response();
-    set_cover_headers(response.headers_mut(), &etag);
+    set_cover_headers(response.headers_mut(), &etag, content_type);
     Ok(response)
 }
 
-fn set_cover_headers(headers: &mut HeaderMap, etag: &str) {
-    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("image/jpeg"));
+/// Return the image type for the cover bytes.
+fn cover_content_type(bytes: &[u8]) -> &'static str {
+    if bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]) {
+        "image/png"
+    } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        "image/jpeg"
+    } else if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
+        "image/webp"
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        "image/gif"
+    } else {
+        "application/octet-stream"
+    }
+}
+
+fn set_cover_headers(headers: &mut HeaderMap, etag: &str, content_type: &'static str) {
+    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
     headers.insert(
         header::CACHE_CONTROL,
         HeaderValue::from_static("public, max-age=604800, immutable"),
@@ -1688,7 +1704,11 @@ mod tests {
     impl CoverFetcher for FakeCovers {
         async fn fetch(&self, key: &TrackKey) -> Option<Vec<u8>> {
             self.calls.fetch_add(1, Ordering::SeqCst);
-            (key.id == "abcdefghijk").then(|| b"fake-jpeg-data".to_vec())
+            match key.id.as_str() {
+                "abcdefghijk" => Some(b"\xFF\xD8\xFFfake-jpeg-data".to_vec()),
+                "pngcover123" => Some(b"\x89PNG\r\n\x1a\nfake-png-data".to_vec()),
+                _ => None,
+            }
         }
     }
 
@@ -3372,7 +3392,10 @@ mod tests {
             "public, max-age=604800, immutable"
         );
         let etag = response.headers()["etag"].to_str().unwrap().to_string();
-        assert_eq!(response.bytes().await.unwrap().as_ref(), b"fake-jpeg-data");
+        assert_eq!(
+            response.bytes().await.unwrap().as_ref(),
+            b"\xFF\xD8\xFFfake-jpeg-data"
+        );
 
         let cached = client
             .get(format!("{base}/api/tracks/youtube/abcdefghijk/cover"))
@@ -3392,6 +3415,47 @@ mod tests {
                     .is_none_or(|extension| extension != "tmp"))
         );
         server.abort();
+    }
+
+    #[tokio::test]
+    async fn serves_png_cover_art_with_the_png_content_type() {
+        let dir = tempfile::tempdir().unwrap();
+        let covers = Arc::new(FakeCovers::new());
+        let artwork = Arc::new(ArtworkCache::with_fetcher(
+            dir.path().join("covers"),
+            0,
+            covers.clone(),
+        ));
+        let (base, server) = start_server(test_state_with_artwork(artwork)).await;
+        let client = reqwest::Client::new();
+
+        let response = client
+            .get(format!("{base}/api/tracks/youtube/pngcover123/cover"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        assert_eq!(response.headers()["content-type"], "image/png");
+        assert_eq!(
+            response.bytes().await.unwrap().as_ref(),
+            b"\x89PNG\r\n\x1a\nfake-png-data"
+        );
+        server.abort();
+    }
+
+    #[test]
+    fn detects_cover_content_types() {
+        assert_eq!(cover_content_type(b"\x89PNG\r\n\x1a\nrest"), "image/png");
+        assert_eq!(cover_content_type(b"\xFF\xD8\xFFrest"), "image/jpeg");
+        assert_eq!(
+            cover_content_type(b"RIFF\x00\x00\x00\x00WEBPrest"),
+            "image/webp"
+        );
+        assert_eq!(cover_content_type(b"GIF89arest"), "image/gif");
+        assert_eq!(
+            cover_content_type(b"not an image"),
+            "application/octet-stream"
+        );
     }
 
     #[tokio::test]

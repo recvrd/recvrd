@@ -249,7 +249,7 @@ async fn execute(
         }
         Command::LoadCover(key) => {
             let bytes = client.cover(&key).await?;
-            let image = tokio::task::spawn_blocking(move || cover::decode_jpeg(&bytes))
+            let image = tokio::task::spawn_blocking(move || cover::decode_image(&bytes))
                 .await
                 .ok()
                 .flatten();
