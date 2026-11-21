@@ -11,7 +11,7 @@ common-structs.workspace = true
 download-manager.workspace = true
 log = "0.4"
 quick-xml = "0.42"
-reqwest = { version = "0.11", default-features = false, features = ["rustls-tls"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.11"
