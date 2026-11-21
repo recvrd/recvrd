@@ -705,6 +705,70 @@ mod tests {
         assert_eq!(detail.tracks[0].track_id, "vid1");
     }
 
+    /// Build one album page with a nested album header and one
+    /// track with three flex columns, signed out.
+    fn album_detail_body() -> serde_json::Value {
+        serde_json::json!({
+            "responseContext": {"serviceTrackingParams": [{
+                "service": "GFEEDBACK",
+                "params": [{"key": "logged_in", "value": "0"}]
+            }]},
+            "contents": {"twoColumnBrowseResultsRenderer": {"tabs": [{
+                "tabRenderer": {"content": {"sectionListRenderer": {"contents": [
+                    {"musicResponsiveHeaderRenderer": {
+                        "title": {"runs": [{"text": "A New Course (Opening Movie Music)"}]},
+                        "subtitle": {"runs": [
+                            {"text": "Album"},
+                            {"text": " • "},
+                            {"text": "2025"},
+                            {"text": " • "},
+                            {"text": "Christopher Tin"}
+                        ]}
+                    }},
+                    {"musicShelfRenderer": {"contents": [{
+                        "playlistItemData": {"videoId": "vid1"},
+                        "flexColumns": [
+                            {"musicResponsiveListItemFlexColumnRenderer": {
+                                "text": {"runs": ["A New Course"]},
+                                "trackingParams": "a"
+                            }},
+                            {"musicResponsiveListItemFlexColumnRenderer": {
+                                "text": {"runs": ["Christopher Tin", "Sid Meier's Civilization"]},
+                                "trackingParams": "b"
+                            }},
+                            {"musicResponsiveListItemFlexColumnRenderer": {
+                                "text": {"simpleText": "3:45"},
+                                "trackingParams": "c"
+                            }}
+                        ]
+                    }]}}
+                ]}}}
+            }]}}
+        })
+    }
+
+    #[tokio::test]
+    async fn playlist_detail_shows_the_artist_for_an_album() {
+        // Signed-out album detail works, the subtitle is the artist
+        // (not the year), and the track carries the album title.
+        let base = mock_server(album_detail_body()).await;
+        let api = api_with(&base, Some(true));
+        let detail = api
+            .playlist_detail(ProviderId::Youtube, "MPREb_rGiYodRaMky")
+            .await
+            .unwrap();
+        assert_eq!(detail.playlist.id, "MPREb_rGiYodRaMky");
+        assert_eq!(detail.playlist.name, "A New Course (Opening Movie Music)");
+        assert_eq!(detail.playlist.subtitle, "Christopher Tin");
+        assert_eq!(detail.tracks.len(), 1);
+        assert_eq!(detail.tracks[0].track_id, "vid1");
+        assert_eq!(
+            detail.tracks[0].artist,
+            "Christopher Tin • Sid Meier's Civilization"
+        );
+        assert_eq!(detail.tracks[0].album, "A New Course (Opening Movie Music)");
+    }
+
     #[tokio::test]
     async fn playlist_detail_propagates_auth_expired() {
         let base = mock_server(library_body("0")).await;
