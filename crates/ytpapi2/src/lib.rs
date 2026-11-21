@@ -8,7 +8,7 @@ use std::{
 use std::path::PathBuf;
 
 use json_extractor::{
-    Continuation, extract_playlist_info, from_json, get_continuation, get_playlist,
+    Continuation, album_title, extract_playlist_info, from_json, get_continuation, get_playlist,
     get_playlist_search, get_video, get_video_from_album, playlist_header_info,
 };
 use log::{debug, error, trace};
@@ -644,6 +644,9 @@ impl YoutubeMusicInstance {
         debug!("Playlist response: {playlist_json}");
         debug!("Continuations: {continuations:?}");
         let info = playlist_header_info(&playlist_json);
+        // Continuation pages carry no header, so keep the album
+        // title of the first page for their tracks.
+        let album = album_title(&playlist_json);
         let mut videos = parse_playlist(&playlist_json)?;
         // An empty signed-out first page is an auth page only when
         // it has no playlist or album header, or it shows a
@@ -672,6 +675,10 @@ impl YoutubeMusicInstance {
             let signed_out = response_logged_in(&playlist_json) == Some(false);
             continuations.extend(new_continuations);
             let new_videos = parse_playlist(&playlist_json)?;
+            let mut new_videos = new_videos;
+            if let Some(album) = album.as_ref() {
+                fill_empty_album(&mut new_videos, album);
+            }
             let new_count = new_videos.len();
             trace!("Fetched {new_count} videos");
             debug!("Playlist response: {playlist_json}");
@@ -1010,6 +1017,13 @@ fn ensure_edit_succeeded(response: &Value) -> Result<()> {
 
 fn parse_playlist(playlist_json: &Value) -> Result<Vec<YoutubeMusicVideoRef>> {
     let mut videos = from_json(playlist_json, get_video)?;
+    // Real album tracks have flex columns, so get_video finds them
+    // first and the album-only loop below never runs for them. Fill
+    // their empty album field from the album header. Playlist pages
+    // never fill: the playlist name is not the album.
+    if let Some(album) = album_title(playlist_json) {
+        fill_empty_album(&mut videos, &album);
+    }
     let info = extract_playlist_info(playlist_json);
     for mut video in from_json(playlist_json, get_video_from_album)? {
         if videos.iter().any(|x| x.video_id == video.video_id) {
@@ -1026,6 +1040,16 @@ fn parse_playlist(playlist_json: &Value) -> Result<Vec<YoutubeMusicVideoRef>> {
         videos.push(video);
     }
     Ok(videos)
+}
+
+/// Set an empty album field to the album title. Tracks that already
+/// name an album keep it.
+fn fill_empty_album(videos: &mut [YoutubeMusicVideoRef], album: &str) {
+    for video in videos {
+        if video.album.is_empty() {
+            video.album = album.to_string();
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialOrd, Eq, Ord, PartialEq, Hash)]
@@ -1676,6 +1700,103 @@ mod browse_tests {
         body
     }
 
+    /// Build shelf tracks for an album page. Each track has three
+    /// flex columns: title, artist, and a duration. The third column
+    /// carries no album text, so get_video leaves the album empty.
+    /// The runs are plain strings, as in the get_video tests: a
+    /// single-key text run reads as empty with text cleaning on.
+    fn album_tracks(tracks: &[(&str, &str, &[&str])]) -> Vec<Value> {
+        tracks
+            .iter()
+            .map(|(video, title, artist)| {
+                let artist_runs: Vec<Value> = artist.iter().map(|run| json!(run)).collect();
+                json!({
+                    "playlistItemData": {"videoId": video},
+                    "flexColumns": [
+                        {"musicResponsiveListItemFlexColumnRenderer": {
+                            "text": {"runs": [title]},
+                            "trackingParams": "a"
+                        }},
+                        {"musicResponsiveListItemFlexColumnRenderer": {
+                            "text": {"runs": artist_runs},
+                            "trackingParams": "b"
+                        }},
+                        {"musicResponsiveListItemFlexColumnRenderer": {
+                            "text": {"simpleText": "3:45"},
+                            "trackingParams": "c"
+                        }}
+                    ]
+                })
+            })
+            .collect()
+    }
+
+    /// Build one album page: a nested album header, a shelf with
+    /// `tracks` (video id, title, artist runs), an optional
+    /// continuation token, and the given `logged_in` flag.
+    fn album_page(
+        logged_in: &str,
+        tracks: &[(&str, &str, &[&str])],
+        continuation: Option<&str>,
+    ) -> Value {
+        let mut body = json!({
+            "responseContext": {
+                "serviceTrackingParams": [{
+                    "service": "GFEEDBACK",
+                    "params": [{"key": "logged_in", "value": logged_in}]
+                }]
+            },
+            "contents": {
+                "twoColumnBrowseResultsRenderer": {
+                    "tabs": [{
+                        "tabRenderer": {
+                            "content": {
+                                "sectionListRenderer": {
+                                    "contents": [
+                                        {"musicResponsiveHeaderRenderer": {
+                                            "title": {"runs": [{"text": "A New Course (Opening Movie Music)"}]},
+                                            "subtitle": {"runs": [
+                                                {"text": "Album"},
+                                                {"text": " • "},
+                                                {"text": "2025"},
+                                                {"text": " • "},
+                                                {"text": "Christopher Tin"}
+                                            ]}
+                                        }},
+                                        {"musicShelfRenderer": {"contents": album_tracks(tracks)}}
+                                    ]
+                                }
+                            }
+                        }
+                    }]
+                }
+            }
+        });
+        if let Some(token) = continuation {
+            body["nextContinuationData"] = json!({
+                "continuation": token,
+                "clickTrackingParams": "tracking"
+            });
+        }
+        body
+    }
+
+    /// Build one album continuation page: a shelf with `tracks` and
+    /// the given `logged_in` flag. Continuation pages carry no header.
+    fn album_continuation_page(logged_in: &str, tracks: &[(&str, &str, &[&str])]) -> Value {
+        json!({
+            "responseContext": {
+                "serviceTrackingParams": [{
+                    "service": "GFEEDBACK",
+                    "params": [{"key": "logged_in", "value": logged_in}]
+                }]
+            },
+            "contents": {
+                "musicShelfRenderer": {"contents": album_tracks(tracks)}
+            }
+        })
+    }
+
     /// Build a signed-out page that asks the user to sign in. It
     /// has no playlist header and no tracks.
     fn sign_in_page(logged_in: &str) -> Value {
@@ -1849,6 +1970,117 @@ mod browse_tests {
         assert_eq!(videos[0].title, "Album Track");
         assert_eq!(videos[0].album, "An Album");
         assert_eq!(videos[0].author, "The Artist");
+    }
+
+    #[tokio::test]
+    async fn signed_out_real_album_tracks_get_album_fill() {
+        // Real album tracks have flex columns, so get_video finds
+        // them first. Their album field still comes from the album
+        // header, and the artist comes from the track columns.
+        let body = album_page(
+            "0",
+            &[
+                (
+                    "vid1",
+                    "A New Course",
+                    &["Christopher Tin", "Sid Meier's Civilization"],
+                ),
+                ("vid2", "The Other Track", &["Christopher Tin"]),
+            ],
+            None,
+        );
+        let instance = mock_instance_with_body(body).await;
+        let videos = instance
+            .get_playlist_raw("MPREb_rGiYodRaMky", 0)
+            .await
+            .unwrap();
+        assert_eq!(videos.len(), 2);
+        assert_eq!(videos[0].title, "A New Course");
+        assert_eq!(
+            videos[0].author,
+            "Christopher Tin • Sid Meier's Civilization"
+        );
+        assert_eq!(videos[0].album, "A New Course (Opening Movie Music)");
+        assert_eq!(videos[1].album, "A New Course (Opening Movie Music)");
+    }
+
+    #[tokio::test]
+    async fn playlist_page_keeps_track_albums() {
+        // A playlist page never fills the album field from the
+        // playlist title. A track with an album keeps it, and a
+        // track without one keeps an empty album.
+        let body = json!({
+            "responseContext": {
+                "serviceTrackingParams": [{
+                    "service": "GFEEDBACK",
+                    "params": [{"key": "logged_in", "value": "0"}]
+                }]
+            },
+            "header": {"musicDetailHeaderRenderer": {
+                "title": {"runs": [{"text": "My Mix"}]},
+                "subtitle": {"runs": [
+                    {"text": "Playlist"},
+                    {"text": " • "},
+                    {"text": "2 songs"}
+                ]}
+            }},
+            "contents": {"musicPlaylistShelfRenderer": {"contents": [
+                {
+                    "playlistItemData": {"videoId": "vid1"},
+                    "flexColumns": [
+                        {"musicResponsiveListItemFlexColumnRenderer": {
+                            "text": {"runs": ["Song One"]},
+                            "trackingParams": "a"
+                        }},
+                        {"musicResponsiveListItemFlexColumnRenderer": {
+                            "text": {"runs": ["The Artist"]},
+                            "trackingParams": "b"
+                        }},
+                        {"musicResponsiveListItemFlexColumnRenderer": {
+                            "text": {"runs": ["Real Album"]},
+                            "trackingParams": "c"
+                        }}
+                    ]
+                },
+                {
+                    "playlistItemData": {"videoId": "vid2"},
+                    "flexColumns": [
+                        {"musicResponsiveListItemFlexColumnRenderer": {
+                            "text": {"runs": ["Song Two"]},
+                            "trackingParams": "a"
+                        }},
+                        {"musicResponsiveListItemFlexColumnRenderer": {
+                            "text": {"runs": ["The Artist"]},
+                            "trackingParams": "b"
+                        }}
+                    ]
+                }
+            ]}}
+        });
+        let instance = mock_instance_with_body(body).await;
+        let videos = instance.get_playlist_raw("VL1", 0).await.unwrap();
+        assert_eq!(videos.len(), 2);
+        assert_eq!(videos[0].album, "Real Album");
+        assert_eq!(videos[1].album, "");
+    }
+
+    #[tokio::test]
+    async fn signed_out_album_continuation_tracks_get_album_fill() {
+        // Continuation pages carry no header, so the album title of
+        // the first page fills their tracks too.
+        let pages = vec![
+            album_page(
+                "0",
+                &[("vid1", "Track One", &["Christopher Tin"])],
+                Some("token1"),
+            ),
+            album_continuation_page("0", &[("vid2", "Track Two", &["Christopher Tin"])]),
+        ];
+        let instance = mock_instance_with_pages(pages).await;
+        let videos = instance.get_playlist_raw("MPREb_x", 1).await.unwrap();
+        assert_eq!(videos.len(), 2);
+        assert_eq!(videos[0].album, "A New Course (Opening Movie Music)");
+        assert_eq!(videos[1].album, "A New Course (Opening Movie Music)");
     }
 
     #[tokio::test]

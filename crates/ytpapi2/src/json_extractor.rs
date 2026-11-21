@@ -160,7 +160,32 @@ pub fn extract_playlist_info(value: &Value) -> Option<(String, String)> {
     Some((title, artist))
 }
 
-/// Read the subtitle runs of a header, without the separators.
+/// The page is an album page when its header is a
+/// musicResponsiveHeaderRenderer. Playlist pages use a detail
+/// header instead, and a detail header wins when both exist.
+pub fn page_is_album(value: &Value) -> bool {
+    if find_renderer(
+        value,
+        &[
+            "musicDetailHeaderRenderer",
+            "musicEditablePlaylistDetailHeaderRenderer",
+        ],
+    )
+    .is_some()
+    {
+        return false;
+    }
+    find_renderer(value, &["musicResponsiveHeaderRenderer"]).is_some()
+}
+
+/// The album title of the page, when the page is an album page.
+/// Playlist pages return None: the playlist name is not the album.
+pub fn album_title(value: &Value) -> Option<String> {
+    if !page_is_album(value) {
+        return None;
+    }
+    extract_playlist_info(value).map(|(title, _)| title)
+}
 fn subtitle_runs(header: &Value) -> Vec<String> {
     header
         .get("subtitle")
@@ -211,10 +236,16 @@ fn find_renderer<'a>(value: &'a Value, keys: &[&str]) -> Option<&'a Value> {
     None
 }
 
-/// Read the playlist or album header: the title and the second
-/// subtitle run. A missing header means the page is not a playlist or
-/// album page. Albums nest the header under the tab contents.
+/// Read the playlist or album header: the title and the subtitle.
+/// A playlist subtitle is the second subtitle run. An album
+/// subtitle is the artist, never the year. A missing header means
+/// the page is not a playlist or album page. Albums nest the header
+/// under the tab contents.
 pub fn playlist_header_info(value: &Value) -> Option<(String, String)> {
+    if let Some(info) = extract_playlist_info(value) {
+        return Some(info);
+    }
+    // No subtitle runs: keep the title with an empty subtitle.
     let header = find_renderer(
         value,
         &[
@@ -224,18 +255,7 @@ pub fn playlist_header_info(value: &Value) -> Option<(String, String)> {
         ],
     )?;
     let title = get_text(header.get("title")?, false, false)?;
-    let subtitles: Vec<String> = header
-        .get("subtitle")
-        .and_then(|subtitle| subtitle.get("runs"))
-        .and_then(Value::as_array)
-        .map(|runs| {
-            runs.iter()
-                .flat_map(|run| get_text(run, false, false))
-                .filter(|run| run != " • ")
-                .collect()
-        })
-        .unwrap_or_default();
-    Some((title, subtitles.into_iter().nth(1).unwrap_or_default()))
+    Some((title, String::new()))
 }
 
 pub fn get_video_from_album(value: &Value) -> Option<YoutubeMusicVideoRef> {
@@ -455,7 +475,34 @@ mod tests {
     #[test]
     fn extracts_an_album_header_info() {
         // Albums nest the header under the tab contents and use
-        // musicResponsiveHeaderRenderer.
+        // musicResponsiveHeaderRenderer. The subtitle is the artist
+        // here, even though the year comes first.
+        let value = json!({
+            "contents": {"twoColumnBrowseResultsRenderer": {"tabs": [{
+                "tabRenderer": {"content": {"sectionListRenderer": {"contents": [{
+                    "musicResponsiveHeaderRenderer": {
+                        "title": {"runs": [{"text": "An Album"}]},
+                        "subtitle": {"runs": [
+                            {"text": "Album"},
+                            {"text": " • "},
+                            {"text": "2025"},
+                            {"text": " • "},
+                            {"text": "The Artist"}
+                        ]}
+                    }
+                }]}}}
+            }]}}
+        });
+        assert_eq!(
+            playlist_header_info(&value),
+            Some(("An Album".to_string(), "The Artist".to_string()))
+        );
+    }
+
+    #[test]
+    fn album_header_without_an_artist_keeps_an_empty_subtitle() {
+        // The subtitle lists only the type and the year, so no
+        // artist exists to show. The year is not the subtitle.
         let value = json!({
             "contents": {"twoColumnBrowseResultsRenderer": {"tabs": [{
                 "tabRenderer": {"content": {"sectionListRenderer": {"contents": [{
@@ -472,8 +519,34 @@ mod tests {
         });
         assert_eq!(
             playlist_header_info(&value),
-            Some(("An Album".to_string(), "2025".to_string()))
+            Some(("An Album".to_string(), String::new()))
         );
+    }
+
+    #[test]
+    fn page_is_album_reads_the_header_kind() {
+        let album = json!({
+            "contents": {"twoColumnBrowseResultsRenderer": {"tabs": [{
+                "tabRenderer": {"content": {"sectionListRenderer": {"contents": [{
+                    "musicResponsiveHeaderRenderer": {
+                        "title": {"runs": [{"text": "An Album"}]}
+                    }
+                }]}}}
+            }]}}
+        });
+        assert!(page_is_album(&album));
+        assert_eq!(album_title(&album), Some("An Album".to_string()));
+
+        let playlist = json!({
+            "header": {"musicDetailHeaderRenderer": {
+                "title": {"runs": [{"text": "My Mix"}]}
+            }}
+        });
+        assert!(!page_is_album(&playlist));
+        assert_eq!(album_title(&playlist), None);
+
+        assert!(!page_is_album(&json!({"contents": {}})));
+        assert_eq!(album_title(&json!({"contents": {}})), None);
     }
 
     #[test]
