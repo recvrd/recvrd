@@ -413,6 +413,10 @@ impl App {
             .unwrap_or(0);
         let next = self.providers[(current + 1) % self.providers.len()].id;
         self.provider = next;
+        self.show_toast(
+            ToastLevel::Info,
+            format!("Switched to {}.", self.provider_name()),
+        );
         vec![Command::SetProvider(next)]
     }
 
@@ -2262,6 +2266,43 @@ mod tests {
         assert_eq!(app.toasts.len(), 1);
         assert!(
             app.toasts[0].message.contains("only provider"),
+            "{}",
+            app.toasts[0].message
+        );
+    }
+
+    #[test]
+    fn o_switches_provider_and_shows_the_new_name() {
+        use ytermusicd_api::{AuthStatus, ProviderCapabilities, ProviderInfo};
+
+        let mut app = App::new("http://localhost");
+        app.handle_daemon_event(DaemonEvent::Providers(vec![
+            ProviderInfo {
+                id: ProviderId::Youtube,
+                name: "YouTube Music".to_string(),
+                default: true,
+                capabilities: ProviderCapabilities::for_provider(ProviderId::Youtube),
+                auth: AuthStatus::default(),
+            },
+            ProviderInfo {
+                id: ProviderId::Rss,
+                name: "RSS".to_string(),
+                default: false,
+                capabilities: ProviderCapabilities::for_provider(ProviderId::Rss),
+                auth: AuthStatus::default(),
+            },
+        ]));
+
+        let commands = app.handle_key(key(KeyCode::Char('o')));
+        assert!(matches!(
+            commands.as_slice(),
+            [Command::SetProvider(ProviderId::Rss)]
+        ));
+        assert_eq!(app.provider, ProviderId::Rss);
+        assert_eq!(app.provider_name(), "RSS");
+        assert_eq!(app.toasts.len(), 1);
+        assert!(
+            app.toasts[0].message.contains("RSS"),
             "{}",
             app.toasts[0].message
         );
