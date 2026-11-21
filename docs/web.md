@@ -106,6 +106,12 @@ query. The daemon also accepts the standard `Last-Event-ID` header. The
 connection banner shows connecting, reconnecting and offline states. The retry
 button replaces the stream.
 
+While a track plays, the store tracks the last playback event. After 2 s
+without one, it reads the status again. The daemon computes the live position,
+so the seek bar advances. After 5 s without an event, the store rebuilds the
+stream. Each silent rebuild doubles the wait, up to 60 s. A playback event
+resets the wait to 5 s. A pause or stop also resets it.
+
 Volume, seek, playback and queue actions update the view before the request
 finishes. A failed request restores the previous state and shows a toast.
 
