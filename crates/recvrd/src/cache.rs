@@ -11,8 +11,18 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use common_structs::TrackKey;
+use common_structs::{ProviderId, TrackKey};
 use recvrd_api::{CacheCleanResult, CacheScope, CacheSizes};
+use recvrd_core::Track;
+
+/// One channel's cached tracks: the playlist id and name plus
+/// the tracks in it, sorted by title.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CachedPlaylist {
+    pub id: String,
+    pub name: String,
+    pub tracks: Vec<Track>,
+}
 
 /// Size reporting and cleaning for the download and cover caches.
 #[derive(Debug, Clone)]
@@ -29,6 +39,82 @@ impl CacheService {
             downloads_dir,
             covers_dir,
         }
+    }
+
+    /// List the complete downloads for one provider, from the
+    /// metadata sidecars below `downloads/<provider>/`.
+    ///
+    /// The index scans the sidecars. It does not use a store.
+    /// The sidecar already holds the full track, and a scan works
+    /// for caches that exist before this change. A scan also
+    /// heals itself: a deleted file leaves the index.
+    ///
+    /// A download is complete when its sidecar parses as a track
+    /// whose provider and ID match the sidecar file, and a
+    /// non-empty audio file exists for it. The method skips a
+    /// sidecar that does not parse, does not match its file, or
+    /// has no audio. The result sorts by title, then track ID.
+    pub fn cached_tracks(&self, provider: ProviderId) -> Vec<Track> {
+        let dir = self.downloads_dir.join(provider.as_str());
+        let Ok(entries) = fs::read_dir(&dir) else {
+            return Vec::new();
+        };
+        let mut tracks = Vec::new();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().is_some_and(|ext| ext != "json") {
+                continue;
+            }
+            let Some(stem) = path.file_stem().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            let key = TrackKey::new(provider, stem);
+            if !key.validate() {
+                continue;
+            }
+            let Ok(text) = fs::read_to_string(&path) else {
+                continue;
+            };
+            let Ok(track) = serde_json::from_str::<Track>(&text) else {
+                continue;
+            };
+            if track.provider != provider || track.track_id != stem {
+                continue;
+            }
+            if !has_audio(&key, &self.downloads_dir) {
+                continue;
+            }
+            tracks.push(track);
+        }
+        tracks.sort_by(|a, b| a.title.cmp(&b.title).then(a.track_id.cmp(&b.track_id)));
+        tracks
+    }
+
+    /// Group the complete downloads for one provider into
+    /// playlists by channel.
+    ///
+    /// A track belongs to the playlist of its channel ID when it
+    /// has one, otherwise to the playlist of its album. A track
+    /// with neither a channel nor an album belongs to no playlist.
+    /// The playlists sort by name, then ID. Each playlist holds
+    /// its tracks sorted by title.
+    pub fn cached_playlists(&self, provider: ProviderId) -> Vec<CachedPlaylist> {
+        let mut groups: Vec<CachedPlaylist> = Vec::new();
+        for track in self.cached_tracks(provider) {
+            let Some((id, name)) = playlist_key(&track) else {
+                continue;
+            };
+            match groups.iter_mut().find(|group| group.id == id) {
+                Some(group) => group.tracks.push(track),
+                None => groups.push(CachedPlaylist {
+                    id,
+                    name,
+                    tracks: vec![track],
+                }),
+            }
+        }
+        groups.sort_by(|a, b| a.name.cmp(&b.name).then(a.id.cmp(&b.id)));
+        groups
     }
 
     /// Report the sizes of both cache trees from disk.
@@ -140,6 +226,40 @@ fn remove_empty_dirs(dir: &Path) {
             let _ = fs::remove_dir(&path);
         }
     }
+}
+
+/// Check whether a complete audio file exists for a track key.
+/// The file must exist and must not be empty.
+fn has_audio(key: &TrackKey, downloads_dir: &Path) -> bool {
+    key.existing_audio_file(downloads_dir)
+        .and_then(|path| fs::metadata(path).ok())
+        .is_some_and(|metadata| metadata.len() > 0)
+}
+
+/// Find the playlist id and name for a track. The channel ID
+/// wins when the track has one. The album is the fallback. A
+/// track with neither has no playlist.
+fn playlist_key(track: &Track) -> Option<(String, String)> {
+    let metadata = track.metadata.as_deref();
+    let channel_id = metadata
+        .and_then(|metadata| metadata.channel_id.as_deref())
+        .filter(|id| !id.is_empty());
+    if let Some(id) = channel_id {
+        let name = metadata
+            .and_then(|metadata| metadata.channel_title.clone())
+            .filter(|title| !title.is_empty())
+            .unwrap_or_else(|| track.album.clone());
+        let name = if name.is_empty() {
+            id.to_string()
+        } else {
+            name
+        };
+        return Some((id.to_string(), name));
+    }
+    if !track.album.is_empty() {
+        return Some((track.album.clone(), track.album.clone()));
+    }
+    None
 }
 
 /// Check whether a cache file belongs to a track key. A file
@@ -298,5 +418,225 @@ mod tests {
         assert_eq!(result.downloads_freed_bytes, 0);
         assert!(target.exists());
         assert_eq!(fs::read(&target).unwrap(), b"keep me");
+    }
+
+    fn cached_track(
+        provider: ProviderId,
+        id: &str,
+        title: &str,
+        album: &str,
+        channel_id: Option<&str>,
+        channel_title: Option<&str>,
+    ) -> Track {
+        Track {
+            provider,
+            track_id: id.to_string(),
+            title: title.to_string(),
+            author: "Artist".to_string(),
+            album: album.to_string(),
+            duration: "3:00".to_string(),
+            source: None,
+            metadata: Some(Box::new(common_structs::TrackMetadata {
+                channel_id: channel_id.map(str::to_string),
+                channel_title: channel_title.map(str::to_string),
+                ..Default::default()
+            })),
+        }
+    }
+
+    fn seed_download(dir: &Path, track: &Track, audio: &[u8]) {
+        let base = dir.join("downloads").join(track.provider.as_str());
+        write_file(&base.join(format!("{}.mp3", track.track_id)), audio);
+        write_file(
+            &base.join(format!("{}.json", track.track_id)),
+            serde_json::to_string(track).unwrap().as_bytes(),
+        );
+    }
+
+    #[test]
+    fn cached_tracks_lists_complete_downloads_per_provider() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = cached_track(
+            ProviderId::Podverse,
+            "1001",
+            "Beta song",
+            "Channel One",
+            Some("42"),
+            Some("Channel One"),
+        );
+        let second = cached_track(
+            ProviderId::Podverse,
+            "1002",
+            "Alpha song",
+            "Channel One",
+            Some("42"),
+            Some("Channel One"),
+        );
+        let youtube = cached_track(
+            ProviderId::Youtube,
+            "abcdefghijk",
+            "Video song",
+            "Album",
+            None,
+            None,
+        );
+        seed_download(dir.path(), &first, b"audio");
+        seed_download(dir.path(), &second, b"audio");
+        seed_download(dir.path(), &youtube, b"audio");
+
+        let podverse = service(dir.path()).cached_tracks(ProviderId::Podverse);
+        assert_eq!(podverse.len(), 2);
+        assert_eq!(podverse[0].title, "Alpha song");
+        assert_eq!(podverse[1].title, "Beta song");
+        let listed = service(dir.path()).cached_tracks(ProviderId::Youtube);
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].track_id, "abcdefghijk");
+    }
+
+    #[test]
+    fn cached_tracks_skips_incomplete_downloads() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("downloads").join("podverse");
+        // Sidecar without audio.
+        let orphan = cached_track(
+            ProviderId::Podverse,
+            "2001",
+            "Orphan",
+            "Channel",
+            Some("42"),
+            Some("Channel"),
+        );
+        write_file(
+            &base.join("2001.json"),
+            serde_json::to_string(&orphan).unwrap().as_bytes(),
+        );
+        // Empty audio file.
+        let empty = cached_track(
+            ProviderId::Podverse,
+            "2002",
+            "Empty",
+            "Channel",
+            Some("42"),
+            Some("Channel"),
+        );
+        seed_download(dir.path(), &empty, b"");
+        // Audio without a sidecar.
+        write_file(&base.join("2003.mp3"), b"audio");
+        // Sidecar that does not parse.
+        write_file(&base.join("2004.json"), b"{not json");
+        write_file(&base.join("2004.mp3"), b"audio");
+        // Sidecar whose track ID does not match its file.
+        let mismatch = cached_track(
+            ProviderId::Podverse,
+            "9999",
+            "Mismatch",
+            "Channel",
+            Some("42"),
+            Some("Channel"),
+        );
+        write_file(
+            &base.join("2005.json"),
+            serde_json::to_string(&mismatch).unwrap().as_bytes(),
+        );
+        write_file(&base.join("2005.mp3"), b"audio");
+        // Sidecar that names another provider.
+        let foreign = cached_track(
+            ProviderId::Youtube,
+            "abcdefghijk",
+            "Foreign",
+            "Album",
+            None,
+            None,
+        );
+        write_file(
+            &base.join("abcdefghijk.json"),
+            serde_json::to_string(&foreign).unwrap().as_bytes(),
+        );
+        write_file(&base.join("abcdefghijk.mp3"), b"audio");
+
+        assert!(
+            service(dir.path())
+                .cached_tracks(ProviderId::Podverse)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn cached_tracks_is_empty_for_a_missing_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(
+            service(dir.path())
+                .cached_tracks(ProviderId::Podverse)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn cached_playlists_groups_by_channel() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = cached_track(
+            ProviderId::Podverse,
+            "1001",
+            "Beta song",
+            "Channel One",
+            Some("42"),
+            Some("Channel One"),
+        );
+        let second = cached_track(
+            ProviderId::Podverse,
+            "1002",
+            "Alpha song",
+            "Channel One",
+            Some("42"),
+            Some("Channel One"),
+        );
+        let third = cached_track(
+            ProviderId::Podverse,
+            "1003",
+            "Other song",
+            "Channel Two",
+            Some("43"),
+            Some("Channel Two"),
+        );
+        let album_only = cached_track(
+            ProviderId::Podverse,
+            "1004",
+            "Album song",
+            "Lone Album",
+            None,
+            None,
+        );
+        let ungrouped = cached_track(ProviderId::Podverse, "1005", "No home", "", None, None);
+        for track in [&first, &second, &third, &album_only, &ungrouped] {
+            seed_download(dir.path(), track, b"audio");
+        }
+
+        let playlists = service(dir.path()).cached_playlists(ProviderId::Podverse);
+        assert_eq!(playlists.len(), 3);
+        assert_eq!(playlists[0].id, "42");
+        assert_eq!(playlists[0].name, "Channel One");
+        assert_eq!(playlists[0].tracks.len(), 2);
+        assert_eq!(playlists[0].tracks[0].title, "Alpha song");
+        assert_eq!(playlists[1].id, "43");
+        assert_eq!(playlists[1].tracks.len(), 1);
+        assert_eq!(playlists[2].id, "Lone Album");
+        assert_eq!(playlists[2].name, "Lone Album");
+        assert_eq!(playlists[2].tracks.len(), 1);
+
+        let tracks = service(dir.path()).cached_tracks(ProviderId::Podverse);
+        assert_eq!(tracks.len(), 5);
+        assert!(tracks.iter().any(|track| track.track_id == "1005"));
+    }
+
+    #[test]
+    fn cached_playlists_uses_the_id_when_the_name_is_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let track = cached_track(ProviderId::Podverse, "1001", "Song", "", Some("77"), None);
+        seed_download(dir.path(), &track, b"audio");
+
+        let playlists = service(dir.path()).cached_playlists(ProviderId::Podverse);
+        assert_eq!(playlists.len(), 1);
+        assert_eq!(playlists[0].id, "77");
+        assert_eq!(playlists[0].name, "77");
     }
 }
