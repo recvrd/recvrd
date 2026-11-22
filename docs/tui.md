@@ -74,6 +74,7 @@ reports an auth problem.
 | `n` / `r` | Create / rename a playlist |
 | `p` | Play the selected or open playlist |
 | `s` / `R` | Toggle shuffle / cycle repeat |
+| `o` / `O` | Switch provider / toggle offline mode |
 | `+` / `-` | Change the volume by 5 |
 | `Left` / `Right` | Seek back or forward 5 seconds |
 | `Ctrl+Left` / `Ctrl+Right` | Previous / next track |
@@ -128,8 +129,9 @@ half-block renderer.
 
 ## Troubleshooting
 
-**The header shows `offline`.** Start the daemon. Check `--url` and
-`RECVRD_URL`. The client reconnects with backoff.
+**The header shows `disconnected`.** Start the daemon. Check `--url` and
+`RECVRD_URL`. The client reconnects with backoff. This is different from
+`offline mode`, which is a manual switch and keeps the daemon connected.
 
 **The banner shows `Auth`.** Refresh `headers.txt` and restart the daemon. See
 [Authentication](../README.md#authentication).

@@ -124,6 +124,14 @@ pub struct PlaybackModeRequest {
 }
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct OfflineRequest {
+    /// Whether offline mode is on.
+    pub enabled: bool,
+}
+
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct Track {
@@ -471,6 +479,9 @@ pub struct Status {
     pub playback: PlaybackSnapshot,
     pub queue_length: usize,
     pub downloads: DownloadSummary,
+    /// Whether the daemon is in offline mode.
+    #[serde(default)]
+    pub offline: bool,
     /// The providers the daemon knows. Old payloads without the
     /// field read as an empty list.
     #[serde(default)]
@@ -609,6 +620,10 @@ pub enum EventKind {
     Error {
         error: ApiError,
     },
+    /// The manual offline switch changed.
+    Offline {
+        enabled: bool,
+    },
     LibraryChanged,
 }
 
@@ -735,6 +750,7 @@ mod tests {
             playback: PlaybackSnapshot::default(),
             queue_length: 0,
             downloads: DownloadSummary::default(),
+            offline: false,
             providers: vec![ProviderId::Youtube],
             default_provider: ProviderId::Youtube,
         };

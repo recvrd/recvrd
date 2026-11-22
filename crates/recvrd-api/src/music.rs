@@ -57,6 +57,13 @@ pub trait MusicApi: Send + Sync {
         Err("track detail is not supported".to_string())
     }
 
+    /// Update any provider-side offline state. The daemon's wrappers
+    /// use this to defer a network client while offline. Providers
+    /// that need no client keep the default.
+    async fn set_offline(&self, _enabled: bool) -> Result<(), String> {
+        Ok(())
+    }
+
     async fn create_playlist(
         &self,
         request: &CreatePlaylistRequest,

@@ -206,6 +206,7 @@ impl<S: AudioSink> PlaybackService<S> {
     /// current track and advances to the next cached track.
     pub async fn set_offline(&mut self, enabled: bool) -> Result<(), PlaybackError> {
         self.offline = enabled;
+        self.events.publish(CoreEvent::Offline { enabled });
         if enabled
             && self
                 .queue
@@ -1357,11 +1358,16 @@ mod tests {
     #[tokio::test]
     async fn set_offline_command_flips_the_switch() {
         let mut service = service();
+        let (_, mut events) = service.events().subscribe();
         service
             .handle_command(PlaybackCommand::SetOffline(true))
             .await
             .unwrap();
         assert!(service.is_offline());
+        assert!(matches!(
+            events.try_recv().unwrap().event,
+            CoreEvent::Offline { enabled: true }
+        ));
         service
             .handle_command(PlaybackCommand::SetOffline(false))
             .await

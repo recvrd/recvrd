@@ -49,6 +49,7 @@ your-mcp-client --server "recvrd mcp"
 | --- | --- | --- |
 | `list_providers` | none | Providers with capabilities, auth state and playback mode |
 | `set_playback_mode` | `provider`, `mode` | Updated provider |
+| `set_offline` | `enabled` | Updated status with offline mode |
 | `search` | `query`, `provider` (default `youtube`) | Tracks and channels (playlists) |
 | `list_playlists` | `provider` (default `youtube`) | Library playlists |
 | `get_playlist` | `playlist_id`, `provider` (default `youtube`) | Playlist or channel detail and tracks |
@@ -105,6 +106,12 @@ Podverse returns channels from search, so a bot can:
 `stream_then_download`. Use `list_providers` to read the current mode and the
 supported modes. An unsupported mode returns an invalid-parameter error.
 
+`set_offline` turns the manual offline switch on or off. While it is on,
+search, playlists, track detail and playback use cached content only. An
+uncached `play_track` returns an invalid-parameter error with code
+`offline_unavailable`. The `Status` returned by `now_playing` and `set_offline`
+carries `offline`.
+
 Tool results include `structuredContent` with a JSON schema. The schema comes
 from the shared `recvrd-api` DTOs.
 
@@ -127,7 +134,7 @@ The proxy does not crash on daemon errors. The client shows the message.
 
 ## Scope
 
-The proxy has the 35 tools above. These items are post-v1:
+The proxy has the 36 tools above. These items are post-v1:
 
 - lyrics;
 - streamable HTTP MCP transport;
@@ -141,10 +148,10 @@ cargo test -p recvrd --test mcp_stdio
 ```
 
 The unit tests use an in-process mock daemon. The stdio test starts the real
-binary, performs the MCP handshake, lists 35 tools, calls `now_playing` and
+binary, performs the MCP handshake, lists 36 tools, calls `now_playing` and
 checks that the process exits when stdin closes. The playlist tool tests cover
 the create, rename, delete, add, remove and move calls. The new tool tests
 cover seek, shuffle, repeat, queue remove, queue reorder, queue play next,
-queue clear, retry download, `get_track` and `set_playback_mode`. A docs test
+queue clear, retry download, `get_track`, `set_playback_mode` and `set_offline`. A docs test
 checks that `README.md`, this file and `docs/architecture.md` name every tool
 and the current count.

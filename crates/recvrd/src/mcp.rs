@@ -154,6 +154,12 @@ pub struct PlaybackModeArgs {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct OfflineArgs {
+    /// Whether offline mode is on.
+    pub enabled: bool,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct VolumeArgs {
     /// Volume from 0 to 100.
     pub volume: u8,
@@ -249,6 +255,21 @@ impl McpServer {
     ) -> Result<Json<ProviderInfo>, McpError> {
         self.client
             .set_playback_mode(args.provider, args.mode)
+            .await
+            .map(Json)
+            .map_err(to_mcp)
+    }
+
+    /// Turn the manual offline switch on or off.
+    #[tool(
+        description = "Turn offline mode on or off. While on, the daemon uses cached content only"
+    )]
+    async fn set_offline(
+        &self,
+        Parameters(args): Parameters<OfflineArgs>,
+    ) -> Result<Json<Status>, McpError> {
+        self.client
+            .set_offline(args.enabled)
             .await
             .map(Json)
             .map_err(to_mcp)
@@ -707,9 +728,10 @@ mod tests {
     };
     use recvrd_api::{
         AddPlaylistTracksRequest, ApiError, AuthState, AuthStatus, DownloadStatus, ErrorEnvelope,
-        MovePlaylistTrackRequest, OkResponse, PlayPlaylistRequest, PlayTrackRequest,
-        PlaybackModeRequest, PlaybackSnapshot, PlaybackState, Playlist, PlaylistPrivacy, QueueItem,
-        QueueRequest, RemovePlaylistTracksRequest, RepeatMode, TrackDetail,
+        MovePlaylistTrackRequest, OfflineRequest, OkResponse, PlayPlaylistRequest,
+        PlayTrackRequest, PlaybackModeRequest, PlaybackSnapshot, PlaybackState, Playlist,
+        PlaylistPrivacy, QueueItem, QueueRequest, RemovePlaylistTracksRequest, RepeatMode,
+        TrackDetail,
     };
     use recvrd_client::{DaemonError, encode};
     use rmcp::model::ErrorCode;
@@ -766,6 +788,7 @@ mod tests {
                 retrying: 0,
                 failed: 0,
             },
+            offline: false,
             providers: vec![ProviderId::Youtube],
             default_provider: ProviderId::Youtube,
         }
@@ -787,6 +810,7 @@ mod tests {
         let router = Router::new()
             .route("/api/status", get(mock_status))
             .route("/api/providers", get(mock_providers))
+            .route("/api/offline", get(mock_offline).put(mock_set_offline))
             .route(
                 "/api/providers/{provider}/playback",
                 put(mock_set_playback_mode),
@@ -875,6 +899,24 @@ mod tests {
             },
             recvrd_api::PlaybackMode::Download,
         )])
+    }
+
+    async fn mock_offline() -> AxumJson<OfflineRequest> {
+        AxumJson(OfflineRequest { enabled: false })
+    }
+
+    async fn mock_set_offline(
+        State(state): State<MockState>,
+        AxumJson(request): AxumJson<OfflineRequest>,
+    ) -> AxumJson<Status> {
+        state
+            .calls
+            .lock()
+            .unwrap()
+            .push(format!("PUT /api/offline {}", request.enabled));
+        let mut status = status();
+        status.offline = request.enabled;
+        AxumJson(status)
     }
 
     async fn mock_set_playback_mode(
@@ -1285,6 +1327,7 @@ mod tests {
                 "rss_remove_feed",
                 "search",
                 "seek",
+                "set_offline",
                 "set_playback_mode",
                 "shuffle",
                 "volume",
@@ -1331,6 +1374,24 @@ mod tests {
                 .lock()
                 .unwrap()
                 .contains(&"PUT /api/providers/rss/playback stream_then_download".to_string())
+        );
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn sets_offline_mode() {
+        let (server, state, handle) = server().await;
+        let Json(updated) = server
+            .set_offline(Parameters(OfflineArgs { enabled: true }))
+            .await
+            .unwrap();
+        assert!(updated.offline);
+        assert!(
+            state
+                .calls
+                .lock()
+                .unwrap()
+                .contains(&"PUT /api/offline true".to_string())
         );
         handle.abort();
     }

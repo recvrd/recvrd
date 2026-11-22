@@ -3,7 +3,10 @@
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use common_structs::TrackKey;
@@ -16,19 +19,29 @@ pub struct ArtworkCache {
     max_bytes: u64,
     fetcher: Arc<dyn CoverFetcher>,
     gates: Arc<Mutex<HashMap<TrackKey, Arc<tokio::sync::Mutex<()>>>>>,
+    offline: Arc<AtomicBool>,
 }
 
 impl ArtworkCache {
-    pub fn new(dir: PathBuf, max_bytes: u64, fetcher: Arc<dyn CoverFetcher>) -> Self {
-        Self::with_fetcher(dir, max_bytes, fetcher)
+    #[cfg(test)]
+    pub fn with_fetcher(dir: PathBuf, max_bytes: u64, fetcher: Arc<dyn CoverFetcher>) -> Self {
+        Self::with_offline(dir, max_bytes, fetcher, Arc::new(AtomicBool::new(false)))
     }
 
-    pub fn with_fetcher(dir: PathBuf, max_bytes: u64, fetcher: Arc<dyn CoverFetcher>) -> Self {
+    /// Build a cache that shares the daemon's offline flag. While
+    /// offline, `ensure` never fetches and returns a cached file only.
+    pub fn with_offline(
+        dir: PathBuf,
+        max_bytes: u64,
+        fetcher: Arc<dyn CoverFetcher>,
+        offline: Arc<AtomicBool>,
+    ) -> Self {
         Self {
             dir,
             max_bytes,
             fetcher,
             gates: Arc::new(Mutex::new(HashMap::new())),
+            offline,
         }
     }
 
@@ -43,10 +56,18 @@ impl ArtworkCache {
         self.path(key).filter(|path| path.is_file())
     }
 
+    /// Set the offline flag shared with the daemon.
+    pub fn set_offline(&self, enabled: bool) {
+        self.offline.store(enabled, Ordering::SeqCst);
+    }
+
     /// Return the cached file and fetch it when it is missing.
     pub async fn ensure(&self, key: &TrackKey) -> Option<PathBuf> {
         if let Some(path) = self.cached_path(key) {
             return Some(path);
+        }
+        if self.offline.load(Ordering::SeqCst) {
+            return None;
         }
         let path = self.path(key)?;
         let gate = self.gate(key);
@@ -237,6 +258,26 @@ mod tests {
         assert_eq!(first, second);
         assert_eq!(fetcher.calls(), 1);
         assert_eq!(std::fs::read(&first).unwrap(), vec![7; 16]);
+    }
+
+    #[tokio::test]
+    async fn offline_uses_only_cached_covers() {
+        let dir = tempdir().unwrap();
+        let fetcher = Arc::new(CountingFetcher::with_bytes(vec![7; 16]));
+        let offline = Arc::new(AtomicBool::new(false));
+        let cache = ArtworkCache::with_offline(
+            dir.path().to_path_buf(),
+            0,
+            fetcher.clone(),
+            offline.clone(),
+        );
+
+        let first = cache.ensure(&key(ID)).await.unwrap();
+        offline.store(true, Ordering::SeqCst);
+        let second = cache.ensure(&key(ID)).await.unwrap();
+        assert_eq!(first, second);
+        assert!(cache.ensure(&key("abcdefghij2")).await.is_none());
+        assert_eq!(fetcher.calls(), 1);
     }
 
     #[tokio::test]

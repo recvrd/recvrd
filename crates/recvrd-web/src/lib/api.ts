@@ -5,6 +5,7 @@ import type { CreatePlaylistRequest } from '@api/CreatePlaylistRequest';
 import type { DownloadStatus } from '@api/DownloadStatus';
 import type { ErrorEnvelope } from '@api/ErrorEnvelope';
 import type { OkResponse } from '@api/OkResponse';
+import type { OfflineRequest } from '@api/OfflineRequest';
 import type { PlaybackMode } from '@api/PlaybackMode';
 import type { PlaybackSnapshot } from '@api/PlaybackSnapshot';
 import type { Playlist } from '@api/Playlist';
@@ -37,6 +38,8 @@ export interface RecvrdApi {
   status(): Promise<Status>;
   providers(): Promise<ProviderInfo[]>;
   setPlaybackMode(provider: ProviderId, mode: PlaybackMode): Promise<ProviderInfo>;
+  offline(): Promise<OfflineRequest>;
+  setOffline(enabled: boolean): Promise<Status>;
   playlists(provider?: ProviderId): Promise<Playlist[]>;
   playlist(id: string, provider?: ProviderId): Promise<PlaylistDetail>;
   createPlaylist(request: CreatePlaylistRequest): Promise<Playlist>;
@@ -158,6 +161,12 @@ export function createApi(baseUrl = ''): RecvrdApi {
       request<ProviderInfo>(`/api/providers/${encodeURIComponent(provider)}/playback`, {
         method: 'PUT',
         body: JSON.stringify({ mode }),
+      }),
+    offline: () => request<OfflineRequest>('/api/offline'),
+    setOffline: (enabled) =>
+      request<Status>('/api/offline', {
+        method: 'PUT',
+        body: JSON.stringify({ enabled }),
       }),
     playlists: (provider: ProviderId = 'youtube') =>
       request<Playlist[]>(`/api/playlists?provider=${encodeURIComponent(provider)}`),
@@ -311,4 +320,4 @@ export function trackMetadataFacts(track: Track): string[] {
   return facts;
 }
 
-export type { CacheCleanResult, CacheScope, CacheSizes, PlaybackMode, PlaybackSnapshot, Playlist, PlaylistDetail, ProviderCapabilities, ProviderId, ProviderInfo, Queue, RepeatMode, RssFeed, SearchResults, Status, Track, TrackDetail };
+export type { CacheCleanResult, CacheScope, CacheSizes, OfflineRequest, PlaybackMode, PlaybackSnapshot, Playlist, PlaylistDetail, ProviderCapabilities, ProviderId, ProviderInfo, Queue, RepeatMode, RssFeed, SearchResults, Status, Track, TrackDetail };
