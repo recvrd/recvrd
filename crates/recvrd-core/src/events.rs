@@ -27,6 +27,9 @@ pub enum CoreEvent {
     Error {
         message: String,
     },
+    Offline {
+        enabled: bool,
+    },
     LibraryChanged,
 }
 

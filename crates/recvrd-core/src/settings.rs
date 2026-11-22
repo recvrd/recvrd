@@ -21,6 +21,8 @@ pub struct PlaybackSettings {
     pub version: u32,
     /// The selected mode for each provider.
     pub playback: BTreeMap<ProviderId, PlaybackMode>,
+    /// Whether the daemon runs in offline mode.
+    pub offline: bool,
 }
 
 fn default_version() -> u32 {
@@ -32,6 +34,7 @@ impl Default for PlaybackSettings {
         Self {
             version: SETTINGS_VERSION,
             playback: BTreeMap::new(),
+            offline: false,
         }
     }
 }
@@ -48,6 +51,16 @@ impl PlaybackSettings {
     /// Set the mode for a provider.
     pub fn set_mode(&mut self, provider: ProviderId, mode: PlaybackMode) {
         self.playback.insert(provider, mode);
+    }
+
+    /// Whether offline mode is on.
+    pub fn offline(&self) -> bool {
+        self.offline
+    }
+
+    /// Set offline mode.
+    pub fn set_offline(&mut self, enabled: bool) {
+        self.offline = enabled;
     }
 }
 
@@ -113,6 +126,18 @@ impl PlaybackSettingsStore {
         settings.set_mode(provider, mode);
         save_settings(&self.path, &settings)
     }
+
+    /// Whether offline mode is on.
+    pub fn offline(&self) -> bool {
+        self.settings.read().unwrap().offline()
+    }
+
+    /// Set and save offline mode.
+    pub fn set_offline(&self, enabled: bool) -> std::io::Result<()> {
+        let mut settings = self.settings.write().unwrap();
+        settings.set_offline(enabled);
+        save_settings(&self.path, &settings)
+    }
 }
 
 fn save_settings(path: &Path, settings: &PlaybackSettings) -> std::io::Result<()> {
@@ -139,6 +164,21 @@ mod tests {
             settings.mode(ProviderId::Podverse),
             PlaybackMode::StreamThenDownload
         );
+        assert!(!settings.offline());
+    }
+
+    #[test]
+    fn saves_and_reloads_offline_mode() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("settings.toml");
+        let store = PlaybackSettingsStore::load(&path);
+        assert!(!store.offline());
+        store.set_offline(true).unwrap();
+
+        let reloaded = PlaybackSettingsStore::load(&path);
+        assert!(reloaded.offline());
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("offline = true"), "{text}");
     }
 
     #[test]

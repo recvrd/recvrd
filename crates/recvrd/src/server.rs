@@ -155,6 +155,18 @@ impl ApiFailure {
         }
     }
 
+    /// The request needs a provider call or a track that is not
+    /// cached while offline mode is on.
+    fn offline_unavailable(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::CONFLICT,
+            error: ApiError {
+                code: "offline_unavailable".to_string(),
+                message: message.into(),
+            },
+        }
+    }
+
     fn internal(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
@@ -169,6 +181,17 @@ impl ApiFailure {
 impl IntoResponse for ApiFailure {
     fn into_response(self) -> Response {
         (self.status, Json(ErrorEnvelope { error: self.error })).into_response()
+    }
+}
+
+/// Reject an action that needs a provider while offline mode is on.
+fn ensure_online<S: AudioSink + Send + 'static>(state: &AppState<S>) -> Result<(), ApiFailure> {
+    if state.settings.offline() {
+        Err(ApiFailure::offline_unavailable(
+            "this action needs a provider and offline mode is on",
+        ))
+    } else {
+        Ok(())
     }
 }
 
@@ -234,10 +257,75 @@ async fn playlists<S: AudioSink + Send + 'static>(
     Query(query): Query<ProviderQuery>,
 ) -> Result<Json<Vec<Playlist>>, ApiFailure> {
     let provider = parse_provider(query.provider)?;
+    if state.settings.offline() {
+        return Ok(Json(cached_playlists_as_playlists(&state, provider)));
+    }
     match state.music.playlists(provider).await {
         Ok(playlists) => Ok(Json(playlists)),
         Err(error) => Err(provider_failure(&state, provider, error)),
     }
+}
+
+/// Return the cached playlists for a provider as playlist metadata.
+fn cached_playlists_as_playlists<S: AudioSink + Send + 'static>(
+    state: &AppState<S>,
+    provider: ProviderId,
+) -> Vec<Playlist> {
+    state
+        .cache
+        .cached_playlists(provider)
+        .into_iter()
+        .map(|group| {
+            let first = group.tracks.first();
+            Playlist {
+                id: group.id,
+                name: group.name,
+                subtitle: String::new(),
+                image_url: first
+                    .and_then(|track| track.metadata.as_ref())
+                    .and_then(|metadata| metadata.image_url.clone()),
+                author: None,
+                description: None,
+                feed_url: first
+                    .and_then(|track| track.metadata.as_ref())
+                    .and_then(|metadata| metadata.feed_url.clone()),
+                item_count: Some(group.tracks.len() as u32),
+            }
+        })
+        .collect()
+}
+
+/// Find one cached playlist and return it with its tracks.
+fn cached_playlist_detail<S: AudioSink + Send + 'static>(
+    state: &AppState<S>,
+    provider: ProviderId,
+    id: &str,
+) -> Option<PlaylistDetail> {
+    state
+        .cache
+        .cached_playlists(provider)
+        .into_iter()
+        .find(|group| group.id == id)
+        .map(|group| {
+            let first = group.tracks.first();
+            PlaylistDetail {
+                playlist: Playlist {
+                    id: group.id,
+                    name: group.name,
+                    subtitle: String::new(),
+                    image_url: first
+                        .and_then(|track| track.metadata.as_ref())
+                        .and_then(|metadata| metadata.image_url.clone()),
+                    author: None,
+                    description: None,
+                    feed_url: first
+                        .and_then(|track| track.metadata.as_ref())
+                        .and_then(|metadata| metadata.feed_url.clone()),
+                    item_count: Some(group.tracks.len() as u32),
+                },
+                tracks: group.tracks.iter().map(api_track).collect(),
+            }
+        })
 }
 
 /// Map a provider read error. An expired session is a 401; every other
@@ -362,6 +450,7 @@ async fn add_rss_feed<S: AudioSink + Send + 'static>(
     State(state): State<AppState<S>>,
     Json(request): Json<AddRssFeedRequest>,
 ) -> Result<(StatusCode, Json<RssFeed>), ApiFailure> {
+    ensure_online(&state)?;
     let url = request.url.trim();
     if url.is_empty() {
         return Err(ApiFailure::bad_request("feed URL must not be empty"));
@@ -401,14 +490,15 @@ async fn remove_rss_feed<S: AudioSink + Send + 'static>(
 /// Refresh every RSS feed. A feed that fails keeps its old episodes.
 async fn refresh_rss_feeds<S: AudioSink + Send + 'static>(
     State(state): State<AppState<S>>,
-) -> Json<Vec<RssFeed>> {
+) -> Result<Json<Vec<RssFeed>>, ApiFailure> {
+    ensure_online(&state)?;
     let mut refreshed = Vec::new();
     for (_id, result) in state.rss.refresh_all().await {
         if let Ok(feed) = result {
             refreshed.push(feed);
         }
     }
-    Json(refreshed)
+    Ok(Json(refreshed))
 }
 
 /// Refresh one RSS feed by its ID.
@@ -416,6 +506,7 @@ async fn refresh_rss_feed<S: AudioSink + Send + 'static>(
     State(state): State<AppState<S>>,
     AxumPath(id): AxumPath<String>,
 ) -> Result<Json<RssFeed>, ApiFailure> {
+    ensure_online(&state)?;
     if !state.rss.has_feed(&id) {
         return Err(ApiFailure::not_found(format!("feed {id} not found")));
     }
@@ -433,6 +524,15 @@ async fn playlist<S: AudioSink + Send + 'static>(
     Query(query): Query<ProviderQuery>,
 ) -> Result<Json<PlaylistDetail>, ApiFailure> {
     let provider = parse_provider(query.provider)?;
+    if state.settings.offline() {
+        return cached_playlist_detail(&state, provider, &id)
+            .map(Json)
+            .ok_or_else(|| {
+                ApiFailure::offline_unavailable(format!(
+                    "playlist {id} is not cached for {provider}"
+                ))
+            });
+    }
     // Load the playlist direct, not through the library. A public
     // playlist has tracks without a session, and the library load
     // would reject it as expired.
@@ -450,6 +550,7 @@ async fn create_playlist<S: AudioSink + Send + 'static>(
     State(state): State<AppState<S>>,
     Json(request): Json<CreatePlaylistRequest>,
 ) -> Result<(StatusCode, Json<Playlist>), ApiFailure> {
+    ensure_online(&state)?;
     let request = validate_create_playlist(request)?;
     let playlist = state
         .music
@@ -464,6 +565,7 @@ async fn update_playlist<S: AudioSink + Send + 'static>(
     AxumPath(id): AxumPath<String>,
     Json(request): Json<UpdatePlaylistRequest>,
 ) -> Result<Json<Playlist>, ApiFailure> {
+    ensure_online(&state)?;
     validate_playlist_id(&id)?;
     let request = UpdatePlaylistRequest {
         title: validate_title(&request.title)?,
@@ -480,6 +582,7 @@ async fn delete_playlist<S: AudioSink + Send + 'static>(
     State(state): State<AppState<S>>,
     AxumPath(id): AxumPath<String>,
 ) -> Result<Json<OkResponse>, ApiFailure> {
+    ensure_online(&state)?;
     validate_playlist_id(&id)?;
     state
         .music
@@ -494,6 +597,7 @@ async fn add_playlist_tracks<S: AudioSink + Send + 'static>(
     AxumPath(id): AxumPath<String>,
     Json(request): Json<AddPlaylistTracksRequest>,
 ) -> Result<Json<Vec<Track>>, ApiFailure> {
+    ensure_online(&state)?;
     validate_playlist_id(&id)?;
     validate_track_keys(request.provider, &request.track_ids)?;
     state
@@ -509,6 +613,7 @@ async fn remove_playlist_tracks<S: AudioSink + Send + 'static>(
     AxumPath(id): AxumPath<String>,
     Json(request): Json<RemovePlaylistTracksRequest>,
 ) -> Result<Json<Vec<Track>>, ApiFailure> {
+    ensure_online(&state)?;
     validate_playlist_id(&id)?;
     validate_indices(&request.indices)?;
     state
@@ -524,6 +629,7 @@ async fn move_playlist_track<S: AudioSink + Send + 'static>(
     AxumPath(id): AxumPath<String>,
     Json(request): Json<MovePlaylistTrackRequest>,
 ) -> Result<Json<Vec<Track>>, ApiFailure> {
+    ensure_online(&state)?;
     validate_playlist_id(&id)?;
     state
         .music
@@ -729,6 +835,44 @@ async fn search<S: AudioSink + Send + 'static>(
         return Err(ApiFailure::bad_request("search query must not be empty"));
     }
     let provider = parse_provider(query.provider)?;
+    if state.settings.offline() {
+        let needle = query.q.trim().to_lowercase();
+        let tracks: Vec<Track> = state
+            .cache
+            .cached_tracks(provider)
+            .into_iter()
+            .filter(|track| {
+                track.title.to_lowercase().contains(&needle)
+                    || track.author.to_lowercase().contains(&needle)
+                    || track.album.to_lowercase().contains(&needle)
+            })
+            .map(|track| api_track(&track))
+            .collect();
+        let playlists: Vec<Playlist> = state
+            .cache
+            .cached_playlists(provider)
+            .into_iter()
+            .filter(|group| group.name.to_lowercase().contains(&needle))
+            .map(|group| {
+                let first = group.tracks.first();
+                Playlist {
+                    id: group.id,
+                    name: group.name,
+                    subtitle: String::new(),
+                    image_url: first
+                        .and_then(|track| track.metadata.as_ref())
+                        .and_then(|metadata| metadata.image_url.clone()),
+                    author: None,
+                    description: None,
+                    feed_url: first
+                        .and_then(|track| track.metadata.as_ref())
+                        .and_then(|metadata| metadata.feed_url.clone()),
+                    item_count: Some(group.tracks.len() as u32),
+                }
+            })
+            .collect();
+        return Ok(Json(SearchResults { tracks, playlists }));
+    }
     state
         .music
         .search(provider, &query.q)
@@ -751,6 +895,23 @@ async fn track_detail<S: AudioSink + Send + 'static>(
         return Err(ApiFailure::not_found(format!(
             "provider {provider} is not configured"
         )));
+    }
+    if state.settings.offline() {
+        let track = state
+            .cache
+            .cached_tracks(provider)
+            .into_iter()
+            .find(|track| track.track_id == track_id)
+            .map(|track| api_track(&track))
+            .ok_or_else(|| {
+                ApiFailure::offline_unavailable(format!(
+                    "track {provider}:{track_id} is not cached"
+                ))
+            })?;
+        return Ok(Json(TrackDetail {
+            track,
+            description: None,
+        }));
     }
     state
         .music
@@ -782,6 +943,11 @@ async fn cover<S: AudioSink + Send + 'static>(
         )));
     };
     let key = TrackKey::new(provider, track_id);
+    if state.settings.offline() && key.validate() && state.artwork.cached_path(&key).is_none() {
+        return Err(ApiFailure::offline_unavailable(format!(
+            "cover art for {key} is not cached"
+        )));
+    }
     let Some(path) = state.artwork.ensure(&key).await else {
         let message = if key.validate() {
             format!("cover art for {key} is not available")
@@ -845,11 +1011,23 @@ async fn play_playlist<S: AudioSink + Send + 'static>(
     Json(request): Json<PlayPlaylistRequest>,
 ) -> Result<Json<Status>, ApiFailure> {
     let provider = request.provider;
-    let tracks = state
-        .music
-        .playlist(provider, &request.playlist_id)
-        .await
-        .map_err(|error| provider_failure(&state, provider, error))?;
+    let offline = state.settings.offline();
+    let tracks = if offline {
+        cached_playlist_detail(&state, provider, &request.playlist_id)
+            .map(|detail| detail.tracks)
+            .ok_or_else(|| {
+                ApiFailure::offline_unavailable(format!(
+                    "playlist {} is not cached for {provider}",
+                    request.playlist_id
+                ))
+            })?
+    } else {
+        state
+            .music
+            .playlist(provider, &request.playlist_id)
+            .await
+            .map_err(|error| provider_failure(&state, provider, error))?
+    };
     if tracks.is_empty() {
         return Err(ApiFailure::bad_request("playlist has no tracks"));
     }
@@ -860,7 +1038,7 @@ async fn play_playlist<S: AudioSink + Send + 'static>(
         .play_playlist(tracks.clone())
         .await
         .map_err(playback_failure)?;
-    if mode != PlaybackMode::Stream {
+    if !offline && mode != PlaybackMode::Stream {
         state.downloads.queue_playlist(&tracks);
     }
     Ok(Json(status_from_parts(
@@ -880,12 +1058,13 @@ async fn play_track<S: AudioSink + Send + 'static>(
     }
     let track = core_track(request.track);
     let mode = state.settings.mode(track.provider);
+    let offline = state.settings.offline();
     let mut playback = state.playback.lock().await;
     playback
         .play_track(track.clone())
         .await
         .map_err(playback_failure)?;
-    if mode != PlaybackMode::Stream {
+    if !offline && mode != PlaybackMode::Stream {
         state.downloads.queue_tracks(std::slice::from_ref(&track));
     }
     Ok(Json(status_from_parts(
@@ -905,7 +1084,7 @@ async fn queue_add<S: AudioSink + Send + 'static>(
     }
     let track = core_track(request.track);
     let mode = state.settings.mode(track.provider);
-    if mode != PlaybackMode::Stream {
+    if !state.settings.offline() && mode != PlaybackMode::Stream {
         state.downloads.queue_tracks(std::slice::from_ref(&track));
     }
     let mut playback = state.playback.lock().await;
@@ -1027,6 +1206,7 @@ async fn retry_download<S: AudioSink + Send + 'static>(
     State(state): State<AppState<S>>,
     Json(request): Json<RetryDownloadRequest>,
 ) -> Result<StatusCode, ApiFailure> {
+    ensure_online(&state)?;
     let key = TrackKey::new(request.provider, request.track_id.clone());
     if state.downloads.retry(&key) {
         Ok(StatusCode::ACCEPTED)
@@ -1396,6 +1576,7 @@ fn status_from_parts<S: AudioSink + Send + 'static>(
         playback: api_playback(playback),
         queue_length: queue.items.len(),
         downloads: api_download_summary(state.downloads.summary()),
+        offline: state.settings.offline(),
         providers: state.providers.clone(),
         default_provider: ProviderId::default_provider(),
     }
@@ -1524,6 +1705,7 @@ fn api_event(event: CoreEvent) -> Option<EventKind> {
                 message,
             },
         }),
+        CoreEvent::Offline { enabled } => Some(EventKind::Offline { enabled }),
         CoreEvent::LibraryChanged => Some(EventKind::LibraryChanged),
     }
 }

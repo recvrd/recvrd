@@ -3,7 +3,10 @@
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use common_structs::TrackKey;
@@ -16,19 +19,29 @@ pub struct ArtworkCache {
     max_bytes: u64,
     fetcher: Arc<dyn CoverFetcher>,
     gates: Arc<Mutex<HashMap<TrackKey, Arc<tokio::sync::Mutex<()>>>>>,
+    offline: Arc<AtomicBool>,
 }
 
 impl ArtworkCache {
-    pub fn new(dir: PathBuf, max_bytes: u64, fetcher: Arc<dyn CoverFetcher>) -> Self {
-        Self::with_fetcher(dir, max_bytes, fetcher)
+    #[cfg(test)]
+    pub fn with_fetcher(dir: PathBuf, max_bytes: u64, fetcher: Arc<dyn CoverFetcher>) -> Self {
+        Self::with_offline(dir, max_bytes, fetcher, Arc::new(AtomicBool::new(false)))
     }
 
-    pub fn with_fetcher(dir: PathBuf, max_bytes: u64, fetcher: Arc<dyn CoverFetcher>) -> Self {
+    /// Build a cache that shares the daemon's offline flag. While
+    /// offline, `ensure` never fetches and returns a cached file only.
+    pub fn with_offline(
+        dir: PathBuf,
+        max_bytes: u64,
+        fetcher: Arc<dyn CoverFetcher>,
+        offline: Arc<AtomicBool>,
+    ) -> Self {
         Self {
             dir,
             max_bytes,
             fetcher,
             gates: Arc::new(Mutex::new(HashMap::new())),
+            offline,
         }
     }
 
@@ -43,10 +56,18 @@ impl ArtworkCache {
         self.path(key).filter(|path| path.is_file())
     }
 
+    /// Set the offline flag shared with the daemon.
+    pub fn set_offline(&self, enabled: bool) {
+        self.offline.store(enabled, Ordering::SeqCst);
+    }
+
     /// Return the cached file and fetch it when it is missing.
     pub async fn ensure(&self, key: &TrackKey) -> Option<PathBuf> {
         if let Some(path) = self.cached_path(key) {
             return Some(path);
+        }
+        if self.offline.load(Ordering::SeqCst) {
+            return None;
         }
         let path = self.path(key)?;
         let gate = self.gate(key);
