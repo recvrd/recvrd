@@ -1,7 +1,7 @@
 use flume::Sender;
 use log::{error, info};
 use rand::seq::SliceRandom;
-use ytermusicd_core::Track;
+use recvrd_core::Track;
 use ytpapi2::YoutubeMusicVideoRef;
 
 use crate::{

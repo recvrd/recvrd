@@ -1511,11 +1511,11 @@ version = "0.6.3"
 dependencies = [
  "common-structs",
  "log",
+ "recvrd-core",
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
  "varuint",
- "ytermusicd-core",
 ]
 
 [[package]]
@@ -1730,12 +1730,12 @@ dependencies = [
  "flume",
  "log",
  "once_cell",
+ "recvrd-core",
  "serde",
  "serde_json",
  "stream-download",
  "tempfile",
  "tokio",
- "ytermusicd-core",
 ]
 
 [[package]]
@@ -4079,14 +4079,14 @@ dependencies = [
  "download-manager",
  "log",
  "quick-xml",
+ "recvrd-api",
+ "recvrd-core",
  "reqwest",
  "serde",
  "serde_json",
  "sha2",
  "tempfile",
  "tokio",
- "ytermusicd-api",
- "ytermusicd-core",
 ]
 
 [[package]]
@@ -4097,13 +4097,13 @@ dependencies = [
  "common-structs",
  "download-manager",
  "log",
+ "recvrd-api",
+ "recvrd-core",
  "reqwest",
  "rusty_ytdl",
  "serde_json",
  "tempfile",
  "tokio",
- "ytermusicd-api",
- "ytermusicd-core",
  "ytpapi2",
 ]
 
@@ -4363,6 +4363,98 @@ dependencies = [
  "log",
  "normpath",
  "ntfs",
+]
+
+[[package]]
+name = "recvc"
+version = "0.6.3"
+dependencies = [
+ "clap",
+ "crossterm 0.28.1",
+ "futures-util",
+ "image",
+ "ratatui 0.29.0",
+ "ratatui-image",
+ "recvrd-api",
+ "recvrd-client",
+ "tokio",
+]
+
+[[package]]
+name = "recvrd"
+version = "0.6.3"
+dependencies = [
+ "async-stream",
+ "async-trait",
+ "axum",
+ "clap",
+ "common-structs",
+ "database",
+ "download-manager",
+ "env_logger",
+ "flume",
+ "futures-util",
+ "log",
+ "mime_guess",
+ "player",
+ "provider-rss",
+ "provider-youtube",
+ "recvrd-api",
+ "recvrd-client",
+ "recvrd-core",
+ "reqwest",
+ "rmcp",
+ "rust-embed",
+ "schemars",
+ "serde",
+ "serde_json",
+ "souvlaki",
+ "tempfile",
+ "tokio",
+ "url",
+]
+
+[[package]]
+name = "recvrd-api"
+version = "0.6.3"
+dependencies = [
+ "async-trait",
+ "common-structs",
+ "schemars",
+ "serde",
+ "serde_json",
+ "ts-rs",
+]
+
+[[package]]
+name = "recvrd-client"
+version = "0.6.3"
+dependencies = [
+ "axum",
+ "bytes",
+ "futures-util",
+ "recvrd-api",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "recvrd-core"
+version = "0.6.3"
+dependencies = [
+ "async-trait",
+ "common-structs",
+ "directories",
+ "fastrand 2.3.0",
+ "log",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "toml",
 ]
 
 [[package]]
@@ -7121,6 +7213,7 @@ dependencies = [
  "rand 0.8.5",
  "ratatui 0.26.3",
  "raw-window-handle",
+ "recvrd-core",
  "rookie",
  "serde",
  "serde_json",
@@ -7131,100 +7224,7 @@ dependencies = [
  "urlencoding",
  "varuint",
  "winit",
- "ytermusicd-core",
  "ytpapi2",
-]
-
-[[package]]
-name = "ytermusicd"
-version = "0.6.3"
-dependencies = [
- "async-stream",
- "async-trait",
- "axum",
- "clap",
- "common-structs",
- "database",
- "download-manager",
- "env_logger",
- "flume",
- "futures-util",
- "log",
- "mime_guess",
- "player",
- "provider-rss",
- "provider-youtube",
- "reqwest",
- "rmcp",
- "rust-embed",
- "schemars",
- "serde",
- "serde_json",
- "souvlaki",
- "tempfile",
- "tokio",
- "url",
- "ytermusicd-api",
- "ytermusicd-client",
- "ytermusicd-core",
-]
-
-[[package]]
-name = "ytermusicd-api"
-version = "0.6.3"
-dependencies = [
- "async-trait",
- "common-structs",
- "schemars",
- "serde",
- "serde_json",
- "ts-rs",
-]
-
-[[package]]
-name = "ytermusicd-client"
-version = "0.6.3"
-dependencies = [
- "axum",
- "bytes",
- "futures-util",
- "reqwest",
- "serde",
- "serde_json",
- "tokio",
- "ytermusicd-api",
-]
-
-[[package]]
-name = "ytermusicd-core"
-version = "0.6.3"
-dependencies = [
- "async-trait",
- "common-structs",
- "directories",
- "fastrand 2.3.0",
- "log",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "toml",
-]
-
-[[package]]
-name = "ytmc"
-version = "0.6.3"
-dependencies = [
- "clap",
- "crossterm 0.28.1",
- "futures-util",
- "image",
- "ratatui 0.29.0",
- "ratatui-image",
- "tokio",
- "ytermusicd-api",
- "ytermusicd-client",
 ]
 
 [[package]]

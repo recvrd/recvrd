@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use common_structs::{ProviderId, TrackKey};
-use ytermusicd_core::CoverFetcher;
+use recvrd_core::CoverFetcher;
 
 /// Largest image the fetcher accepts.
 const MAX_COVER_BYTES: usize = 5 * 1024 * 1024;
@@ -25,7 +25,7 @@ pub struct YoutubeCoverFetcher {
 impl YoutubeCoverFetcher {
     pub fn new() -> Self {
         let client = reqwest::Client::builder()
-            .user_agent(concat!("ytermusicd/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("recvrd/", env!("CARGO_PKG_VERSION")))
             .timeout(Duration::from_secs(10))
             .build()
             .unwrap_or_default();

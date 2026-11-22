@@ -7,8 +7,8 @@ use std::{
 
 use async_trait::async_trait;
 use database::YTLocalDatabase;
+use recvrd_core::Track;
 use tokio::{select, sync::Notify, task::JoinHandle};
-use ytermusicd_core::Track;
 
 use common_structs::{MusicDownloadStatus, TrackKey};
 

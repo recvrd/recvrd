@@ -1,15 +1,15 @@
 # HTTP API
 
-`ytermusicd serve` exposes a JSON API plus a Server-Sent Events (SSE) stream.
+`recvrd serve` exposes a JSON API plus a Server-Sent Events (SSE) stream.
 All request and response bodies use the DTOs from
-[`crates/ytermusicd-api`](../crates/ytermusicd-api/src/lib.rs); TypeScript
+[`crates/recvrd-api`](../crates/recvrd-api/src/lib.rs); TypeScript
 bindings are generated from the same definitions in
-[`crates/ytermusicd-api/bindings`](../crates/ytermusicd-api/bindings).
+[`crates/recvrd-api/bindings`](../crates/recvrd-api/bindings).
 
 ## Base URL and trust model
 
 The default address is `http://127.0.0.1:8080`. Override it with `--bind`,
-`--port`, `YTERMUSICD_BIND` or `YTERMUSICD_PORT`. The daemon serves the web UI
+`--port`, `RECVRD_BIND` or `RECVRD_PORT`. The daemon serves the web UI
 at `/` and the JSON API under `/api`. Client-side routes fall back to
 `index.html`; unknown `/api` paths return 404.
 
@@ -113,13 +113,13 @@ curl http://127.0.0.1:8080/api/status
 
 ```json
 {
-  "name": "ytermusicd",
+  "name": "recvrd",
   "version": "0.6.3",
   "status": "ok",
   "uptime_seconds": 42,
   "auth": {
     "state": "ok",
-    "source": "/home/me/.config/ytermusicd/headers.txt",
+    "source": "/home/me/.config/recvrd/headers.txt",
     "message": null
   },
   "playback": {
@@ -166,7 +166,7 @@ curl http://127.0.0.1:8080/api/providers
     },
     "auth": {
       "state": "ok",
-      "source": "/home/me/.config/ytermusicd/headers.txt",
+      "source": "/home/me/.config/recvrd/headers.txt",
       "message": null
     }
   }
@@ -265,7 +265,7 @@ immutable` and an `ETag`. A request with a matching `If-None-Match` header
 returns 304.
 
 The daemon fetches the image from YouTube and stores it in
-`$XDG_CACHE_HOME/ytermusicd/covers/youtube/<track_id>.jpg`. It tries
+`$XDG_CACHE_HOME/recvrd/covers/youtube/<track_id>.jpg`. It tries
 `maxresdefault.jpg` first and falls back to `hqdefault.jpg`. An invalid track
 ID or a failed fetch returns 404 with the normal error envelope.
 
@@ -294,7 +294,7 @@ download in progress resumes and the current track keeps playing.
 The headless command does the same clean:
 
 ```sh
-ytermusicd cache clean --scope downloads
+recvrd cache clean --scope downloads
 ```
 
 When the daemon answers, the command uses the API. When the daemon does not
@@ -506,9 +506,9 @@ JavaScript, so clients use the `heartbeat` event to detect a live stream.
 Build the bindings with:
 
 ```sh
-cargo test -p ytermusicd-api
+cargo test -p recvrd-api
 ```
 
-The generated files in `crates/ytermusicd-api/bindings/` are checked by CI for
+The generated files in `crates/recvrd-api/bindings/` are checked by CI for
 drift. The web UI and MCP proxy consume these DTOs; see
 [docs/architecture.md](architecture.md).

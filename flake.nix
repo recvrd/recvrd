@@ -1,5 +1,5 @@
 {
-  description = "ytermusicd development environment and package";
+  description = "recvrd development environment and package";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
@@ -19,23 +19,23 @@
           pkgs = import nixpkgs { inherit system; };
         in
         pkgs.buildNpmPackage {
-          pname = "ytermusicd-web";
-          version = (builtins.fromJSON (builtins.readFile ./crates/ytermusicd-web/package.json)).version;
-          src = ./crates/ytermusicd-web;
-          npmDepsHash = "sha256-B1RhmibVFqVk6F6o4ooPTEAIzcFtkEB6idCETA0ZAn0=";
+          pname = "recvrd-web";
+          version = (builtins.fromJSON (builtins.readFile ./crates/recvrd-web/package.json)).version;
+          src = ./crates/recvrd-web;
+          npmDepsHash = "sha256-Tx90TH1byadDPgUJ0UbcBi0CyKv3FEVnTLke0FZ1i1M=";
           buildPhase = "npm run build";
           installPhase = "cp -r dist $out";
         };
 
-      ytermusicdFor =
+      recvrdFor =
         system:
         let
           pkgs = import nixpkgs { inherit system; };
           inherit (pkgs) lib;
         in
         pkgs.rustPlatform.buildRustPackage {
-          pname = "ytermusicd";
-          version = (builtins.fromTOML (builtins.readFile ./crates/ytermusicd/Cargo.toml)).package.version;
+          pname = "recvrd";
+          version = (builtins.fromTOML (builtins.readFile ./crates/recvrd/Cargo.toml)).package.version;
           src = self;
 
           cargoLock = {
@@ -45,12 +45,12 @@
             };
           };
 
-          cargoBuildFlags = [ "--package" "ytermusicd" ];
+          cargoBuildFlags = [ "--package" "recvrd" ];
           doCheck = false;
 
           preBuild = ''
-            mkdir -p crates/ytermusicd-web/dist
-            cp -r ${webFor system}/. crates/ytermusicd-web/dist/
+            mkdir -p crates/recvrd-web/dist
+            cp -r ${webFor system}/. crates/recvrd-web/dist/
           '';
 
           nativeBuildInputs = [ pkgs.makeWrapper pkgs.pkg-config ];
@@ -67,32 +67,32 @@
             ];
 
           postInstall = ''
-            wrapProgram $out/bin/ytermusicd \
+            wrapProgram $out/bin/recvrd \
               --prefix PATH : ${lib.makeBinPath [ pkgs.yt-dlp pkgs.ffmpeg ]}
-            install -Dm644 packaging/systemd/ytermusicd.service \
-              $out/lib/systemd/user/ytermusicd.service
-            install -Dm644 packaging/systemd/ytermusicd.env.example \
-              $out/share/doc/ytermusicd/ytermusicd.env.example
+            install -Dm644 packaging/systemd/recvrd.service \
+              $out/lib/systemd/user/recvrd.service
+            install -Dm644 packaging/systemd/recvrd.env.example \
+              $out/share/doc/recvrd/recvrd.env.example
             install -Dm644 config.example.toml \
-              $out/share/doc/ytermusicd/config.example.toml
+              $out/share/doc/recvrd/config.example.toml
           '';
 
           meta = {
             description = "Headless YouTube Music daemon with a web UI, MPRIS and MCP";
             license = lib.licenses.asl20;
-            mainProgram = "ytermusicd";
+            mainProgram = "recvrd";
           };
         };
 
-      ytmcFor =
+      recvcFor =
         system:
         let
           pkgs = import nixpkgs { inherit system; };
           inherit (pkgs) lib;
         in
         pkgs.rustPlatform.buildRustPackage {
-          pname = "ytmc";
-          version = (builtins.fromTOML (builtins.readFile ./crates/ytmc/Cargo.toml)).package.version;
+          pname = "recvc";
+          version = (builtins.fromTOML (builtins.readFile ./crates/recvc/Cargo.toml)).package.version;
           src = self;
 
           cargoLock = {
@@ -102,37 +102,41 @@
             };
           };
 
-          cargoBuildFlags = [ "--package" "ytmc" ];
+          cargoBuildFlags = [ "--package" "recvc" ];
           doCheck = false;
 
           meta = {
-            description = "Terminal client for the ytermusicd daemon";
+            description = "Terminal client for the recvrd daemon";
             license = lib.licenses.asl20;
-            mainProgram = "ytmc";
+            mainProgram = "recvc";
           };
         };
 
       nixosModule =
         { config, lib, pkgs, ... }:
         let
-          cfg = config.services.ytermusicd;
+          cfg = config.services.recvrd;
         in
         {
-          options.services.ytermusicd = {
-            enable = lib.mkEnableOption "ytermusicd headless daemon";
+          imports = [
+            (lib.mkRenamedOptionModule [ "services" "ytermusicd" ] [ "services" "recvrd" ])
+          ];
+
+          options.services.recvrd = {
+            enable = lib.mkEnableOption "recvrd headless daemon";
             package = lib.mkOption {
               type = lib.types.package;
-              default = self.packages.${pkgs.stdenv.hostPlatform.system}.ytermusicd;
-              description = "ytermusicd package to use.";
+              default = self.packages.${pkgs.stdenv.hostPlatform.system}.recvrd;
+              description = "recvrd package to use.";
             };
             user = lib.mkOption {
               type = lib.types.str;
-              default = "ytermusicd";
+              default = "recvrd";
               description = "System user for the service.";
             };
             group = lib.mkOption {
               type = lib.types.str;
-              default = "ytermusicd";
+              default = "recvrd";
               description = "System group for the service.";
             };
             bind = lib.mkOption {
@@ -159,27 +163,49 @@
               group = cfg.group;
             };
 
-            systemd.services.ytermusicd = {
-              description = "ytermusicd headless YouTube Music daemon";
+            systemd.services.recvrd-migrate = {
+              description = "Migrate ytermusicd state to recvrd";
+              before = [ "recvrd.service" ];
+              requiredBy = [ "recvrd.service" ];
+              path = [ pkgs.coreutils ];
+              serviceConfig = {
+                Type = "oneshot";
+                User = "root";
+              };
+              script = ''
+                if [ -d /var/lib/ytermusicd ]; then
+                  mkdir -p /var/lib/recvrd
+                  if [ -z "$(ls -A /var/lib/recvrd)" ]; then
+                    cp -a /var/lib/ytermusicd/. /var/lib/recvrd/
+                    chown -R ${cfg.user}:${cfg.group} /var/lib/recvrd
+                    rm -rf /var/lib/ytermusicd
+                  fi
+                fi
+              '';
+            };
+
+            systemd.services.recvrd = {
+              description = "recvrd headless YouTube Music daemon";
               after = [ "network-online.target" ];
               wants = [ "network-online.target" ];
               wantedBy = [ "multi-user.target" ];
+              aliases = [ "ytermusicd.service" ];
 
               serviceConfig = {
-                ExecStart = "${cfg.package}/bin/ytermusicd serve";
+                ExecStart = "${cfg.package}/bin/recvrd serve";
                 User = cfg.user;
                 Group = cfg.group;
                 Restart = "on-failure";
                 RestartSec = 5;
-                StateDirectory = "ytermusicd";
+                StateDirectory = "recvrd";
                 StateDirectoryMode = "0700";
-                CacheDirectory = "ytermusicd";
+                CacheDirectory = "recvrd";
                 NoNewPrivileges = true;
                 PrivateTmp = true;
                 Environment = [
-                  "HOME=/var/lib/ytermusicd"
-                  "YTERMUSICD_BIND=${cfg.bind}"
-                  "YTERMUSICD_PORT=${toString cfg.port}"
+                  "HOME=/var/lib/recvrd"
+                  "RECVRD_BIND=${cfg.bind}"
+                  "RECVRD_PORT=${toString cfg.port}"
                 ];
               } // lib.optionalAttrs (cfg.environmentFile != null) {
                 EnvironmentFile = cfg.environmentFile;
@@ -191,15 +217,19 @@
       homeManagerModule =
         { config, lib, pkgs, ... }:
         let
-          cfg = config.services.ytermusicd;
+          cfg = config.services.recvrd;
         in
         {
-          options.services.ytermusicd = {
-            enable = lib.mkEnableOption "ytermusicd user service";
+          imports = [
+            (lib.mkRenamedOptionModule [ "services" "ytermusicd" ] [ "services" "recvrd" ])
+          ];
+
+          options.services.recvrd = {
+            enable = lib.mkEnableOption "recvrd user service";
             package = lib.mkOption {
               type = lib.types.package;
-              default = self.packages.${pkgs.stdenv.hostPlatform.system}.ytermusicd;
-              description = "ytermusicd package to use.";
+              default = self.packages.${pkgs.stdenv.hostPlatform.system}.recvrd;
+              description = "recvrd package to use.";
             };
             bind = lib.mkOption {
               type = lib.types.str;
@@ -221,23 +251,24 @@
           config = lib.mkIf cfg.enable {
             home.packages = [
               cfg.package
-              self.packages.${pkgs.stdenv.hostPlatform.system}.ytmc
+              self.packages.${pkgs.stdenv.hostPlatform.system}.recvc
             ];
-            home.sessionVariables.YTERMUSICD_URL =
+            home.sessionVariables.RECVRD_URL =
               "http://${if cfg.bind == "0.0.0.0" then "127.0.0.1" else cfg.bind}:${toString cfg.port}";
-            systemd.user.services.ytermusicd = {
+            systemd.user.services.recvrd = {
+              aliases = [ "ytermusicd.service" ];
               Unit = {
-                Description = "ytermusicd headless YouTube Music daemon";
+                Description = "recvrd headless YouTube Music daemon";
                 After = [ "network-online.target" ];
                 Wants = [ "network-online.target" ];
               };
               Service = {
-                ExecStart = "${cfg.package}/bin/ytermusicd serve";
+                ExecStart = "${cfg.package}/bin/recvrd serve";
                 Restart = "on-failure";
                 RestartSec = 5;
                 Environment = [
-                  "YTERMUSICD_BIND=${cfg.bind}"
-                  "YTERMUSICD_PORT=${toString cfg.port}"
+                  "RECVRD_BIND=${cfg.bind}"
+                  "RECVRD_PORT=${toString cfg.port}"
                 ];
               } // lib.optionalAttrs (cfg.environmentFile != null) {
                 EnvironmentFile = cfg.environmentFile;
@@ -249,19 +280,33 @@
     in
     {
       packages = forAllSystems (system: {
-        default = ytermusicdFor system;
-        ytermusicd = ytermusicdFor system;
-        ytmc = ytmcFor system;
+        default = recvrdFor system;
+        recvrd = recvrdFor system;
+        recvc = recvcFor system;
+        ytermusicd = recvrdFor system;
+        ytmc = recvcFor system;
       });
 
       apps = forAllSystems (system: {
         default = {
           type = "app";
-          program = "${self.packages.${system}.ytermusicd}/bin/ytermusicd";
+          program = "${self.packages.${system}.recvrd}/bin/recvrd";
+        };
+        recvrd = {
+          type = "app";
+          program = "${self.packages.${system}.recvrd}/bin/recvrd";
+        };
+        recvc = {
+          type = "app";
+          program = "${self.packages.${system}.recvc}/bin/recvc";
+        };
+        ytermusicd = {
+          type = "app";
+          program = "${self.packages.${system}.recvrd}/bin/ytermusicd";
         };
         ytmc = {
           type = "app";
-          program = "${self.packages.${system}.ytmc}/bin/ytmc";
+          program = "${self.packages.${system}.recvc}/bin/ytmc";
         };
       });
 
@@ -319,8 +364,10 @@
       );
 
       nixosModules.default = nixosModule;
+      nixosModules.recvrd = nixosModule;
       nixosModules.ytermusicd = nixosModule;
       homeManagerModules.default = homeManagerModule;
+      homeManagerModules.recvrd = homeManagerModule;
       homeManagerModules.ytermusicd = homeManagerModule;
     };
 }

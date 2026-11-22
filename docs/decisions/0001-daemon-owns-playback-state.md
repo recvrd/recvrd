@@ -13,7 +13,7 @@ no client is attached.
 
 ## Decision
 
-`ytermusicd` owns playback, queue, download and auth state. Clients send
+`recvrd` owns playback, queue, download and auth state. Clients send
 commands and subscribe to events; they do not own or mutate state directly.
 
 ## Consequences

@@ -12,8 +12,8 @@ would expose both to the local network.
 
 ## Decision
 
-`ytermusicd serve` binds to `127.0.0.1:8080` by default. Binding to another
-address requires an explicit `--bind`/`YTERMUSICD_BIND` override. CORS is
+`recvrd serve` binds to `127.0.0.1:8080` by default. Binding to another
+address requires an explicit `--bind`/`RECVRD_BIND` override. CORS is
 same-origin by default; wildcard CORS is not enabled.
 
 ## Consequences

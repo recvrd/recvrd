@@ -1,4 +1,4 @@
-//! RSS and Atom music provider for ytermusicd: feed parsing,
+//! RSS and Atom music provider for recvrd: feed parsing,
 //! feed management, the music API, enclosure downloads and
 //! cover fetches.
 

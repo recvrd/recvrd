@@ -50,35 +50,37 @@ jobs:
           key: release-${{ matrix.target }}
 
       - name: Install Node.js (if web UI is present)
-        if: ${{ hashFiles('crates/ytermusicd-web/package.json') != '' }}
+        if: ${{ hashFiles('crates/recvrd-web/package.json') != '' }}
         uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: crates/ytermusicd-web/package-lock.json
+          cache-dependency-path: crates/recvrd-web/package-lock.json
 
       - name: Build web UI (if present)
-        if: ${{ hashFiles('crates/ytermusicd-web/package.json') != '' }}
-        working-directory: crates/ytermusicd-web
+        if: ${{ hashFiles('crates/recvrd-web/package.json') != '' }}
+        working-directory: crates/recvrd-web
         run: |
           npm ci
           npm run build
 
-      - name: Build ytermusicd and ytmc
+      - name: Build recvrd and recvc
         run: |
-          cargo build --release --locked --target ${{ matrix.target }} -p ytermusicd -p ytmc
+          cargo build --release --locked --target ${{ matrix.target }} -p recvrd -p recvc
 
       - name: Package (Unix)
         if: runner.os != 'Windows'
         shell: bash
         run: |
           set -euo pipefail
-          name="ytermusicd-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          name="recvrd-${GITHUB_REF_NAME}-${{ matrix.target }}"
           mkdir -p dist
+          cp "target/${{ matrix.target }}/release/recvrd" dist/recvrd
+          cp "target/${{ matrix.target }}/release/recvc" dist/recvc
           cp "target/${{ matrix.target }}/release/ytermusicd" dist/ytermusicd
           cp "target/${{ matrix.target }}/release/ytmc" dist/ytmc
-          if [ -d crates/ytermusicd-web/dist ]; then
-            cp -R crates/ytermusicd-web/dist dist/web
+          if [ -d crates/recvrd-web/dist ]; then
+            cp -R crates/recvrd-web/dist dist/web
           fi
           tar -czf "${name}.tar.gz" -C dist .
           if command -v sha256sum >/dev/null 2>&1; then
@@ -91,12 +93,14 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $name = "ytermusicd-$env:GITHUB_REF_NAME-${{ matrix.target }}"
+          $name = "recvrd-$env:GITHUB_REF_NAME-${{ matrix.target }}"
           New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/recvrd.exe" "dist/recvrd.exe"
+          Copy-Item "target/${{ matrix.target }}/release/recvc.exe" "dist/recvc.exe"
           Copy-Item "target/${{ matrix.target }}/release/ytermusicd.exe" "dist/ytermusicd.exe"
           Copy-Item "target/${{ matrix.target }}/release/ytmc.exe" "dist/ytmc.exe"
-          if (Test-Path "crates/ytermusicd-web/dist") {
-            Copy-Item -Recurse "crates/ytermusicd-web/dist" "dist/web"
+          if (Test-Path "crates/recvrd-web/dist") {
+            Copy-Item -Recurse "crates/recvrd-web/dist" "dist/web"
           }
           Compress-Archive -Path "dist/*" -DestinationPath "$name.zip"
           Get-FileHash "$name.zip" -Algorithm SHA256 |
@@ -106,12 +110,12 @@ jobs:
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ytermusicd-${{ matrix.target }}
+          name: recvrd-${{ matrix.target }}
           path: |
-            ytermusicd-*.tar.gz
-            ytermusicd-*.tar.gz.sha256
-            ytermusicd-*.zip
-            ytermusicd-*.zip.sha256
+            recvrd-*.tar.gz
+            recvrd-*.tar.gz.sha256
+            recvrd-*.zip
+            recvrd-*.zip.sha256
           if-no-files-found: error
 
       - name: Publish release assets
@@ -119,7 +123,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            ytermusicd-*.tar.gz
-            ytermusicd-*.tar.gz.sha256
-            ytermusicd-*.zip
-            ytermusicd-*.zip.sha256
+            recvrd-*.tar.gz
+            recvrd-*.tar.gz.sha256
+            recvrd-*.zip
+            recvrd-*.zip.sha256

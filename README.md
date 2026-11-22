@@ -1,24 +1,26 @@
-# ytermusicd
+# recvrd
 
-> **v0.6.3.** `ytermusicd` is a headless daemon fork of
+> **v0.6.3.** `recvrd` is an A/V receiver daemon for music, podcasts, video
+> and live TV. The audio path works today; video and live TV are future work.
+> `recvrd` is a headless fork of
 > [ytermusic](https://github.com/ccgauche/ytermusic), adding a web UI, terminal
 > client, MPRIS and MCP. The daemon, REST/SSE API, web UI, terminal client,
 > MPRIS, MCP, playlist editing and packaging work today.
 
-[Build plan](https://sb.ser.ink/llm-wiki/concepts/ytermusicd-build-plan) ·
-[Roadmap](https://github.com/suorcd/ytermusicd/issues/25) ·
-[Issues](https://github.com/suorcd/ytermusicd/issues)
+[Build plan](https://sb.ser.ink/llm-wiki/concepts/recvrd-build-plan) ·
+[Roadmap](https://github.com/recvrd/recvrd/issues/25) ·
+[Issues](https://github.com/recvrd/recvrd/issues)
 
 ![Web UI now-playing view with cover art and playback controls](assets/screenshots/web-player.png)
 
 ## What it is
 
-`ytermusicd` keeps YouTube Music playback, queue and downloads in a long-running
+`recvrd` keeps YouTube Music playback, queue and downloads in a long-running
 daemon. Clients are thin:
 
 - **Web UI** — library, search, queue, now playing, cover art, vim-style keys
   and playlist editing.
-- **Terminal client** — `ytmc`, with library, search, queue, now playing,
+- **Terminal client** — `recvc`, with library, search, queue, now playing,
   cover art, vim keys and mouse actions.
 - **MCP** — a stdio proxy exposing search/playback tools to assistants.
 - **MPRIS** — desktop media controls with cover art (`playerctl`, shell media
@@ -39,12 +41,12 @@ UI, terminal client and MCP proxy are clients.
 | Full REST + SSE API | ✅ |
 | Playlist create, rename, delete and track edits | ✅ |
 | Web UI (library, search, queue, now playing, vim keys) | ✅ |
-| Terminal client (`ytmc`, mouse and vim keys) | ✅ |
+| Terminal client (`recvc`, mouse and vim keys) | ✅ |
 | systemd unit, Nix package/module | ✅ |
 | MCP proxy (33 tools) | ✅ |
 | v0.6.3 release | ✅ |
 
-See the [roadmap](https://github.com/suorcd/ytermusicd/issues/25) for the
+See the [roadmap](https://github.com/recvrd/recvrd/issues/25) for the
 ordered backlog.
 
 ## Quickstart
@@ -53,18 +55,18 @@ Requirements: Nix with flakes (recommended), or Rust 1.99+, Node 22+ and the
 native libraries listed in the [dev shell](flake.nix).
 
 ```sh
-git clone git@github.com:suorcd/ytermusicd.git
-cd ytermusicd
+git clone git@github.com:recvrd/recvrd.git
+cd recvrd
 nix develop
 
-cargo run -p ytermusicd -- --help
-cargo run -p ytermusicd -- serve
+cargo run -p recvrd -- --help
+cargo run -p recvrd -- serve
 ```
 
 Or run the packaged daemon directly:
 
 ```sh
-nix run .#ytermusicd -- serve
+nix run .#recvrd -- serve
 ```
 
 In another shell:
@@ -74,7 +76,7 @@ curl http://127.0.0.1:8080/api/status
 ```
 
 `serve` binds `127.0.0.1:8080` by default. Override it with `--bind`, `--port`,
-`YTERMUSICD_BIND` or `YTERMUSICD_PORT`. It shuts down gracefully on
+`RECVRD_BIND` or `RECVRD_PORT`. It shuts down gracefully on
 SIGINT/SIGTERM. Open `http://127.0.0.1:8080` for the web UI. See
 [docs/api.md](docs/api.md) for the full endpoint reference, SSE stream and curl
 examples.
@@ -86,16 +88,16 @@ development, use `just web` and the Vite proxy.
 Run the terminal client in another shell:
 
 ```sh
-cargo run -p ytmc
+cargo run -p recvc
 # or
-nix run .#ytmc
+nix run .#recvc
 ```
 
 The client uses the running daemon. See [docs/tui.md](docs/tui.md).
 
 ## Authentication
 
-`ytermusicd` uses YouTube Music browser cookies. Create a `headers.txt` with:
+`recvrd` uses YouTube Music browser cookies. Create a `headers.txt` with:
 
 ```
 Cookie: <cookie>
@@ -112,8 +114,8 @@ User-Agent: Mozilla/5.0 ...
 The current client checks `./headers.txt` and the XDG config directory. The
 daemon resolves headers in this order:
 
-1. `--headers <path>` / `YTERMUSICD_HEADERS`
-2. `$XDG_CONFIG_HOME/ytermusicd/headers.txt`
+1. `--headers <path>` / `RECVRD_HEADERS`
+2. `$XDG_CONFIG_HOME/recvrd/headers.txt`
 3. `$XDG_CONFIG_HOME/ytermusic/headers.txt` (legacy, with a warning)
 
 It validates the cookie and `SAPISID` at startup. It also reads the YouTube
@@ -131,18 +133,18 @@ them.** They are gitignored.
 
 ## Configuration
 
-The daemon reads `$XDG_CONFIG_HOME/ytermusicd/config.toml` (usually
-`~/.config/ytermusicd/config.toml`). See
+The daemon reads `$XDG_CONFIG_HOME/recvrd/config.toml` (usually
+`~/.config/recvrd/config.toml`). See
 [config.example.toml](config.example.toml) for the available fields and
 defaults. CLI flags and environment variables override the config file:
 
 | Option | Environment |
 | --- | --- |
-| `--bind` | `YTERMUSICD_BIND` |
-| `--port` | `YTERMUSICD_PORT` |
-| `--headers` | `YTERMUSICD_HEADERS` |
-| `--config` | `YTERMUSICD_CONFIG` |
-| `--url` (`mcp` and `ytmc`) | `YTERMUSICD_URL` |
+| `--bind` | `RECVRD_BIND` |
+| `--port` | `RECVRD_PORT` |
+| `--headers` | `RECVRD_HEADERS` |
+| `--config` | `RECVRD_CONFIG` |
+| `--url` (`mcp` and `recvc`) | `RECVRD_URL` |
 
 `config.toml` parse errors, invalid values and malformed headers are reported
 with the file path; they are never silently replaced with defaults.
@@ -168,16 +170,16 @@ just test
 - [docs/deployment.md](docs/deployment.md) — systemd user service and environment
 - [docs/decisions](docs/decisions/) — architecture decision records
 - [0004 — upstream strategy](docs/decisions/0004-upstream-strategy.md) — fork-first with selective upstreaming
-- [0005 — terminal client](docs/decisions/0005-tui-client.md) — `ytmc` is a daemon client
+- [0005 — terminal client](docs/decisions/0005-tui-client.md) — `recvc` is a daemon client
 
 ### Workspace layout
 
-- `crates/ytermusicd` — daemon binary (`serve`, `mcp`)
-- `crates/ytermusicd-core` — headless paths, config, auth, playback/queue and event bus
-- `crates/ytermusicd-api` — shared DTOs and generated TypeScript bindings
-- `crates/ytermusicd-web` — Svelte 5 web UI (embedded in the daemon)
-- `crates/ytermusicd-client` — shared HTTP/SSE client for the daemon
-- `crates/ytmc` — terminal client (`ytmc`)
+- `crates/recvrd` — daemon binary (`serve`, `mcp`)
+- `crates/recvrd-core` — headless paths, config, auth, playback/queue and event bus
+- `crates/recvrd-api` — shared DTOs and generated TypeScript bindings
+- `crates/recvrd-web` — Svelte 5 web UI (embedded in the daemon)
+- `crates/recvrd-client` — shared HTTP/SSE client for the daemon
+- `crates/recvc` — terminal client (`recvc`)
 - `crates/ytermusic` — legacy TUI client
 - `crates/ytpapi2` — YouTube Music API client
 - `crates/provider-youtube` — YouTube Music provider: API client, cover fetcher and downloads
@@ -206,7 +208,7 @@ The daemon serves the web UI at `/` and the API under `/api`.
 
 ## MCP
 
-`ytermusicd mcp` is a stdio proxy to the daemon. It exposes 33 tools:
+`recvrd mcp` is a stdio proxy to the daemon. It exposes 33 tools:
 `search`, `list_playlists`, `get_playlist`, `create_playlist`,
 `rename_playlist`, `delete_playlist`, `add_playlist_tracks`,
 `remove_playlist_tracks`, `move_playlist_track`, `play_playlist`, `play_track`,
@@ -217,8 +219,8 @@ The daemon serves the web UI at `/` and the API under `/api`.
 `rss_refresh_feeds`.
 
 ```sh
-ytermusicd mcp
-YTERMUSICD_URL=http://127.0.0.1:9000 ytermusicd mcp
+recvrd mcp
+RECVRD_URL=http://127.0.0.1:9000 recvrd mcp
 ```
 
 See [docs/mcp.md](docs/mcp.md) for client configuration, tool arguments and
@@ -246,14 +248,26 @@ check the daemon log. The first start can wait for a download.
 `dbus = true` in `config.toml`. The daemon continues without MPRIS if D-Bus is
 not available.
 
-**The port is in use.** Set `--port` or `YTERMUSICD_PORT`.
+**The port is in use.** Set `--port` or `RECVRD_PORT`.
 
 **A state file is corrupt.** The daemon moves it to `state.json.bad` and starts
 with an empty queue. A log line shows the path.
 
-**More logs.** Set `RUST_LOG=ytermusicd=debug`.
+**More logs.** Set `RUST_LOG=recvrd=debug`.
 
-## Migrating from ytermusic
+## Migrating from ytermusicd
+
+`recvrd` moves the old `ytermusicd` directories to the new `recvrd` paths on
+first start. It renames the directory when it can. When a rename fails, it
+symlinks the old directory on Unix, or copies the config, state and data. A
+cache directory that cannot be moved is left in place; the daemon downloads
+the files again.
+
+The old `ytermusicd` and `ytmc` binaries, `YTERMUSICD_*` variables and Nix
+options remain aliases for one release. The removal release is the next major
+release.
+
+## Migrating from upstream ytermusic
 
 The legacy TUI and the daemon use different XDG directories. The daemon reads a
 legacy `com/ccgauche/ytermusic/headers.txt` with a warning. It does not import
@@ -261,16 +275,16 @@ the TUI playlist file or the TUI queue. Downloaded files are not moved.
 
 To migrate:
 
-1. Copy the cookie headers to `$XDG_CONFIG_HOME/ytermusicd/headers.txt`.
-2. Copy downloaded files to `$XDG_CACHE_HOME/ytermusicd/downloads/`.
+1. Copy the cookie headers to `$XDG_CONFIG_HOME/recvrd/headers.txt`.
+2. Copy downloaded files to `$XDG_CACHE_HOME/recvrd/downloads/`.
 3. Start the daemon and select a playlist in the web UI.
 
-The legacy `ytermusic` binary still works. The `ytmc` client uses the
+The legacy `ytermusic` binary still works. The `recvc` client uses the
 daemon, so it does not need migration.
 
 ## Terminal client
 
-`ytmc` is a thin terminal client for the daemon. It shows the same
+`recvc` is a thin terminal client for the daemon. It shows the same
 queue and playback state as the web UI. It supports vim keys, mouse actions,
 cover art and playlist edits. See [docs/tui.md](docs/tui.md) for keys, mouse
 actions and limits.

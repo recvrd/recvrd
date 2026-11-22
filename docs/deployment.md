@@ -3,9 +3,9 @@
 ## Nix package
 
 ```sh
-nix build .#ytermusicd
-nix profile install .#ytermusicd
-nix run .#ytermusicd -- serve
+nix build .#recvrd
+nix profile install .#recvrd
+nix run .#recvrd -- serve
 ```
 
 The package wraps the binary with `yt-dlp` and `ffmpeg` on `PATH` and installs
@@ -51,19 +51,19 @@ The flake exposes `nixosModules.default` for headless/server deployments:
 
 ```nix
 {
-  inputs.ytermusicd.url = "github:suorcd/ytermusicd";
+  inputs.recvrd.url = "github:recvrd/recvrd";
 
-  outputs = { self, nixpkgs, ytermusicd, ... }: {
+  outputs = { self, nixpkgs, recvrd, ... }: {
     nixosConfigurations.host = nixpkgs.lib.nixosSystem {
       system = "x86_64-linux";
       modules = [
-        ytermusicd.nixosModules.default
+        recvrd.nixosModules.default
         {
-          services.ytermusicd = {
+          services.recvrd = {
             enable = true;
             bind = "127.0.0.1";
             port = 8080;
-            environmentFile = "/run/secrets/ytermusicd.env";
+            environmentFile = "/run/secrets/recvrd.env";
           };
         }
       ];
@@ -72,48 +72,50 @@ The flake exposes `nixosModules.default` for headless/server deployments:
 }
 ```
 
-The system service runs as the `ytermusicd` system user with `HOME` under
-`/var/lib/ytermusicd`; put `headers.txt` in
-`/var/lib/ytermusicd/.config/ytermusicd/headers.txt` or point
-`YTERMUSICD_HEADERS` at it via `environmentFile`. For desktop/MPRIS use the
-home-manager or systemd user unit instead, so the daemon runs inside the user
-session.
+The system service runs as the `recvrd` system user with `HOME` under
+`/var/lib/recvrd`; put `headers.txt` in
+`/var/lib/recvrd/.config/recvrd/headers.txt` or point
+`RECVRD_HEADERS` at it via `environmentFile`. The module moves the contents of
+`/var/lib/ytermusicd` to `/var/lib/recvrd` on the first start. The old
+`ytermusicd.service` name is an alias for one release. For desktop/MPRIS use
+the home-manager or systemd user unit instead, so the daemon runs inside the
+user session.
 
 ## home-manager module
 
 ```nix
 {
-  imports = [ inputs.ytermusicd.homeManagerModules.default ];
-  services.ytermusicd = {
+  imports = [ inputs.recvrd.homeManagerModules.default ];
+  services.recvrd = {
     enable = true;
-    environmentFile = "/home/you/.config/ytermusicd/env";
+    environmentFile = "/home/you/.config/recvrd/env";
   };
 }
 ```
 
-The module installs `ytermusicd` and `ytmc` on `PATH`. It sets
-`YTERMUSICD_URL` to the configured bind address and port, so `ytmc` connects
+The module installs `recvrd` and `recvc` on `PATH`. It sets
+`RECVRD_URL` to the configured bind address and port, so `recvc` connects
 without extra flags.
 
 ## systemd user service
 
 The repository ships a user unit at
-[`packaging/systemd/ytermusicd.service`](../packaging/systemd/ytermusicd.service).
+[`packaging/systemd/recvrd.service`](../packaging/systemd/recvrd.service).
 
 ```sh
 # Install the binary somewhere on PATH (Nix profile shown here)
-nix profile install .#ytermusicd
+nix profile install .#recvrd
 
 mkdir -p ~/.config/systemd/user
-cp packaging/systemd/ytermusicd.service ~/.config/systemd/user/
+cp packaging/systemd/recvrd.service ~/.config/systemd/user/
 systemctl --user daemon-reload
-systemctl --user enable --now ytermusicd
+systemctl --user enable --now recvrd
 
-systemctl --user status ytermusicd
-journalctl --user -u ytermusicd -f
+systemctl --user status recvrd
+journalctl --user -u recvrd -f
 ```
 
-The unit runs `ytermusicd serve` from a controlled `PATH` that includes
+The unit runs `recvrd serve` from a controlled `PATH` that includes
 `~/.nix-profile/bin`, `/run/current-system/sw/bin` (NixOS) and the usual system
 paths. Install the binary in one of those locations, or override `PATH` in the
 environment file.
@@ -123,15 +125,17 @@ environment file.
 Copy the example environment file and uncomment options:
 
 ```sh
-cp packaging/systemd/ytermusicd.env.example ~/.config/ytermusicd/env
-$EDITOR ~/.config/ytermusicd/env
+cp packaging/systemd/recvrd.env.example ~/.config/recvrd/env
+$EDITOR ~/.config/recvrd/env
 ```
 
-The unit creates `~/.config/ytermusicd`, `~/.cache/ytermusicd` and
-`~/.local/state/ytermusicd` via systemd's `ConfigurationDirectory`,
-`CacheDirectory` and `StateDirectory`.
+The unit creates `~/.config/recvrd`, `~/.cache/recvrd` and
+`~/.local/state/recvrd` via systemd's `ConfigurationDirectory`,
+`CacheDirectory` and `StateDirectory`. On the first start it moves the old
+`ytermusicd` directories to these paths. The old `ytermusicd.service` name is
+an alias for one release.
 
-Authentication defaults to `~/.config/ytermusicd/headers.txt` (with a legacy
+Authentication defaults to `~/.config/recvrd/headers.txt` (with a legacy
 `~/.config/ytermusic/headers.txt` fallback). See the README for how to create
 `headers.txt`; never commit it.
 
@@ -143,7 +147,7 @@ curl http://127.0.0.1:8080/ | grep 'id="app"'
 playerctl -l
 ```
 
-`playerctl` lists `ytermusic` while the daemon runs.
+`playerctl` lists `recvrd` while the daemon runs.
 
 ### Troubleshooting
 
@@ -152,7 +156,7 @@ playerctl -l
   the `audio` group on systems that use direct ALSA access.
 - **DBus/MPRIS**: the user manager must have `DBUS_SESSION_BUS_ADDRESS` set;
   this is normal for `systemctl --user` sessions.
-- **Service exits at startup**: run `ytermusicd serve` in a terminal with the
+- **Service exits at startup**: run `recvrd serve` in a terminal with the
   same environment to see the actionable auth/config error.
-- **Port conflict**: set `YTERMUSICD_PORT` in the environment file or change
+- **Port conflict**: set `RECVRD_PORT` in the environment file or change
   `--port` in `ExecStart`.

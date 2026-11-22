@@ -1,7 +1,7 @@
 use std::{io::Write, path::Path};
 
+use recvrd_core::Track;
 use varuint::WriteVarint;
-use ytermusicd_core::Track;
 
 use crate::{DatabaseError, YTLocalDatabase, reader::MAGIC, reader::VERSION};
 

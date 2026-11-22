@@ -26,7 +26,7 @@ add a smoke test where practical.
 ## Secrets
 
 Never commit `headers.txt`, `account_id.txt`, browser cookies, or logs that
-contain them. Use `YTERMUSICD_HEADERS` to point tests at a file outside the
+contain them. Use `RECVRD_HEADERS` to point tests at a file outside the
 repository.
 
 ## Scope

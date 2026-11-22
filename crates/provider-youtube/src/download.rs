@@ -7,11 +7,11 @@ use std::{
 
 use async_trait::async_trait;
 use download_manager::{DownloadError, TrackDownloader};
+use recvrd_core::Track;
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, BufReader},
     process::Command,
 };
-use ytermusicd_core::Track;
 
 /// Download backend for YouTube tracks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

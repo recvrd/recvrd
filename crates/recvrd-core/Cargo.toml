@@ -1,0 +1,21 @@
+[package]
+name = "recvrd-core"
+version = "0.6.3"
+edition = "2024"
+license = "Apache-2.0"
+description = "Headless core services for recvrd"
+
+[dependencies]
+async-trait = "0.1"
+common-structs.workspace = true
+directories = "5.0"
+fastrand = "2"
+log = "0.4"
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+tokio = { version = "1", features = ["sync"] }
+toml = "0.8"
+
+[dev-dependencies]
+serde_json = "1"
+tempfile = "3"

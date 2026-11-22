@@ -1,12 +1,12 @@
 # MCP proxy
 
-`ytermusicd mcp` is a stdio MCP proxy. It connects to a running daemon and
+`recvrd mcp` is a stdio MCP proxy. It connects to a running daemon and
 exposes the tool set. It holds no playback state.
 
 ```sh
-ytermusicd mcp
-ytermusicd mcp --url http://127.0.0.1:9000
-YTERMUSICD_URL=http://127.0.0.1:9000 ytermusicd mcp
+recvrd mcp
+recvrd mcp --url http://127.0.0.1:9000
+RECVRD_URL=http://127.0.0.1:9000 recvrd mcp
 ```
 
 The default URL is `http://127.0.0.1:8080`. The proxy uses the same REST API as
@@ -20,11 +20,11 @@ Claude Desktop and other MCP clients use a JSON server entry:
 ```json
 {
   "mcpServers": {
-    "ytermusicd": {
-      "command": "ytermusicd",
+    "recvrd": {
+      "command": "recvrd",
       "args": ["mcp"],
       "env": {
-        "YTERMUSICD_URL": "http://127.0.0.1:8080"
+        "RECVRD_URL": "http://127.0.0.1:8080"
       }
     }
   }
@@ -34,13 +34,13 @@ Claude Desktop and other MCP clients use a JSON server entry:
 For the MCP inspector:
 
 ```sh
-npx @modelcontextprotocol/inspector ytermusicd mcp
+npx @modelcontextprotocol/inspector recvrd mcp
 ```
 
 For clients that accept a command tuple:
 
 ```sh
-your-mcp-client --server "ytermusicd mcp"
+your-mcp-client --server "recvrd mcp"
 ```
 
 ## Tools
@@ -85,7 +85,7 @@ your-mcp-client --server "ytermusicd mcp"
 `provider`, `track_id`, `title`, `artist`, `album` and `duration`.
 
 Tool results include `structuredContent` with a JSON schema. The schema comes
-from the shared `ytermusicd-api` DTOs.
+from the shared `recvrd-api` DTOs.
 
 ## Errors
 
@@ -99,7 +99,7 @@ error data as `{"code": "<daemon code>"}`.
 - An upstream failure returns an internal error. The daemon message and the
   daemon code stay in the error message and in the error data.
 - A stopped daemon returns an internal error with `Cannot reach the daemon at
-  <url>. Start it with: ytermusicd serve`.
+  <url>. Start it with: recvrd serve`.
 - A bad volume returns an invalid-parameter error before the request.
 
 The proxy does not crash on daemon errors. The client shows the message.
@@ -115,8 +115,8 @@ The proxy has the 33 tools above. These items are post-v1:
 ## Tests
 
 ```sh
-cargo test -p ytermusicd mcp::
-cargo test -p ytermusicd --test mcp_stdio
+cargo test -p recvrd mcp::
+cargo test -p recvrd --test mcp_stdio
 ```
 
 The unit tests use an in-process mock daemon. The stdio test starts the real

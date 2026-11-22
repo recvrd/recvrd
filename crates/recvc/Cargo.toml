@@ -1,0 +1,25 @@
+[package]
+name = "recvc"
+version = "0.6.3"
+edition = "2024"
+license = "Apache-2.0"
+description = "Terminal client for the recvrd daemon"
+
+[[bin]]
+name = "recvc"
+path = "src/main.rs"
+
+[[bin]]
+name = "ytmc"
+path = "src/bin/ytmc.rs"
+
+[dependencies]
+clap = { version = "4.5", features = ["derive", "env"] }
+crossterm = { version = "0.28", features = ["event-stream"] }
+futures-util = "0.3"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
+ratatui = "0.29"
+ratatui-image = { version = "9.0.0", default-features = false, features = ["crossterm"] }
+tokio = { version = "1.36", features = ["macros", "rt-multi-thread", "sync", "time"] }
+recvrd-api.workspace = true
+recvrd-client.workspace = true

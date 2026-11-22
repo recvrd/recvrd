@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ -z "${YTERMUSICD_HEADERS:-}" ]]; then
-  echo "error: set YTERMUSICD_HEADERS to a valid headers.txt" >&2
+if [[ -z "${RECVRD_HEADERS:-}" ]]; then
+  echo "error: set RECVRD_HEADERS to a valid headers.txt" >&2
   exit 1
 fi
-if [[ ! -f "$YTERMUSICD_HEADERS" ]]; then
-  echo "error: headers file not found: $YTERMUSICD_HEADERS" >&2
+if [[ ! -f "$RECVRD_HEADERS" ]]; then
+  echo "error: headers file not found: $RECVRD_HEADERS" >&2
   exit 1
 fi
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
-cargo build -p ytermusicd
-bin="$root/target/debug/ytermusicd"
+cargo build -p recvrd
+bin="$root/target/debug/recvrd"
 
 tmp=$(mktemp -d)
 port=$((20000 + RANDOM % 20000))
@@ -24,7 +24,7 @@ export XDG_STATE_HOME="$tmp/state"
 mkdir -p "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_STATE_HOME"
 log="$tmp/daemon.log"
 
-"$bin" serve --bind 127.0.0.1 --port "$port" --headers "$YTERMUSICD_HEADERS" >"$log" 2>&1 &
+"$bin" serve --bind 127.0.0.1 --port "$port" --headers "$RECVRD_HEADERS" >"$log" 2>&1 &
 pid=$!
 
 cleanup() {

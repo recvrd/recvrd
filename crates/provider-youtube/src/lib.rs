@@ -1,4 +1,4 @@
-//! YouTube Music provider for ytermusicd: API client, cover fetcher,
+//! YouTube Music provider for recvrd: API client, cover fetcher,
 //! downloader and the legacy TUI conversion helpers.
 
 mod api;

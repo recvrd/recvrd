@@ -12,11 +12,11 @@ server-side rendering framework.
 
 ## Decision
 
-Use Svelte 5 with Vite and TypeScript in `crates/ytermusicd-web`.
+Use Svelte 5 with Vite and TypeScript in `crates/recvrd-web`.
 
 ## Consequences
 
 - The daemon embeds the production build and serves it at `/` (`#14`).
-- Shared API types are generated from `ytermusicd-api` (`#11`).
+- Shared API types are generated from `recvrd-api` (`#11`).
 - The framework decision can be revisited before the scaffold lands, but not
   after UI work starts.
