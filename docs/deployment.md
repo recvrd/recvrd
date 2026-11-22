@@ -160,6 +160,10 @@ playerctl -l
 
 `playerctl` lists `recvrd` while the daemon runs.
 
+`cache_limit_mb` caps the download cache (default 10240 MiB, 0 disables).
+When it is exceeded, the oldest complete downloads are evicted, keeping the
+current queue. `.part` files and active downloads are never removed.
+
 ### Troubleshooting
 
 - **No audio**: the service runs in the user session. Make sure the user has

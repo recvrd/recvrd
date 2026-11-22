@@ -135,8 +135,7 @@ curl http://127.0.0.1:8080/api/status
     "position_secs": 0.0,
     "volume": 50,
     "repeat": "off",
-    "shuffle": false,
-    "source_kind": "stream"
+    "shuffle": false
   },
   "offline": false,
   "queue_length": 0,
