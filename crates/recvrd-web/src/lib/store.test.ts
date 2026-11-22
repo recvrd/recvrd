@@ -135,6 +135,7 @@ describe('AppStore', () => {
         volume: 50,
         repeat: 'off',
         shuffle: false,
+        offline: false,
       },
     });
     expect(store.status?.playback.position_secs).toBe(20);
@@ -152,6 +153,7 @@ describe('AppStore', () => {
           volume: 50,
           repeat: 'off',
           shuffle: false,
+          offline: false,
         },
       }),
     );
@@ -169,6 +171,7 @@ describe('AppStore', () => {
         volume: 50,
         repeat: 'off',
         shuffle: false,
+        offline: false,
       },
     });
 
@@ -182,6 +185,7 @@ describe('AppStore', () => {
           volume: 50,
           repeat: 'off',
           shuffle: false,
+          offline: false,
         },
       }),
     );
@@ -214,6 +218,7 @@ describe('AppStore', () => {
           volume: 50,
           repeat: 'off',
           shuffle: false,
+          offline: false,
         },
       }),
     );
@@ -229,6 +234,7 @@ describe('AppStore', () => {
         volume: 50,
         repeat: 'off',
         shuffle: false,
+        offline: false,
       },
     };
     sources[0].emit(playing);
@@ -293,6 +299,7 @@ describe('AppStore', () => {
           volume: 50,
           repeat: 'off',
           shuffle: false,
+          offline: false,
         },
       }),
     );
@@ -308,6 +315,7 @@ describe('AppStore', () => {
         volume: 50,
         repeat: 'off',
         shuffle: false,
+        offline: false,
       },
     };
     sources[0].emit(playing);
@@ -327,6 +335,7 @@ describe('AppStore', () => {
         volume: 50,
         repeat: 'off',
         shuffle: false,
+        offline: false,
       },
     });
 
@@ -350,6 +359,7 @@ describe('AppStore', () => {
         volume: 50,
         repeat: 'off',
         shuffle: false,
+        offline: false,
       },
     });
     expect(store.status?.playback.position_secs).toBe(12);
@@ -374,6 +384,7 @@ describe('AppStore', () => {
         volume: 50,
         repeat: 'off',
         shuffle: false,
+        offline: false,
       },
     });
     expect(store.status?.playback.position_secs).toBe(30);
@@ -387,6 +398,7 @@ describe('AppStore', () => {
           volume: 50,
           repeat: 'off',
           shuffle: false,
+          offline: false,
         },
       }),
     );
@@ -408,6 +420,7 @@ describe('AppStore', () => {
         volume: 50,
         repeat: 'off',
         shuffle: false,
+        offline: false,
       },
     });
     expect(store.status?.playback.position_secs).toBe(12);
@@ -435,6 +448,7 @@ describe('AppStore', () => {
           volume: 50,
           repeat: 'off',
           shuffle: false,
+          offline: false,
         },
       }),
     );
@@ -456,6 +470,7 @@ describe('AppStore', () => {
         volume: 50,
         repeat: 'off',
         shuffle: false,
+        offline: false,
       },
     });
 
@@ -484,6 +499,7 @@ describe('AppStore', () => {
         volume: 50,
         repeat: 'off',
         shuffle: false,
+        offline: false,
       },
     });
     expect(store.status?.playback.position_secs).toBe(30);
@@ -497,6 +513,7 @@ describe('AppStore', () => {
           volume: 50,
           repeat: 'off',
           shuffle: false,
+          offline: false,
         },
       }),
     );
@@ -518,6 +535,7 @@ describe('AppStore', () => {
           volume: 50,
           repeat: 'off',
           shuffle: false,
+          offline: false,
         },
       }),
     );
@@ -533,6 +551,7 @@ describe('AppStore', () => {
         volume: 50,
         repeat: 'off',
         shuffle: false,
+        offline: false,
       },
     });
 
@@ -564,6 +583,7 @@ describe('AppStore', () => {
           volume: 50,
           repeat: 'off',
           shuffle: false,
+          offline: false,
         },
       }),
     );
@@ -579,6 +599,7 @@ describe('AppStore', () => {
         volume: 50,
         repeat: 'off',
         shuffle: false,
+        offline: false,
       },
     });
     await vi.advanceTimersByTimeAsync(1000);
@@ -593,6 +614,7 @@ describe('AppStore', () => {
         volume: 50,
         repeat: 'off',
         shuffle: false,
+        offline: false,
       },
     });
     await vi.advanceTimersByTimeAsync(10000);
@@ -789,6 +811,7 @@ describe('AppStore', () => {
           volume: 70,
           repeat: 'all',
           shuffle: true,
+          offline: false,
         },
       }),
       queue: makeQueue(tracks),
@@ -806,6 +829,7 @@ describe('AppStore', () => {
         volume: 70,
         repeat: 'all',
         shuffle: true,
+        offline: false,
       },
     });
     expect(store.status?.playback.position_secs).toBe(12);
@@ -892,6 +916,7 @@ describe('AppStore', () => {
         volume: 50,
         repeat: 'off',
         shuffle: false,
+        offline: false,
       },
     });
     api.seek = vi.fn(async () => {
@@ -1265,6 +1290,7 @@ describe('AppStore', () => {
         repeat: 'off',
         shuffle: false,
         source_kind: 'stream',
+        offline: false,
       },
     });
 
@@ -1311,6 +1337,7 @@ describe('AppStore', () => {
           volume: 50,
           repeat: 'off',
           shuffle: false,
+          offline: false,
         },
       });
 

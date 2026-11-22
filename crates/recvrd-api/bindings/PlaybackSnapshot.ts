@@ -8,4 +8,9 @@ export type PlaybackSnapshot = { state: PlaybackState, current: Track | null, po
 /**
  * The source that is currently playing.
  */
-source_kind?: PlaybackSourceKind | null, };
+source_kind?: PlaybackSourceKind | null, 
+/**
+ * Whether offline mode is on. Old payloads without the
+ * field read as online.
+ */
+offline: boolean, };

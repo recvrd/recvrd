@@ -80,6 +80,7 @@ describe('LibraryView', () => {
         volume: 50,
         repeat: 'off',
         shuffle: false,
+        offline: false,
       },
     });
     const { container } = render(LibraryView, { props: { store } });

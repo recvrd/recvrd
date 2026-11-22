@@ -41,6 +41,7 @@ async fn mock_daemon() -> String {
             repeat: Default::default(),
             shuffle: false,
             source_kind: None,
+            offline: false,
         },
         queue_length: 1,
         downloads: DownloadSummary::default(),

@@ -100,6 +100,7 @@ export function makeStatus(overrides: Partial<Status> = {}): Status {
       volume: 50,
       repeat: 'off',
       shuffle: false,
+      offline: false,
     },
     queue_length: 0,
     downloads: { queued: 0, active: 0, completed: 0, retrying: 0, failed: 0 },

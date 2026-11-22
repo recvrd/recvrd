@@ -95,6 +95,7 @@ prompt. A session that expires during pagination ends the load with
 | POST | `/api/shuffle` | Enable/disable shuffle |
 | POST | `/api/repeat` | Set repeat mode (`off`, `one`, `all`) |
 | POST | `/api/downloads/retry` | Retry a failed download (`{provider, track_id}`) |
+| POST | `/api/offline` | Turn offline mode on or off (`{offline}`) |
 | GET | `/api/cache` | Download and cover cache sizes |
 | POST | `/api/cache/clean` | Delete cached files (`{scope}`) |
 | GET | `/api/rss/feeds` | RSS feeds the daemon follows |
@@ -515,6 +516,25 @@ playback waits for the `download` event with `state: "downloaded"`; it then
 starts automatically. Failed downloads emit an `error` event and expose the
 `failed` count in `/api/status`. `POST /api/downloads/retry` returns `202`
 for a track the daemon has seen, or `404` for an unknown track ID.
+
+## Offline mode: `POST /api/offline`
+
+Offline mode plays cached content only. It is a manual switch; the daemon
+does not detect connectivity. Turn it on with:
+
+```sh
+curl -X POST http://127.0.0.1:8080/api/offline \
+  -H 'content-type: application/json' -d '{"offline":true}'
+```
+
+Turning the mode on cancels every active download and resets its status to
+`not_downloaded`, so no track stays at `downloading` after the cancel.
+Completed downloads keep their status. A playing stream stops, because a
+stream keeps fetching over the network; its temp file is deleted. A cached
+file keeps playing. A track that waits for a download stops waiting.
+Turning the mode off restarts nothing: later downloads start only on an
+explicit play or retry. The switch is in-memory only; it does not survive a
+restart. The status payload reports the mode as `playback.offline`.
 
 ## SSE: `GET /api/events`
 

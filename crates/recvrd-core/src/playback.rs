@@ -94,6 +94,7 @@ pub enum PlaybackCommand {
     SetVolume(u8),
     SetShuffle(bool),
     SetRepeat(RepeatMode),
+    SetOffline(bool),
 }
 
 #[derive(Debug, Error)]
@@ -122,6 +123,7 @@ pub struct PlaybackService<S: AudioSink> {
     events: EventBus,
     wait_for_downloads: bool,
     pending_start: bool,
+    offline: bool,
     settings: Arc<PlaybackSettingsStore>,
     streams: Arc<dyn StreamFactory>,
     source_kind: Option<PlaybackSourceKind>,
@@ -164,6 +166,7 @@ impl<S: AudioSink> PlaybackService<S> {
             events,
             wait_for_downloads: false,
             pending_start: false,
+            offline: false,
             settings,
             streams,
             source_kind: None,
@@ -191,6 +194,33 @@ impl<S: AudioSink> PlaybackService<S> {
             .map_err(|error| PlaybackError::Sink(error.to_string()))
     }
 
+    /// Whether offline mode is on.
+    pub fn is_offline(&self) -> bool {
+        self.offline
+    }
+
+    /// Turn offline mode on or off. While offline, the daemon makes no
+    /// provider calls. Turning the mode on stops a playing stream,
+    /// because a stream keeps fetching over the network. The sink drops
+    /// the stream reader, which deletes its temp file. A cached file
+    /// keeps playing. Turning the mode on also clears a pending
+    /// download wait, because its download is cancelled. The queue
+    /// position does not change here; queue skipping lives in #183.
+    pub async fn set_offline(&mut self, enabled: bool) -> Result<(), PlaybackError> {
+        self.offline = enabled;
+        if enabled {
+            if self.source_kind == Some(PlaybackSourceKind::Stream) {
+                self.stop_playback();
+            } else {
+                self.pending_start = false;
+                self.publish_all();
+            }
+        } else {
+            self.publish_all();
+        }
+        Ok(())
+    }
+
     /// When enabled, tracks that are not in the download cache yet are queued
     /// for download and started automatically once the `Downloaded` status
     /// arrives. Tests and non-downloading clients leave this disabled.
@@ -212,6 +242,7 @@ impl<S: AudioSink> PlaybackService<S> {
             repeat: self.queue.repeat(),
             shuffle: self.queue.shuffle(),
             source_kind: self.source_kind,
+            offline: self.offline,
         }
     }
 
@@ -290,6 +321,7 @@ impl<S: AudioSink> PlaybackService<S> {
                 self.set_repeat(repeat);
                 Ok(())
             }
+            PlaybackCommand::SetOffline(enabled) => self.set_offline(enabled).await,
         }
     }
 
@@ -1304,6 +1336,111 @@ mod tests {
 
         assert_eq!(service.snapshot().status, PlaybackStatus::Playing);
         assert_eq!(service.sink.sources, vec![PlaybackSourceKind::File]);
+    }
+
+    #[tokio::test]
+    async fn set_offline_cuts_a_playing_stream() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut service = PlaybackService::with_streams(
+            MockSink::default(),
+            dir.path(),
+            50,
+            mode_settings(PlaybackMode::Stream),
+            Arc::new(MockStreams),
+        );
+        service.play_playlist(vec![stream_track()]).await.unwrap();
+        assert_eq!(service.snapshot().status, PlaybackStatus::Playing);
+        assert_eq!(
+            service.snapshot().source_kind,
+            Some(PlaybackSourceKind::Stream)
+        );
+
+        service.set_offline(true).await.unwrap();
+
+        assert!(service.is_offline());
+        assert!(service.snapshot().offline);
+        assert_eq!(service.snapshot().status, PlaybackStatus::Stopped);
+        assert_eq!(service.snapshot().source_kind, None);
+        assert!(service.sink.actions.contains(&"stop"));
+    }
+
+    #[tokio::test]
+    async fn set_offline_keeps_a_playing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("downloads/podverse")).unwrap();
+        std::fs::write(
+            dir.path().join("downloads/podverse/YvIRJrjZVe.mp3"),
+            b"audio",
+        )
+        .unwrap();
+        let mut service = PlaybackService::with_streams(
+            MockSink::default(),
+            dir.path(),
+            50,
+            mode_settings(PlaybackMode::Stream),
+            Arc::new(MockStreams),
+        );
+        service.play_playlist(vec![stream_track()]).await.unwrap();
+        assert_eq!(service.snapshot().status, PlaybackStatus::Playing);
+        assert_eq!(
+            service.snapshot().source_kind,
+            Some(PlaybackSourceKind::File)
+        );
+
+        service.set_offline(true).await.unwrap();
+
+        assert!(service.is_offline());
+        assert_eq!(service.snapshot().status, PlaybackStatus::Playing);
+        assert_eq!(
+            service.snapshot().source_kind,
+            Some(PlaybackSourceKind::File)
+        );
+        assert!(!service.sink.actions.contains(&"stop"));
+    }
+
+    #[tokio::test]
+    async fn set_offline_clears_a_pending_download_wait() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut service = PlaybackService::with_streams(
+            MockSink::default(),
+            dir.path(),
+            50,
+            mode_settings(PlaybackMode::StreamThenDownload),
+            Arc::new(FailingStreams),
+        );
+        service.set_wait_for_downloads(true);
+        service.play_playlist(vec![stream_track()]).await.unwrap();
+        assert_eq!(service.snapshot().status, PlaybackStatus::Stopped);
+
+        service.set_offline(true).await.unwrap();
+
+        // A late Downloaded status must not start the track: the
+        // wait ended when the mode turned on. The cache file exists
+        // now, so a live wait would start it.
+        std::fs::create_dir_all(dir.path().join("downloads/podverse")).unwrap();
+        std::fs::write(
+            dir.path().join("downloads/podverse/YvIRJrjZVe.mp3"),
+            b"audio",
+        )
+        .unwrap();
+        service
+            .set_download_status(
+                &TrackKey::podverse("YvIRJrjZVe"),
+                MusicDownloadStatus::Downloaded,
+            )
+            .await;
+        assert_eq!(service.snapshot().status, PlaybackStatus::Stopped);
+        assert!(service.sink.sources.is_empty());
+    }
+
+    #[tokio::test]
+    async fn set_offline_off_reports_online() {
+        let mut service = service();
+        service.set_offline(true).await.unwrap();
+        assert!(service.is_offline());
+        service.set_offline(false).await.unwrap();
+        assert!(!service.is_offline());
+        assert!(!service.snapshot().offline);
     }
 
     #[tokio::test]

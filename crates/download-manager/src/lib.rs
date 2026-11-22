@@ -207,11 +207,17 @@ impl DownloadManager {
         }
     }
 
+    /// Stop every active download, clear the queue, and restart the
+    /// workers idle. A cancelled download keeps no status: each active
+    /// download returns to `NotDownloaded` and the sender reports it,
+    /// so no track stays at `Downloading` after the cancel. Completed
+    /// downloads keep their status; their files are untouched.
     pub fn clean(
         &'static self,
         cancelation: impl Future<Output = ()> + Clone + Send + 'static,
         sender: MessageHandler,
     ) {
+        let cancelled: Vec<TrackKey> = self.in_download.lock().unwrap().iter().cloned().collect();
         self.download_list.lock().unwrap().clear();
         self.in_download.lock().unwrap().clear();
         {
@@ -220,6 +226,13 @@ impl DownloadManager {
                 i.abort()
             }
             handle.clear();
+        }
+        for key in &cancelled {
+            self.set_status(key, MusicDownloadStatus::NotDownloaded);
+            sender(DownloadManagerMessage::VideoStatusUpdate(
+                key.clone(),
+                MusicDownloadStatus::NotDownloaded,
+            ));
         }
         self.spawn_system(cancelation, sender);
     }
@@ -904,5 +917,60 @@ mod tests {
         let size = fs::metadata(&part).unwrap().len();
         tokio::time::sleep(Duration::from_millis(500)).await;
         assert_eq!(fs::metadata(&part).unwrap().len(), size);
+    }
+
+    #[tokio::test]
+    async fn clean_resets_cancelled_download_status() {
+        let _guard = serial().await;
+        let dir = tempdir().unwrap();
+        // The fake downloader sleeps for the slow track and
+        // succeeds at once for any other track.
+        let body = "out=\"\"\nwhile [ $# -gt 0 ]; do case \"$1\" in -o) out=\"$2\"; shift 2;; *) shift;; esac; done\ncase \"$out\" in *slow1234567*) sleep 30;; *) echo fake-audio > \"$out\"; echo 'download:100.0%';; esac";
+        let path = script(dir.path(), body);
+        let (manager, _downloads) = manager(&dir, path, 0);
+        let manager: &'static DownloadManager = Box::leak(Box::new(manager));
+        let (handler, messages) = collector();
+
+        assert!(
+            manager
+                .start_download(song("fast1234567"), handler.clone())
+                .await
+        );
+        let key_slow = TrackKey::youtube("slow1234567");
+        let mut slow = Box::pin(manager.start_download(song("slow1234567"), handler.clone()));
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        while manager.active_downloads() == 0 {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "slow download never started"
+            );
+            tokio::select! {
+                _ = &mut slow => panic!("slow download unexpectedly completed"),
+                _ = tokio::time::sleep(Duration::from_millis(50)) => {}
+            }
+        }
+        assert_eq!(
+            manager.status(&key_slow),
+            Some(MusicDownloadStatus::Downloading(0))
+        );
+
+        manager.clean(std::future::pending(), handler.clone());
+        drop(slow);
+
+        assert_eq!(manager.active_downloads(), 0);
+        assert_eq!(
+            manager.status(&TrackKey::youtube("fast1234567")),
+            Some(MusicDownloadStatus::Downloaded)
+        );
+        assert_eq!(
+            manager.status(&key_slow),
+            Some(MusicDownloadStatus::NotDownloaded)
+        );
+        let messages = messages.lock().unwrap();
+        assert!(messages.iter().any(|message| matches!(
+            message,
+            DownloadManagerMessage::VideoStatusUpdate(key, MusicDownloadStatus::NotDownloaded)
+                if *key == key_slow
+        )));
     }
 }

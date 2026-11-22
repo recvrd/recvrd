@@ -18,6 +18,7 @@ function makeStore(playback: Partial<PlaybackSnapshot> = {}) {
       volume: 50,
       repeat: 'off',
       shuffle: false,
+      offline: false,
       ...playback,
     },
   });
@@ -70,6 +71,7 @@ describe('NowPlaying', () => {
         volume: 50,
         repeat: 'off',
         shuffle: false,
+        offline: false,
         source_kind: 'stream',
       },
     });

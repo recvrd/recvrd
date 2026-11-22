@@ -21,6 +21,7 @@ function makeStore() {
       volume: 50,
       repeat: 'off',
       shuffle: false,
+      offline: false,
     },
   });
   store.queue = makeQueue([track, makeTrack('v2')], { current: 0 });
@@ -69,6 +70,7 @@ describe('FullPlayer', () => {
         volume: 50,
         repeat: 'off',
         shuffle: false,
+        offline: false,
         source_kind: 'stream',
       },
     });

@@ -264,6 +264,7 @@ mod tests {
             repeat: RepeatMode::Off,
             shuffle: false,
             source_kind: None,
+            offline: false,
         }
     }
 

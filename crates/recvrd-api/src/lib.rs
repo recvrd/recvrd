@@ -326,6 +326,10 @@ pub struct PlaybackSnapshot {
     /// The source that is currently playing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_kind: Option<PlaybackSourceKind>,
+    /// Whether offline mode is on. Old payloads without the
+    /// field read as online.
+    #[serde(default)]
+    pub offline: bool,
 }
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -529,6 +533,14 @@ pub struct PlayNextRequest {
 #[ts(export)]
 pub struct ShuffleRequest {
     pub enabled: bool,
+}
+
+/// Turn offline mode on or off.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct OfflineRequest {
+    pub offline: bool,
 }
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]

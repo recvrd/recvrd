@@ -152,6 +152,11 @@ recorded in
 [0006 — Playback modes and the settings file](decisions/0006-playback-modes.md).
 Runtime choices live in `$XDG_CONFIG_HOME/recvrd/settings.toml`.
 
+Offline mode is a manual switch. Turning it on cancels every active download
+and resets its status, so no track stays at `Downloading`. A playing stream
+stops, because it keeps fetching over the network. A cached file keeps
+playing. The switch is in-memory only. It does not survive a restart.
+
 ## API
 
 The full contract and curl examples live in [docs/api.md](api.md). DTOs come

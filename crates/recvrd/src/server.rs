@@ -13,7 +13,7 @@ use recvrd_api::{
     AddPlaylistTracksRequest, AddRssFeedRequest, ApiError, AuthState, AuthStatus as ApiAuthStatus,
     CacheCleanRequest, CacheCleanResult, CacheScope, CacheSizes, CreatePlaylistRequest,
     DownloadStatus, DownloadSummary, ErrorEnvelope, Event, EventKind, MovePlaylistTrackRequest,
-    MusicApi, OkResponse, PlayNextRequest, PlayPlaylistRequest, PlayTrackRequest,
+    MusicApi, OfflineRequest, OkResponse, PlayNextRequest, PlayPlaylistRequest, PlayTrackRequest,
     PlaybackModeRequest, PlaybackSnapshot as ApiPlaybackSnapshot, PlaybackState, Playlist,
     PlaylistDetail, PlaylistEditError, ProviderInfo, Queue as ApiQueue, QueueItem as ApiQueueItem,
     QueueRequest, RemovePlaylistTracksRequest, RemoveQueueRequest, ReorderQueueRequest,
@@ -207,6 +207,7 @@ pub fn router<S: AudioSink + Send + 'static>(state: AppState<S>) -> Router {
         .route("/api/shuffle", post(shuffle))
         .route("/api/repeat", post(repeat))
         .route("/api/downloads/retry", post(retry_download))
+        .route("/api/offline", post(set_offline))
         .route("/api/cache", get(cache_status))
         .route("/api/cache/clean", post(cache_clean))
         .route("/api/rss/feeds", get(list_rss_feeds).post(add_rss_feed))
@@ -1035,6 +1036,39 @@ async fn retry_download<S: AudioSink + Send + 'static>(
     }
 }
 
+/// Turn offline mode on or off. Turning it on cancels every active
+/// download and resets the queue download statuses, so no track stays
+/// at Downloading after its download is cancelled. A current track
+/// that is already downloaded keeps its status. Turning it off
+/// restarts nothing: later downloads start only on an explicit play
+/// or retry.
+async fn set_offline<S: AudioSink + Send + 'static>(
+    State(state): State<AppState<S>>,
+    Json(request): Json<OfflineRequest>,
+) -> Result<Json<Status>, ApiFailure> {
+    let mut playback = state.playback.lock().await;
+    playback
+        .set_offline(request.offline)
+        .await
+        .map_err(playback_failure)?;
+    if request.offline {
+        // Cancel first, so no new status arrives after the reset below.
+        state.downloads.stop_all_downloads();
+        let snapshot = playback.queue_snapshot();
+        let keep = snapshot
+            .current
+            .and_then(|index| snapshot.items.get(index))
+            .filter(|item| item.download == common_structs::MusicDownloadStatus::Downloaded)
+            .map(|item| item.track.key());
+        playback.reset_download_statuses(keep.as_ref());
+    }
+    Ok(Json(status_from_parts(
+        &state,
+        &playback.snapshot(),
+        &playback.queue_snapshot(),
+    )))
+}
+
 /// Report the sizes of the download and cover caches, from disk.
 async fn cache_status<S: AudioSink + Send + 'static>(
     State(state): State<AppState<S>>,
@@ -1382,6 +1416,7 @@ fn api_playback(snapshot: &PlaybackSnapshot) -> ApiPlaybackSnapshot {
         repeat: api_repeat(snapshot.repeat),
         shuffle: snapshot.shuffle,
         source_kind: snapshot.source_kind,
+        offline: snapshot.offline,
     }
 }
 
@@ -2895,6 +2930,75 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn offline_switch_cancels_downloads_and_resets_statuses() {
+        let downloads = Arc::new(MockDownloads::default());
+        let state = test_state_with_downloads(Arc::new(MockMusicApi::default()), downloads.clone());
+        let (base, server) = start_server(state.clone()).await;
+        let client = reqwest::Client::new();
+        client
+            .post(format!("{base}/api/play/playlist"))
+            .json(&PlayPlaylistRequest {
+                playlist_id: "p1".to_string(),
+                provider: ProviderId::Youtube,
+            })
+            .send()
+            .await
+            .unwrap();
+        {
+            let mut playback = state.playback.lock().await;
+            playback
+                .set_download_status(
+                    &TrackKey::youtube("v1"),
+                    common_structs::MusicDownloadStatus::Downloaded,
+                )
+                .await;
+            playback
+                .set_download_status(
+                    &TrackKey::youtube("v2"),
+                    common_structs::MusicDownloadStatus::Downloading(50),
+                )
+                .await;
+        }
+
+        let offline: serde_json::Value = client
+            .post(format!("{base}/api/offline"))
+            .json(&OfflineRequest { offline: true })
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(offline["playback"]["offline"], true);
+        assert_eq!(offline["playback"]["state"], "playing");
+        assert!(downloads.stopped());
+        assert_eq!(downloads.resets(), 0);
+
+        let queue: serde_json::Value = client
+            .get(format!("{base}/api/queue"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(queue["items"][0]["download"]["state"], "downloaded");
+        assert_eq!(queue["items"][1]["download"]["state"], "not_downloaded");
+
+        let online: serde_json::Value = client
+            .post(format!("{base}/api/offline"))
+            .json(&OfflineRequest { offline: false })
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(online["playback"]["offline"], false);
+        server.abort();
+    }
+
+    #[tokio::test]
     async fn play_track_transport_and_modes() {
         let (base, server) = start_server(test_state()).await;
         let client = reqwest::Client::new();
@@ -3545,7 +3649,7 @@ mod tests {
         read_until(
             &mut stream,
             &mut buffer,
-            "\"volume\":80,\"repeat\":\"off\",\"shuffle\":false}}}",
+            "\"volume\":80,\"repeat\":\"off\",\"shuffle\":false,\"offline\":false}}}",
         )
         .await;
         let live = last_sse_payload(&buffer);
@@ -3614,7 +3718,7 @@ mod tests {
         read_until(
             &mut stream,
             &mut buffer,
-            "\"volume\":80,\"repeat\":\"off\",\"shuffle\":false}}}",
+            "\"volume\":80,\"repeat\":\"off\",\"shuffle\":false,\"offline\":false}}}",
         )
         .await;
         let resume_from = last_event_id(&buffer);
@@ -3639,7 +3743,7 @@ mod tests {
         read_until(
             &mut stream,
             &mut replay,
-            "\"volume\":60,\"repeat\":\"off\",\"shuffle\":false}}}",
+            "\"volume\":60,\"repeat\":\"off\",\"shuffle\":false,\"offline\":false}}}",
         )
         .await;
         assert!(!replay.contains("event: snapshot"));
@@ -3674,7 +3778,7 @@ mod tests {
         read_until(
             &mut stream,
             &mut buffer,
-            "\"volume\":80,\"repeat\":\"off\",\"shuffle\":false}}}",
+            "\"volume\":80,\"repeat\":\"off\",\"shuffle\":false,\"offline\":false}}}",
         )
         .await;
         let resume_from = last_event_id(&buffer);
@@ -3697,7 +3801,7 @@ mod tests {
         read_until(
             &mut stream,
             &mut replay,
-            "\"volume\":60,\"repeat\":\"off\",\"shuffle\":false}}}",
+            "\"volume\":60,\"repeat\":\"off\",\"shuffle\":false,\"offline\":false}}}",
         )
         .await;
         assert!(!replay.contains("event: snapshot"));

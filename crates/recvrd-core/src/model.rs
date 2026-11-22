@@ -74,6 +74,7 @@ pub struct PlaybackSnapshot {
     pub repeat: RepeatMode,
     pub shuffle: bool,
     pub source_kind: Option<PlaybackSourceKind>,
+    pub offline: bool,
 }
 
 impl Default for PlaybackSnapshot {
@@ -87,6 +88,7 @@ impl Default for PlaybackSnapshot {
             repeat: RepeatMode::Off,
             shuffle: false,
             source_kind: None,
+            offline: false,
         }
     }
 }
