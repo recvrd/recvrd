@@ -100,6 +100,27 @@ describe('SearchPalette', () => {
     expect(store.searchOpen).toBe(false);
   });
 
+  it('shows channel counts and track metadata', () => {
+    const { store } = makeStore();
+    store.searchResults = makeSearchResults(
+      [
+        makeTrack('v1', {
+          metadata: {
+            channel_title: 'Test Channel',
+            season_number: 1,
+            episode_number: 2,
+            year: 2026,
+          },
+        }),
+      ],
+      [makePlaylist('p1', { item_count: 12 })],
+    );
+    render(SearchPalette, { props: { store } });
+
+    expect(screen.getByText('Artist · Test Channel · S1E2 · 2026')).toBeInTheDocument();
+    expect(screen.getByText('YouTube Music · 12 items')).toBeInTheDocument();
+  });
+
   it('shows the no-results state', () => {
     const { store } = makeStore();
     store.searchResults = makeSearchResults();

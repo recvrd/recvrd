@@ -3,7 +3,7 @@ import { tick } from 'svelte';
 import { beforeEach, describe, expect, it } from 'vitest';
 import App from '../App.svelte';
 import { AppStore } from '../lib/store.svelte';
-import { FakeEventSource, makeApi } from '../test/fixtures';
+import { FakeEventSource, makeApi, makeProviderInfo } from '../test/fixtures';
 
 function setup() {
   const api = makeApi();
@@ -89,6 +89,33 @@ describe('App shell', () => {
     ).toBeInTheDocument();
     expect(await screen.findByText('Track v1')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Play all' })).toBeInTheDocument();
+  });
+
+  it('shows the playback mode selector for a provider with several modes', async () => {
+    const { api, store } = setup();
+    api.providers = async () => [
+      makeProviderInfo({
+        id: 'rss',
+        name: 'RSS',
+        default: true,
+        playback: 'download',
+        playback_modes: ['download', 'stream', 'stream_then_download'],
+      }),
+    ];
+    render(App, { props: { store } });
+
+    const select = await screen.findByLabelText('Playback mode');
+    expect(select).toHaveValue('download');
+    await fireEvent.change(select, { target: { value: 'stream' } });
+    await tick();
+    expect(api.setPlaybackMode).toHaveBeenCalledWith('rss', 'stream');
+  });
+
+  it('hides the playback mode selector for a single-mode provider', async () => {
+    const { store } = setup();
+    render(App, { props: { store } });
+    await screen.findByRole('heading', { level: 2, name: 'Playlist p1' });
+    expect(screen.queryByLabelText('Playback mode')).not.toBeInTheDocument();
   });
 
   it('closes the full player with Escape', async () => {

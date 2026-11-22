@@ -171,6 +171,33 @@ fn render_frame(
     set_cursor(frame, area, app);
 }
 
+/// The provider metadata that fits in one compact line. Empty when
+/// the provider supplies no metadata or repeats the album.
+pub fn track_metadata_facts(track: &recvrd_api::Track) -> Vec<String> {
+    let Some(metadata) = &track.metadata else {
+        return Vec::new();
+    };
+    let mut facts = Vec::new();
+    if let Some(channel) = &metadata.channel_title
+        && *channel != track.album
+    {
+        facts.push(channel.clone());
+    }
+    match (metadata.season_number, metadata.episode_number) {
+        (Some(season), Some(episode)) => facts.push(format!("S{season}E{episode}")),
+        (Some(season), None) => facts.push(format!("S{season}")),
+        (None, Some(episode)) => facts.push(format!("E{episode}")),
+        (None, None) => {}
+    }
+    if let Some(year) = metadata.year {
+        facts.push(year.to_string());
+    }
+    if let Some(genre) = &metadata.genre {
+        facts.push(genre.clone());
+    }
+    facts
+}
+
 /// Build the header line for the current app state.
 fn header_spans(app: &App) -> Vec<Span<'static>> {
     let (label, color) = match app.connection {
@@ -190,6 +217,19 @@ fn header_spans(app: &App) -> Vec<Span<'static>> {
         Span::styled(" · ", Style::default().fg(FG_MUTED)),
         Span::styled(label, Style::default().fg(color)),
     ];
+    if let Some(mode) = app
+        .providers
+        .iter()
+        .find(|provider| provider.id == app.provider)
+        .map(|provider| match provider.playback {
+            recvrd_api::PlaybackMode::Download => "download",
+            recvrd_api::PlaybackMode::Stream => "stream",
+            recvrd_api::PlaybackMode::StreamThenDownload => "stream+cache",
+        })
+    {
+        spans.push(Span::styled(" · ", Style::default().fg(FG_MUTED)));
+        spans.push(Span::styled(mode, Style::default().fg(ACCENT_2)));
+    }
     if app.auth_problem().is_some() {
         spans.push(Span::styled(" · auth error", Style::default().fg(DANGER)));
     }
@@ -236,6 +276,22 @@ fn render_status(frame: &mut Frame, area: Rect, app: &App) {
         Span::styled(
             format!("  │  queue {}  │  {downloads}", app.queue.items.len()),
             Style::default().fg(FG_MUTED),
+        ),
+        Span::styled(
+            app.status
+                .as_ref()
+                .and_then(|status| status.playback.source_kind)
+                .map(|kind| {
+                    format!(
+                        "  │  source {}",
+                        match kind {
+                            recvrd_api::PlaybackSourceKind::File => "cache",
+                            recvrd_api::PlaybackSourceKind::Stream => "stream",
+                        }
+                    )
+                })
+                .unwrap_or_default(),
+            Style::default().fg(ACCENT_2),
         ),
     ]);
     frame.render_widget(

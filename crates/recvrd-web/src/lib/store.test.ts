@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { tick } from 'svelte';
 import { ApiError } from './api';
 import {
   AppStore,
@@ -1205,6 +1206,77 @@ describe('AppStore', () => {
     await store.cycleProvider();
     expect(store.activeProvider).toBe('youtube');
     store.dispose();
+  });
+
+  it('changes the playback mode optimistically', async () => {
+    const { api, store } = setup();
+    api.providers = vi.fn(async () => [
+      makeProviderInfo(),
+      makeProviderInfo({
+        id: 'rss',
+        name: 'RSS',
+        default: false,
+        playback: 'download',
+        playback_modes: ['download', 'stream', 'stream_then_download'],
+      }),
+    ]);
+    await store.loadProviders();
+    await store.setProvider('rss');
+
+    const pending = store.setPlaybackMode('stream');
+    expect(store.playbackMode).toBe('stream');
+    await pending;
+
+    expect(api.setPlaybackMode).toHaveBeenCalledWith('rss', 'stream');
+    expect(store.activeProviderInfo?.playback).toBe('stream');
+  });
+
+  it('restores the playback mode when the daemon rejects it', async () => {
+    const { api, store } = setup();
+    api.providers = vi.fn(async () => [
+      makeProviderInfo({
+        id: 'rss',
+        name: 'RSS',
+        default: true,
+        playback: 'download',
+        playback_modes: ['download', 'stream'],
+      }),
+    ]);
+    api.setPlaybackMode = vi.fn(async () => {
+      throw new ApiError('unsupported mode', 'bad_request');
+    });
+    await store.loadProviders();
+
+    await store.setPlaybackMode('stream');
+
+    expect(store.playbackMode).toBe('download');
+    expect(store.toasts.at(-1)?.severity).toBe('error');
+  });
+
+  it('loads a Podverse track description on demand', async () => {
+    const { api, store } = setup();
+    const track = makeTrack('YvIRJrjZVe', { provider: 'podverse' });
+    store.status = makeStatus({
+      playback: {
+        state: 'playing',
+        current: track,
+        position_secs: 0,
+        volume: 50,
+        repeat: 'off',
+        shuffle: false,
+        source_kind: 'stream',
+      },
+    });
+
+    store.openFullPlayer();
+    await vi.waitFor(() => expect(store.trackDetail?.track.track_id).toBe('YvIRJrjZVe'));
+
+    expect(api.trackDetail).toHaveBeenCalledWith('podverse', 'YvIRJrjZVe');
+    // Opening the same track again does not fetch twice.
+    store.closeFullPlayer();
+    store.openFullPlayer();
+    await tick();
+    expect(api.trackDetail).toHaveBeenCalledOnce();
   });
 
   it('adjusts volume in steps and clamps', async () => {

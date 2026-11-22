@@ -205,12 +205,12 @@ On Linux the daemon starts a `souvlaki` MPRIS client on a dedicated thread when
 ## MCP
 
 `recvrd mcp` is a stdio proxy to the REST API. It uses `rmcp` and holds no
-playback state. The proxy has 33 tools: search, playlists, playlist edits,
-playback transport, seek, shuffle, repeat, queue management, queue add, now
-playing, volume, download status and RSS feed management. It reads
-the daemon URL from `--url` or `RECVRD_URL`, applies a 30-second timeout, and
-exits when stdin closes. See [docs/mcp.md](mcp.md). Lyrics and HTTP transport
-are post-v1.
+playback state. The proxy has 35 tools: search, channel and playlist metadata,
+track detail, playback modes, playlist edits, playback transport, seek,
+shuffle, repeat, queue management, queue add, now playing, volume, download
+status and RSS feed management. It reads the daemon URL from `--url` or
+`RECVRD_URL`, applies a 30-second timeout, and exits when stdin closes. See
+[docs/mcp.md](mcp.md). Lyrics and HTTP transport are post-v1.
 
 ## Security
 

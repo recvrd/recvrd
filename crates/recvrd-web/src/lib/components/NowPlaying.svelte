@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { AppStore } from '../store.svelte';
-  import { downloadLabel, durationSeconds, formatDuration, coverUrl } from '../api';
+  import { downloadLabel, durationSeconds, formatDuration, coverUrl, trackMetadataFacts } from '../api';
 
   let { store }: { store: AppStore } = $props();
 
@@ -12,6 +12,14 @@
   const position = $derived(scrub ?? playback?.position_secs ?? 0);
   const download = $derived(track ? store.downloadStatusFor(track) : null);
   const isPlaying = $derived(playback?.state === 'playing');
+  const facts = $derived(track ? trackMetadataFacts(track) : []);
+  const sourceLabel = $derived(
+    playback?.source_kind === 'stream'
+      ? 'streaming'
+      : playback?.source_kind === 'file'
+        ? 'cached'
+        : null,
+  );
 
   function commitSeek(value: number): void {
     scrub = null;
@@ -62,18 +70,26 @@
           {track.artist}
           {#if track.album}<span class="muted"> · {track.album}</span>{/if}
         </div>
+        {#if facts.length > 0}
+          <div class="meta extra" title={facts.join(' · ')}>{facts.join(' · ')}</div>
+        {/if}
         {#if store.playerLayout === 'terminal' && store.queue?.current != null}
           <div class="queue-position">
             Track {store.queue.current + 1} of {store.queue.items.length}
           </div>
         {/if}
-        {#if download && download.state === 'failed'}
-          <button class="retry" onclick={() => store.retryDownload(track)}>
-            Download failed — retry
-          </button>
-        {:else if download}
-          <span class="badge {download.state}">{downloadLabel(download)}</span>
-        {/if}
+        <div class="badges">
+          {#if sourceLabel}
+            <span class="badge source">{sourceLabel}</span>
+          {/if}
+          {#if download && download.state === 'failed'}
+            <button class="retry" onclick={() => store.retryDownload(track)}>
+              Download failed — retry
+            </button>
+          {:else if download}
+            <span class="badge {download.state}">{downloadLabel(download)}</span>
+          {/if}
+        </div>
       </div>
     {:else}
       <div class="track-text">
@@ -232,6 +248,18 @@
     font-size: 0.68rem;
     color: var(--accent-2);
     opacity: 0.8;
+  }
+
+  .extra {
+    font-size: 0.7rem;
+    opacity: 0.85;
+  }
+
+  .badges {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.3rem;
   }
 
   .seek-container {

@@ -50,6 +50,39 @@ describe('NowPlaying', () => {
     expect(cover?.getAttribute('src')).toBe('/api/tracks/youtube/v1/cover');
   });
 
+  it('shows provider metadata and the stream source', () => {
+    const api = makeApi();
+    const store = new AppStore(api);
+    const track = makeTrack('v1', {
+      provider: 'podverse',
+      metadata: {
+        channel_title: 'Rock The Halls',
+        season_number: 1,
+        episode_number: 2,
+        year: 2026,
+      },
+    });
+    store.status = makeStatus({
+      playback: {
+        state: 'playing',
+        current: track,
+        position_secs: 10,
+        volume: 50,
+        repeat: 'off',
+        shuffle: false,
+        source_kind: 'stream',
+      },
+    });
+    store.queue = makeQueue([track], {
+      items: [{ track, download: { state: 'downloading', progress: 40 } }],
+    });
+    render(NowPlaying, { props: { store } });
+
+    expect(screen.getByText('Rock The Halls · S1E2 · 2026')).toBeInTheDocument();
+    expect(screen.getByText('streaming')).toBeInTheDocument();
+    expect(screen.getByText('40%')).toBeInTheDocument();
+  });
+
   it('opens the full player', async () => {
     const { store } = makeStore();
     render(NowPlaying, { props: { store } });

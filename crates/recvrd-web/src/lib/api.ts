@@ -5,6 +5,7 @@ import type { CreatePlaylistRequest } from '@api/CreatePlaylistRequest';
 import type { DownloadStatus } from '@api/DownloadStatus';
 import type { ErrorEnvelope } from '@api/ErrorEnvelope';
 import type { OkResponse } from '@api/OkResponse';
+import type { PlaybackMode } from '@api/PlaybackMode';
 import type { PlaybackSnapshot } from '@api/PlaybackSnapshot';
 import type { Playlist } from '@api/Playlist';
 import type { PlaylistDetail } from '@api/PlaylistDetail';
@@ -17,6 +18,7 @@ import type { RssFeed } from '@api/RssFeed';
 import type { SearchResults } from '@api/SearchResults';
 import type { Status } from '@api/Status';
 import type { Track } from '@api/Track';
+import type { TrackDetail } from '@api/TrackDetail';
 import type { UpdatePlaylistRequest } from '@api/UpdatePlaylistRequest';
 
 export class ApiError extends Error {
@@ -34,6 +36,7 @@ export class ApiError extends Error {
 export interface RecvrdApi {
   status(): Promise<Status>;
   providers(): Promise<ProviderInfo[]>;
+  setPlaybackMode(provider: ProviderId, mode: PlaybackMode): Promise<ProviderInfo>;
   playlists(provider?: ProviderId): Promise<Playlist[]>;
   playlist(id: string, provider?: ProviderId): Promise<PlaylistDetail>;
   createPlaylist(request: CreatePlaylistRequest): Promise<Playlist>;
@@ -43,6 +46,7 @@ export interface RecvrdApi {
   removePlaylistTracks(id: string, indices: number[]): Promise<Track[]>;
   movePlaylistTrack(id: string, from: number, to: number): Promise<Track[]>;
   search(query: string, provider?: ProviderId): Promise<SearchResults>;
+  trackDetail(provider: ProviderId, trackId: string): Promise<TrackDetail>;
   queue(): Promise<Queue>;
   playPlaylist(playlistId: string, provider?: ProviderId): Promise<Status>;
   playTrack(track: Track): Promise<Status>;
@@ -150,6 +154,11 @@ export function createApi(baseUrl = ''): RecvrdApi {
   return {
     status: () => request<Status>('/api/status'),
     providers: () => request<ProviderInfo[]>('/api/providers'),
+    setPlaybackMode: (provider, mode) =>
+      request<ProviderInfo>(`/api/providers/${encodeURIComponent(provider)}/playback`, {
+        method: 'PUT',
+        body: JSON.stringify({ mode }),
+      }),
     playlists: (provider: ProviderId = 'youtube') =>
       request<Playlist[]>(`/api/playlists?provider=${encodeURIComponent(provider)}`),
     playlist: (id, provider: ProviderId = 'youtube') =>
@@ -178,6 +187,10 @@ export function createApi(baseUrl = ''): RecvrdApi {
     search: (query, provider: ProviderId = 'youtube') =>
       request<SearchResults>(
         `/api/search?provider=${encodeURIComponent(provider)}&q=${encodeURIComponent(query)}`,
+      ),
+    trackDetail: (provider, trackId) =>
+      request<TrackDetail>(
+        `/api/tracks/${encodeURIComponent(provider)}/${encodeURIComponent(trackId)}`,
       ),
     rssFeeds: () => request<RssFeed[]>('/api/rss/feeds'),
     addRssFeed: (url) => post<RssFeed>('/api/rss/feeds', { url }),
@@ -264,4 +277,38 @@ export function downloadLabel(status: DownloadStatus): string {
   }
 }
 
-export type { CacheCleanResult, CacheScope, CacheSizes, PlaybackSnapshot, Playlist, PlaylistDetail, ProviderCapabilities, ProviderId, ProviderInfo, Queue, RepeatMode, RssFeed, SearchResults, Status, Track };
+export function playbackModeLabel(mode: PlaybackMode): string {
+  switch (mode) {
+    case 'download':
+      return 'Download';
+    case 'stream':
+      return 'Stream';
+    case 'stream_then_download':
+      return 'Stream + cache';
+  }
+}
+
+/// The provider metadata that fits in a compact line. Empty when the
+/// provider supplies no metadata or repeats the album.
+export function trackMetadataFacts(track: Track): string[] {
+  const metadata = track.metadata;
+  if (!metadata) return [];
+  const facts: string[] = [];
+  if (metadata.channel_title && metadata.channel_title !== track.album) {
+    facts.push(metadata.channel_title);
+  }
+  if (metadata.season_number !== null && metadata.season_number !== undefined) {
+    const episode =
+      metadata.episode_number !== null && metadata.episode_number !== undefined
+        ? `E${metadata.episode_number}`
+        : '';
+    facts.push(`S${metadata.season_number}${episode}`);
+  } else if (metadata.episode_number !== null && metadata.episode_number !== undefined) {
+    facts.push(`E${metadata.episode_number}`);
+  }
+  if (metadata.year) facts.push(String(metadata.year));
+  if (metadata.genre) facts.push(metadata.genre);
+  return facts;
+}
+
+export type { CacheCleanResult, CacheScope, CacheSizes, PlaybackMode, PlaybackSnapshot, Playlist, PlaylistDetail, ProviderCapabilities, ProviderId, ProviderInfo, Queue, RepeatMode, RssFeed, SearchResults, Status, Track, TrackDetail };

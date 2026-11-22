@@ -87,6 +87,25 @@ describe('QueueView', () => {
     expect(api.queuePlayNext).toHaveBeenCalledWith(1);
   });
 
+  it('shows provider metadata in queue rows', () => {
+    const api = makeApi();
+    const store = new AppStore(api);
+    const track = makeTrack('v1', {
+      provider: 'podverse',
+      metadata: {
+        channel_title: 'Rock The Halls',
+        season_number: 1,
+        episode_number: 2,
+        year: 2026,
+      },
+    });
+    store.queue = makeQueue([track], { current: 0 });
+    store.openQueue();
+    render(QueueView, { props: { store } });
+
+    expect(screen.getByText('Rock The Halls · S1E2 · 2026')).toBeInTheDocument();
+  });
+
   it('shows an empty state', () => {
     const store = new AppStore(makeApi());
     store.queue = makeQueue();

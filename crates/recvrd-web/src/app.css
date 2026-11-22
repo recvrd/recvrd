@@ -166,6 +166,11 @@ input[type='search'] {
   color: var(--danger);
 }
 
+.badge.source {
+  border-color: var(--accent-2);
+  color: var(--accent-2);
+}
+
 .empty-state {
   display: grid;
   place-items: center;

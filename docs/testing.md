@@ -87,9 +87,11 @@ Current offline coverage is in `crates/ytpapi2`, `crates/provider-youtube`,
   caching, download retry, playback-mode changes, stream-mode download
   queueing, static serving and upstream error envelopes.
 - Web tests cover the API client, event stream, store, keymap, track table,
-  queue, now playing, search, playlist editing, feedback banners and the app
-  shell. The track table and now-playing tests check cover URLs and the
-  missing-image fallback.
+  queue, now playing, full player, search, playlist editing, feedback banners
+  and the app shell. The track table and now-playing tests check cover URLs and
+  the missing-image fallback. Provider tests cover the Podverse selector,
+  channel counts, metadata, the playback mode selector, optimistic mode
+  changes and rollback, and the on-demand description.
 
 The test harness provides:
 

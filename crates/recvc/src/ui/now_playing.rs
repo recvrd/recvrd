@@ -110,7 +110,13 @@ fn render_info(frame: &mut Frame, area: Rect, app: &App, hitmap: &mut HitMap) {
         .unwrap_or_else(|| "Nothing playing".to_string());
     let subtitle = track
         .as_ref()
-        .map(|track| format!("{} · {}", track.artist, track.album))
+        .map(|track| {
+            let facts = crate::ui::track_metadata_facts(track);
+            let mut parts = vec![track.artist.clone(), track.album.clone()];
+            parts.extend(facts);
+            parts.retain(|part| !part.is_empty());
+            parts.join(" · ")
+        })
         .unwrap_or_else(|| "Start a playlist or press / to search.".to_string());
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
