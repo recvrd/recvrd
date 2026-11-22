@@ -43,6 +43,29 @@ impl CacheService {
         }
     }
 
+    /// True when a non-empty audio file exists for the track. An
+    /// invalid key is never cached. A sidecar alone does not count:
+    /// playback needs the audio file.
+    pub fn is_cached(&self, key: &TrackKey) -> bool {
+        if !key.validate() {
+            return false;
+        }
+        let Some(path) = key.existing_audio_file(&self.downloads_dir) else {
+            return false;
+        };
+        std::fs::metadata(&path)
+            .map(|data| data.len() > 0)
+            .unwrap_or(false)
+    }
+
+    /// Set the `cached` flag on every track in the list, from disk.
+    /// Tracks without a local audio file keep a false flag.
+    pub fn annotate_tracks(&self, tracks: &mut [recvrd_api::Track]) {
+        for track in tracks {
+            track.cached = self.is_cached(&track.key());
+        }
+    }
+
     /// Delete cached files for `scope`, except the files of the
     /// kept track. Returns the freed bytes and deleted file counts.
     /// Stopping active downloads is the caller's job; this only
@@ -188,6 +211,66 @@ mod tests {
         );
         write_file(&dir.join("covers/youtube/abcdefghijk.jpg"), b"jpeg-data");
         write_file(&dir.join("covers/youtube/zyxwvutsrqp.jpg"), b"other-jpeg");
+    }
+
+    #[test]
+    fn is_cached_needs_a_non_empty_audio_file() {
+        let dir = tempfile::tempdir().unwrap();
+        seed(dir.path());
+        let cache = service(dir.path());
+        assert!(cache.is_cached(&key(ID)));
+        assert!(!cache.is_cached(&key("qqqqqqqqqqq")));
+    }
+
+    #[test]
+    fn is_cached_ignores_an_empty_audio_file() {
+        let dir = tempfile::tempdir().unwrap();
+        write_file(&dir.path().join("downloads/youtube/abcdefghijk.mp4"), b"");
+        assert!(!service(dir.path()).is_cached(&key(ID)));
+    }
+
+    #[test]
+    fn is_cached_ignores_a_part_file_and_a_sidecar() {
+        let dir = tempfile::tempdir().unwrap();
+        write_file(
+            &dir.path().join("downloads/youtube/abcdefghijk.part"),
+            b"partial",
+        );
+        write_file(
+            &dir.path().join("downloads/youtube/abcdefghijk.json"),
+            b"{}",
+        );
+        assert!(!service(dir.path()).is_cached(&key(ID)));
+    }
+
+    #[test]
+    fn is_cached_rejects_an_invalid_key() {
+        let dir = tempfile::tempdir().unwrap();
+        seed(dir.path());
+        let key = TrackKey::new(ProviderId::Youtube, "../abcdefghijk".to_string());
+        assert!(!service(dir.path()).is_cached(&key));
+    }
+
+    #[test]
+    fn annotate_tracks_marks_only_cached_tracks() {
+        let dir = tempfile::tempdir().unwrap();
+        seed(dir.path());
+        let cache = service(dir.path());
+        let mut tracks = vec![
+            recvrd_api::Track {
+                provider: ProviderId::Youtube,
+                track_id: ID.to_string(),
+                ..Default::default()
+            },
+            recvrd_api::Track {
+                provider: ProviderId::Youtube,
+                track_id: "qqqqqqqqqqq".to_string(),
+                ..Default::default()
+            },
+        ];
+        cache.annotate_tracks(&mut tracks);
+        assert!(tracks[0].cached);
+        assert!(!tracks[1].cached);
     }
 
     #[test]
