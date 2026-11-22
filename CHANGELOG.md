@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.7.0 — 2026-11-22
 
 ### Added
 
@@ -23,6 +23,14 @@
 - Move the XDG directories from `ytermusicd` to `recvrd` on first start.
 - Change the MPRIS name, API name, web title and `localStorage` keys to
   `recvrd`.
+
+### Fixed
+
+- Seek a stream when no file track played first. Seeking a stream no longer
+  requires a current file and never replays a stale file track.
+- Fail fast in `stream` mode when the provider supplies no remote source,
+  instead of waiting for a download that never starts.
+- Prefer an existing cache file over a stream after a restart.
 
 ## 0.6.3 — 2026-11-20
 

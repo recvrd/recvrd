@@ -116,7 +116,7 @@ curl http://127.0.0.1:8080/api/status
 ```json
 {
   "name": "recvrd",
-  "version": "0.6.3",
+  "version": "0.7.0",
   "status": "ok",
   "uptime_seconds": 42,
   "auth": {
