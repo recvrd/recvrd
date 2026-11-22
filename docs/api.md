@@ -36,6 +36,7 @@ Every non-2xx response uses one envelope:
 | `bad_request` | 400 | Invalid or out-of-range input |
 | `auth_expired` | 401 | The YouTube Music session expired |
 | `not_found` | 404 | Unknown playlist or route |
+| `offline_unavailable` | 409 | The request needs a provider or uncached track while offline |
 | `upstream_error` | 502 | Upstream provider request failed |
 | `internal_error` | 500 | Local audio/daemon failure |
 
@@ -45,11 +46,11 @@ expired session. Library reads and playlist edits fail until you refresh
 `headers.txt` and restart the daemon.
 
 When the YouTube client is unavailable, the daemon has no live auth state.
-The headers file state then owns the failure: an expired file returns 401
-`auth_expired`, and a valid file returns 502. The 401 names the session
-even when the failure was a network failure, because the daemon cannot
-tell the two apart without a client. RSS has no auth state, so RSS
-failures always return 502.
+The headers file state still appears in `GET /api/status` and
+`GET /api/providers`, but a provider error returns 502 `upstream_error`
+rather than guessing that a network failure is an expired session.
+Only the provider's own auth error returns 401 `auth_expired`. RSS has no
+auth state, so RSS failures always return 502.
 
 A public playlist still loads and plays without a session. The daemon
 reports an expired session for an empty signed-out response that has
@@ -67,6 +68,8 @@ prompt. A session that expires during pagination ends the load with
 | GET | `/api/status` | Daemon, auth, playback and queue summary |
 | GET | `/api/providers` | Providers with capabilities, auth state and playback mode |
 | PUT | `/api/providers/{provider}/playback` | Set a provider's playback mode (`{mode}`) |
+| GET | `/api/offline` | Report the manual offline switch |
+| PUT | `/api/offline` | Turn offline mode on or off (`{enabled}`) |
 | GET | `/api/playlists?provider=...` | Library playlists |
 | POST | `/api/playlists` | Create a playlist |
 | GET | `/api/playlists/{id}?provider=...` | Playlist metadata and tracks |
@@ -135,6 +138,7 @@ curl http://127.0.0.1:8080/api/status
     "shuffle": false,
     "source_kind": "stream"
   },
+  "offline": false,
   "queue_length": 0,
   "downloads": {
     "queued": 0,
@@ -215,6 +219,37 @@ user-managed settings in `config.toml`.
 
 `playback.source_kind` in `Status` is `file` or `stream` while a track plays.
 It is omitted when nothing is loaded.
+
+### Offline mode
+
+Offline mode is a manual switch. The daemon does not probe connectivity.
+While it is on, the daemon makes no provider calls:
+
+- library and playlist requests return cached playlists only
+- search matches cached tracks and playlists locally
+- track detail returns a cached track only
+- queue playback skips uncached tracks
+- cover art uses cached files only
+- playback mode and cache state stay local
+
+```sh
+curl http://127.0.0.1:8080/api/offline
+curl -X PUT http://127.0.0.1:8080/api/offline \
+  -H 'content-type: application/json' \
+  -d '{"enabled": true}'
+```
+
+`PUT /api/offline` returns the updated `Status`. Enabling it cancels
+in-flight downloads and resets their queue status. The switch is saved in
+`settings.toml` and survives a daemon restart. A restart in offline mode
+does not refresh RSS feeds, queue restored downloads, or create the YouTube
+client. Turning the switch off creates the client without restarting the
+daemon.
+
+An action that needs a provider, or an uncached track, returns 409
+`offline_unavailable`. A cached track plays normally through
+`/api/play/track`. Cached list responses carry `"cached": true` on each
+track.
 
 Library and search requests take an optional `provider` parameter. A missing
 value means the default provider. An unknown name returns 400 with
@@ -546,11 +581,12 @@ values above 100 are clamped to 100. Pause and resume are idempotent when the
 daemon is stopped.
 
 Playing a playlist or track, and enqueueing a track, automatically queue the
-audio for download. If the file is not cached yet, the track stays selected but
-playback waits for the `download` event with `state: "downloaded"`; it then
-starts automatically. Failed downloads emit an `error` event and expose the
-`failed` count in `/api/status`. `POST /api/downloads/retry` returns `202`
-for a track the daemon has seen, or `404` for an unknown track ID.
+audio for download, except while offline mode is on. If the file is not
+cached yet, the track stays selected but playback waits for the `download`
+event with `state: "downloaded"`; it then starts automatically. Failed
+downloads emit an `error` event and expose the `failed` count in
+`/api/status`. `POST /api/downloads/retry` returns `202` for a track the
+daemon has seen, or `404` for an unknown track ID.
 
 ## SSE: `GET /api/events`
 
@@ -584,6 +620,7 @@ Event kinds (`EventKind` in the bindings):
 | `download` | `provider`, `track_id` and download status |
 | `track_ended` | `provider` and `track_id` of the finished track |
 | `error` | Shared `ApiError` envelope |
+| `offline` | `enabled` after the manual switch changes |
 | `library_changed` | Library needs refreshing |
 
 The daemon also sends a named `heartbeat` event every 15 seconds:

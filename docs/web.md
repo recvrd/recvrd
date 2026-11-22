@@ -71,6 +71,15 @@ choice and shows a toast. The selector is hidden for YouTube, which supports
 only downloads. The choice is stored by the daemon in
 `$XDG_CONFIG_HOME/recvrd/settings.toml`, not in the browser.
 
+The top bar also has a manual offline toggle. It reads *online* or *offline
+mode* and calls `PUT /api/offline`. Offline mode is distinct from the
+daemon-unreachable banner: a lost event stream still shows the connection
+banner, while the switch is a deliberate content choice. While offline, the
+library and search show cached content only, and uncached rows are dimmed
+with an info button. The button opens an in-app explanation for
+`offline_unavailable`; it never opens an external link, which would fail
+while offline. Queue rows that are not cached are dimmed too.
+
 With the RSS provider active, the library shows *Add feed* and *Refresh
 feeds* in the header, and each feed card has *Refresh* and *Remove*
 actions. A feed is a playlist: open it to see its episodes, and play or

@@ -7,12 +7,233 @@ use common_structs::{ProviderId, TrackKey};
 use download_manager::{DownloadError, TrackDownloader};
 use provider_podverse::PodverseProvider;
 use provider_rss::RssProvider;
+use provider_youtube::{AUTH_EXPIRED_MESSAGE, YoutubeMusicApi, YoutubeMusicError, connect};
 use recvrd_api::{
     AuthStatus, CreatePlaylistRequest, MusicApi, Playlist, PlaylistDetail, PlaylistEditError,
     SearchResults, Track, TrackDetail, UpdatePlaylistRequest,
 };
-use recvrd_core::{CoverFetcher, Track as CoreTrack};
-use std::{path::Path, sync::Arc};
+use recvrd_core::{Auth, CoverFetcher, Track as CoreTrack};
+use std::{
+    path::Path,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
+use tokio::sync::RwLock;
+
+use crate::music::UnavailableMusicApi;
+
+/// Error text returned when a provider call is blocked by offline mode.
+pub const OFFLINE_MESSAGE: &str = "offline mode is on";
+
+/// A music API that connects the YouTube client lazily.
+///
+/// The daemon starts with offline mode possibly persisted on. Building
+/// the YouTube client fetches the homepage, so it must not run while
+/// offline. The first online provider call initializes the client and
+/// later calls reuse it. RSS and Podverse providers are local clients
+/// and are built with the composite.
+pub struct ReloadableMusicApi {
+    auth: Option<Auth>,
+    auth_source: Option<String>,
+    rss: Arc<RssProvider>,
+    podverse: Option<Arc<PodverseProvider>>,
+    offline: Arc<AtomicBool>,
+    inner: RwLock<Option<Arc<dyn MusicApi>>>,
+    /// Auth state learned while connecting. A failed login is sticky
+    /// until the process restarts, like the old startup path.
+    auth_override: std::sync::Mutex<Option<AuthStatus>>,
+}
+
+impl ReloadableMusicApi {
+    pub fn new(
+        auth: Option<Auth>,
+        auth_source: Option<String>,
+        rss: Arc<RssProvider>,
+        podverse: Option<Arc<PodverseProvider>>,
+        offline: Arc<AtomicBool>,
+    ) -> Self {
+        Self {
+            auth,
+            auth_source,
+            rss,
+            podverse,
+            offline,
+            inner: RwLock::new(None),
+            auth_override: std::sync::Mutex::new(None),
+        }
+    }
+
+    /// Initialize the provider client now. Called at startup when the
+    /// daemon is online, and again after switching offline off.
+    pub async fn connect_now(&self) -> Result<(), String> {
+        self.ensure().await.map(|_| ())
+    }
+
+    async fn ensure(&self) -> Result<Arc<dyn MusicApi>, String> {
+        if self.offline.load(Ordering::SeqCst) {
+            return Err(OFFLINE_MESSAGE.to_string());
+        }
+        if let Some(api) = self.inner.read().await.as_ref() {
+            return Ok(api.clone());
+        }
+        let mut guard = self.inner.write().await;
+        if let Some(api) = guard.as_ref() {
+            return Ok(api.clone());
+        }
+
+        let youtube: Arc<dyn MusicApi> = match &self.auth {
+            Some(auth) => match connect(auth).await {
+                Ok(client) => {
+                    log::info!("YouTube Music client ready");
+                    Arc::new(YoutubeMusicApi::new(client, self.auth_source.clone()))
+                }
+                Err(error) => {
+                    log::error!("could not create YouTube Music client: {error:?}");
+                    if matches!(error, YoutubeMusicError::NeedToLogin) {
+                        let source = self
+                            .auth_source
+                            .clone()
+                            .unwrap_or_else(|| "headers.txt".to_string());
+                        *self.auth_override.lock().unwrap() = Some(AuthStatus {
+                            state: recvrd_api::AuthState::Expired,
+                            source: Some(source),
+                            message: Some(AUTH_EXPIRED_MESSAGE.to_string()),
+                        });
+                    }
+                    return Err(format!("could not create YouTube Music client: {error:?}"));
+                }
+            },
+            None => Arc::new(UnavailableMusicApi),
+        };
+
+        let composite: Arc<dyn MusicApi> = Arc::new(CompositeMusicApi::new(
+            youtube,
+            self.rss.clone(),
+            self.podverse.clone(),
+        ));
+        *guard = Some(composite.clone());
+        Ok(composite)
+    }
+}
+
+#[async_trait]
+impl MusicApi for ReloadableMusicApi {
+    fn auth_status(&self, provider: ProviderId) -> Option<AuthStatus> {
+        if let Ok(inner) = self.inner.try_read()
+            && let Some(api) = inner.as_ref()
+            && let Some(status) = api.auth_status(provider)
+        {
+            return Some(status);
+        }
+        if provider == ProviderId::Youtube {
+            self.auth_override.lock().unwrap().clone()
+        } else {
+            None
+        }
+    }
+
+    async fn playlists(&self, provider: ProviderId) -> Result<Vec<Playlist>, String> {
+        self.ensure().await?.playlists(provider).await
+    }
+
+    async fn playlist(&self, provider: ProviderId, id: &str) -> Result<Vec<Track>, String> {
+        self.ensure().await?.playlist(provider, id).await
+    }
+
+    async fn playlist_detail(
+        &self,
+        provider: ProviderId,
+        id: &str,
+    ) -> Result<PlaylistDetail, String> {
+        self.ensure().await?.playlist_detail(provider, id).await
+    }
+
+    async fn search(&self, provider: ProviderId, query: &str) -> Result<SearchResults, String> {
+        self.ensure().await?.search(provider, query).await
+    }
+
+    async fn track_detail(&self, provider: ProviderId, id: &str) -> Result<TrackDetail, String> {
+        self.ensure().await?.track_detail(provider, id).await
+    }
+
+    async fn set_offline(&self, enabled: bool) -> Result<(), String> {
+        self.offline.store(enabled, Ordering::SeqCst);
+        if enabled {
+            return Ok(());
+        }
+        self.ensure().await.map(|_| ())
+    }
+
+    async fn create_playlist(
+        &self,
+        request: &CreatePlaylistRequest,
+    ) -> Result<Playlist, PlaylistEditError> {
+        self.ensure()
+            .await
+            .map_err(PlaylistEditError::Upstream)?
+            .create_playlist(request)
+            .await
+    }
+
+    async fn update_playlist(
+        &self,
+        id: &str,
+        request: &UpdatePlaylistRequest,
+    ) -> Result<Playlist, PlaylistEditError> {
+        self.ensure()
+            .await
+            .map_err(PlaylistEditError::Upstream)?
+            .update_playlist(id, request)
+            .await
+    }
+
+    async fn delete_playlist(&self, id: &str) -> Result<(), PlaylistEditError> {
+        self.ensure()
+            .await
+            .map_err(PlaylistEditError::Upstream)?
+            .delete_playlist(id)
+            .await
+    }
+
+    async fn add_playlist_tracks(
+        &self,
+        id: &str,
+        track_ids: &[String],
+    ) -> Result<Vec<Track>, PlaylistEditError> {
+        self.ensure()
+            .await
+            .map_err(PlaylistEditError::Upstream)?
+            .add_playlist_tracks(id, track_ids)
+            .await
+    }
+
+    async fn remove_playlist_tracks(
+        &self,
+        id: &str,
+        indices: &[usize],
+    ) -> Result<Vec<Track>, PlaylistEditError> {
+        self.ensure()
+            .await
+            .map_err(PlaylistEditError::Upstream)?
+            .remove_playlist_tracks(id, indices)
+            .await
+    }
+
+    async fn move_playlist_track(
+        &self,
+        id: &str,
+        from: usize,
+        to: usize,
+    ) -> Result<Vec<Track>, PlaylistEditError> {
+        self.ensure()
+            .await
+            .map_err(PlaylistEditError::Upstream)?
+            .move_playlist_track(id, from, to)
+            .await
+    }
+}
 
 /// One music client for every provider. Reads route by provider.
 /// Playlist edits carry no provider, so they run on YouTube, as
@@ -369,6 +590,22 @@ mod tests {
             ..rss_track.clone()
         };
         assert_eq!(composite.audio_extension(&youtube_track), "mp4");
+    }
+
+    #[tokio::test]
+    async fn offline_music_api_refuses_provider_calls() {
+        let api = ReloadableMusicApi::new(None, None, rss(), None, Arc::new(AtomicBool::new(true)));
+        let error = api.search(ProviderId::Youtube, "test").await.unwrap_err();
+        assert_eq!(error, OFFLINE_MESSAGE);
+        assert!(api.auth_status(ProviderId::Youtube).is_none());
+    }
+
+    #[tokio::test]
+    async fn online_without_auth_uses_the_unavailable_api() {
+        let api =
+            ReloadableMusicApi::new(None, None, rss(), None, Arc::new(AtomicBool::new(false)));
+        let error = api.search(ProviderId::Youtube, "test").await.unwrap_err();
+        assert!(error.contains("unavailable"), "{error}");
     }
 
     struct NamedDownloader;

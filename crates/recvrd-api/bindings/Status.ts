@@ -6,6 +6,10 @@ import type { ProviderId } from "./ProviderId";
 
 export type Status = { name: string, version: string, status: string, uptime_seconds: number, auth: AuthStatus, playback: PlaybackSnapshot, queue_length: number, downloads: DownloadSummary, 
 /**
+ * Whether the daemon is in offline mode.
+ */
+offline: boolean, 
+/**
  * The providers the daemon knows. Old payloads without the
  * field read as an empty list.
  */

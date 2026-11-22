@@ -112,4 +112,22 @@ describe('TrackTable', () => {
     });
     expect(container.querySelectorAll('.row').length).toBeLessThan(60);
   });
+
+  it('greys out and explains tracks that are not cached offline', async () => {
+    const tracks = [makeTrack('v1'), makeTrack('v2', { cached: true })];
+    const actions = {
+      ...props(tracks),
+      offline: true,
+      onunavailable: vi.fn(),
+    };
+    const { container } = render(TrackTable, { props: actions });
+
+    const rows = container.querySelectorAll('.row');
+    expect(rows[0]).toHaveClass('unavailable');
+    expect(rows[1]).not.toHaveClass('unavailable');
+    await fireEvent.click(
+      screen.getByRole('button', { name: 'Why Track v1 is unavailable offline' }),
+    );
+    expect(actions.onunavailable).toHaveBeenCalledWith(tracks[0]);
+  });
 });

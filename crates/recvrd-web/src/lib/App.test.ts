@@ -91,6 +91,19 @@ describe('App shell', () => {
     expect(screen.getByRole('button', { name: 'Play all' })).toBeInTheDocument();
   });
 
+  it('toggles offline mode from the top bar', async () => {
+    const { api, store } = setup();
+    render(App, { props: { store } });
+    await screen.findByRole('heading', { level: 2, name: 'Playlist p1' });
+
+    const toggle = screen.getByRole('button', { name: 'Offline mode' });
+    expect(toggle).toHaveTextContent('online');
+    await fireEvent.click(toggle);
+    await tick();
+    expect(api.setOffline).toHaveBeenCalledWith(true);
+    expect(store.offline).toBe(true);
+  });
+
   it('shows the playback mode selector for a provider with several modes', async () => {
     const { api, store } = setup();
     api.providers = async () => [

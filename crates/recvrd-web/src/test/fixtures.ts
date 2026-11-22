@@ -103,6 +103,7 @@ export function makeStatus(overrides: Partial<Status> = {}): Status {
     },
     queue_length: 0,
     downloads: { queued: 0, active: 0, completed: 0, retrying: 0, failed: 0 },
+    offline: false,
     providers: ['youtube'],
     default_provider: 'youtube',
     ...overrides,
@@ -142,6 +143,11 @@ export function makeApi(
   const api: RecvrdApi = {
     status: vi.fn(async () => status),
     providers: vi.fn(async () => providers),
+    offline: vi.fn(async () => ({ enabled: status.offline })),
+    setOffline: vi.fn(async (enabled: boolean) => {
+      status = makeStatus({ ...status, offline: enabled });
+      return status;
+    }),
     setPlaybackMode: vi.fn(async (provider, mode) => {
       const current = providers.find((entry) => entry.id === provider) ??
         makeProviderInfo({ id: provider, name: provider, default: false });

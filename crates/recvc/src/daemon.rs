@@ -160,6 +160,9 @@ async fn execute(
             client.play_playlist(provider, &id).await?,
         )]),
         Command::SetProvider(_) | Command::RefreshProviders => Ok(Vec::new()),
+        Command::SetOffline(enabled) => Ok(vec![DaemonEvent::Status(
+            client.set_offline(enabled).await?,
+        )]),
         Command::PlayTrack(track) => Ok(vec![DaemonEvent::Status(client.play_track(track).await?)]),
         Command::QueueTrack(track) => Ok(vec![DaemonEvent::Queue(client.queue_add(track).await?)]),
         Command::Pause => Ok(vec![DaemonEvent::Status(client.pause().await?)]),

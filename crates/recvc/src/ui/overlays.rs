@@ -185,6 +185,7 @@ fn render_help(frame: &mut Frame, area: Rect, hitmap: &mut HitMap) {
         ("p", "Play playlist"),
         ("s / R", "Shuffle / repeat"),
         ("o", "Switch provider"),
+        ("O", "Toggle offline mode"),
         ("+ / -", "Volume"),
         ("Left / Right", "Seek 5 seconds"),
         ("Ctrl+Left / Ctrl+Right", "Previous / next track"),

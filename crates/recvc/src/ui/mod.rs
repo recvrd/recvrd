@@ -203,7 +203,7 @@ fn header_spans(app: &App) -> Vec<Span<'static>> {
     let (label, color) = match app.connection {
         Connection::Connecting => ("connecting", WARNING),
         Connection::Online => ("online", SUCCESS),
-        Connection::Offline => ("offline", DANGER),
+        Connection::Offline => ("disconnected", DANGER),
     };
     let mut spans = vec![
         Span::styled(
@@ -230,6 +230,13 @@ fn header_spans(app: &App) -> Vec<Span<'static>> {
         spans.push(Span::styled(" · ", Style::default().fg(FG_MUTED)));
         spans.push(Span::styled(mode, Style::default().fg(ACCENT_2)));
     }
+    if app.is_offline() {
+        spans.push(Span::styled(" · ", Style::default().fg(FG_MUTED)));
+        spans.push(Span::styled(
+            "offline mode",
+            Style::default().fg(WARNING).add_modifier(Modifier::BOLD),
+        ));
+    }
     if app.auth_problem().is_some() {
         spans.push(Span::styled(" · auth error", Style::default().fg(DANGER)));
     }
@@ -247,7 +254,7 @@ fn render_banner(frame: &mut Frame, area: Rect, app: &App) {
     let message = if app.connection == Connection::Offline {
         app.connection_message
             .clone()
-            .unwrap_or_else(|| "The daemon is offline. Retrying.".to_string())
+            .unwrap_or_else(|| "The daemon is disconnected. Retrying.".to_string())
     } else {
         app.auth_problem()
             .map(|message| format!("Auth: {message}"))
@@ -425,6 +432,7 @@ mod tests {
             },
             queue_length: 1,
             downloads: DownloadSummary::default(),
+            offline: false,
             providers: vec![ProviderId::Youtube],
             default_provider: ProviderId::Youtube,
         });

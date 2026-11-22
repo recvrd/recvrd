@@ -1253,6 +1253,19 @@ describe('AppStore', () => {
     expect(store.toasts.at(-1)?.severity).toBe('error');
   });
 
+  it('turns offline mode on and reloads the cached library', async () => {
+    const { api, store } = setup();
+    await store.init();
+    expect(store.offline).toBe(false);
+
+    await store.setOffline(true);
+
+    expect(api.setOffline).toHaveBeenCalledWith(true);
+    expect(store.offline).toBe(true);
+    expect(api.playlists).toHaveBeenCalledTimes(2);
+    expect(store.toasts.at(-1)?.message).toContain('Offline mode is on');
+  });
+
   it('loads a Podverse track description on demand', async () => {
     const { api, store } = setup();
     const track = makeTrack('YvIRJrjZVe', { provider: 'podverse' });

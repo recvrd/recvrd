@@ -54,12 +54,15 @@
       {#each store.queue.items as item, index (index)}
         {@const current = store.queue?.current === index}
         {@const failed = item.download.state === 'failed'}
+        {@const unavailable =
+          store.offline && item.download.state !== 'downloaded'}
         <div
           class="row"
           class:current
           class:selected={index === store.selection}
           class:dragging={dragFrom === index}
           class:drag-over={dragOver === index && dragFrom !== index}
+          class:unavailable
           role="option"
           aria-selected={index === store.selection}
           tabindex={index === store.selection ? 0 : -1}
@@ -99,7 +102,22 @@
             {/if}
           </span>
           <span class="track">
-            <span class="title" title={item.track.title}>{item.track.title}</span>
+            <span class="title" title={item.track.title}>
+              {item.track.title}
+              {#if unavailable}
+                <button
+                  class="info"
+                  title="Not cached for offline mode"
+                  aria-label={`Why ${item.track.title} is unavailable offline`}
+                  onclick={(event) => {
+                    event.stopPropagation();
+                    store.openOfflineHelp();
+                  }}
+                >
+                  i
+                </button>
+              {/if}
+            </span>
             <span class="artist" title={item.track.artist}>{item.track.artist}</span>
             {#if trackMetadataFacts(item.track).length > 0}
               <span class="extra">{trackMetadataFacts(item.track).join(' · ')}</span>
@@ -228,6 +246,24 @@
 
   .row.drag-over {
     box-shadow: inset 0 2px 0 var(--accent-2);
+  }
+
+  .row.unavailable {
+    opacity: 0.5;
+  }
+
+  .info {
+    width: 1.05rem;
+    height: 1.05rem;
+    margin-left: 0.35rem;
+    padding: 0;
+    border: 1px solid var(--warning);
+    border-radius: 50%;
+    background: transparent;
+    color: var(--warning);
+    font-size: 0.66rem;
+    line-height: 1;
+    vertical-align: middle;
   }
 
   .handle {

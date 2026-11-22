@@ -8,7 +8,10 @@ use recvrd_core::{
 use std::{
     path::{Path, PathBuf},
     process::ExitCode,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 use tokio::sync::{Mutex as AsyncMutex, mpsc};
@@ -30,16 +33,12 @@ use crate::{
     audio::RodioSink,
     cache::CacheService,
     downloads::{DownloadControl, DownloadService},
-    music::UnavailableMusicApi,
-    providers::{CompositeCoverFetcher, CompositeDownloader, CompositeMusicApi},
+    providers::{CompositeCoverFetcher, CompositeDownloader, ReloadableMusicApi},
     streams::HttpStreamFactory,
 };
 use provider_podverse::PodverseProvider;
 use provider_rss::RssProvider;
-use provider_youtube::{
-    AUTH_EXPIRED_MESSAGE, YoutubeCoverFetcher, YoutubeDownloader, YoutubeMusicApi,
-    YoutubeMusicError, connect,
-};
+use provider_youtube::{YoutubeCoverFetcher, YoutubeDownloader};
 
 /// Old environment names and their new names.
 const LEGACY_ENV: [(&str, &str); 6] = [
@@ -335,7 +334,7 @@ fn run_serve(
     let port = port.or(config.port).unwrap_or(8080);
     let headers = headers.or(config.headers);
 
-    let (mut auth_status, auth, auth_source) = match resolve_auth(&paths, headers.as_deref()) {
+    let (auth_status, auth, auth_source) = match resolve_auth(&paths, headers.as_deref()) {
         Ok(loaded) => {
             log::info!("loaded auth from {}", loaded.source.display());
             if loaded.legacy {
@@ -399,15 +398,22 @@ fn run_serve(
         .build()?;
 
     runtime.block_on(async move {
+        let settings = Arc::new(PlaybackSettingsStore::load(paths.settings_file()));
+        let offline = Arc::new(AtomicBool::new(settings.offline()));
+
         let rss = Arc::new(RssProvider::new(paths.rss_feeds_file()));
-        for (id, result) in rss.refresh_all().await {
-            match result {
-                Ok(feed) => log::info!(
-                    "refreshed RSS feed {} ({} episodes)",
-                    feed.title,
-                    feed.episode_count
-                ),
-                Err(error) => log::warn!("could not refresh RSS feed {id}: {error}"),
+        if offline.load(Ordering::SeqCst) {
+            log::info!("offline mode is on; skipping the RSS refresh");
+        } else {
+            for (id, result) in rss.refresh_all().await {
+                match result {
+                    Ok(feed) => log::info!(
+                        "refreshed RSS feed {} ({} episodes)",
+                        feed.title,
+                        feed.episode_count
+                    ),
+                    Err(error) => log::warn!("could not refresh RSS feed {id}: {error}"),
+                }
             }
         }
 
@@ -429,40 +435,20 @@ fn run_serve(
             providers.push(ProviderId::Podverse);
         }
 
-        let music: Arc<dyn MusicApi> = match auth {
-            Some(auth) => match connect(&auth).await {
-                Ok(client) => {
-                    log::info!("YouTube Music client ready");
-                    let source = auth_source.as_ref().map(|path| path.display().to_string());
-                    Arc::new(CompositeMusicApi::new(
-                        Arc::new(YoutubeMusicApi::new(client, source)),
-                        rss.clone(),
-                        podverse.clone(),
-                    ))
-                }
-                Err(error) => {
-                    log::error!("could not create YouTube Music client: {error:?}");
-                    if matches!(error, YoutubeMusicError::NeedToLogin) {
-                        auth_status = AuthStatus::expired(
-                            auth_source.clone().unwrap_or_else(|| paths.headers_file()),
-                            AUTH_EXPIRED_MESSAGE,
-                        );
-                    }
-                    Arc::new(CompositeMusicApi::new(
-                        Arc::new(UnavailableMusicApi),
-                        rss.clone(),
-                        podverse.clone(),
-                    ))
-                }
-            },
-            None => Arc::new(CompositeMusicApi::new(
-                Arc::new(UnavailableMusicApi),
-                rss.clone(),
-                podverse.clone(),
-            )),
-        };
+        let music = Arc::new(ReloadableMusicApi::new(
+            auth,
+            auth_source.as_ref().map(|path| path.display().to_string()),
+            rss.clone(),
+            podverse.clone(),
+            offline.clone(),
+        ));
+        if !offline.load(Ordering::SeqCst)
+            && let Err(error) = music.connect_now().await
+        {
+            log::error!("could not create YouTube Music client: {error}");
+        }
+        let music: Arc<dyn MusicApi> = music;
 
-        let settings = Arc::new(PlaybackSettingsStore::load(paths.settings_file()));
         let sink = RodioSink::spawn(config.initial_volume);
         let playback = Arc::new(AsyncMutex::new(PlaybackService::with_streams(
             sink,
@@ -473,6 +459,11 @@ fn run_serve(
         )));
         {
             let mut service = playback.lock().await;
+            if settings.offline()
+                && let Err(error) = service.set_offline(true).await
+            {
+                log::warn!("could not start in offline mode: {error:?}");
+            }
             match service.load_state(&state_path) {
                 Ok(()) => log::info!("restored playback state from {}", state_path.display()),
                 Err(error) => {
@@ -518,20 +509,24 @@ fn run_serve(
             }
         }
         downloads.spawn(playback.clone(), cache.clone(), cache_limit_bytes);
-        let restored_tracks: Vec<recvrd_core::Track> = playback
-            .lock()
-            .await
-            .queue_snapshot()
-            .items
-            .into_iter()
-            .map(|item| item.track)
-            .filter(|track| settings.mode(track.provider) != PlaybackMode::Stream)
-            .collect();
+        let restored_tracks: Vec<recvrd_core::Track> = if offline.load(Ordering::SeqCst) {
+            Vec::new()
+        } else {
+            playback
+                .lock()
+                .await
+                .queue_snapshot()
+                .items
+                .into_iter()
+                .map(|item| item.track)
+                .filter(|track| settings.mode(track.provider) != PlaybackMode::Stream)
+                .collect()
+        };
         if !restored_tracks.is_empty() {
             downloads.queue_playlist(&restored_tracks);
         }
         let downloads: Arc<dyn DownloadControl> = Arc::new(downloads);
-        let artwork = Arc::new(ArtworkCache::new(
+        let artwork = Arc::new(ArtworkCache::with_offline(
             covers_dir.clone(),
             cover_cache_bytes,
             Arc::new(CompositeCoverFetcher::new(
@@ -539,6 +534,7 @@ fn run_serve(
                 rss.clone(),
                 podverse,
             )),
+            offline.clone(),
         ));
 
         let (commands, mut command_rx) = mpsc::unbounded_channel();
