@@ -572,6 +572,11 @@ impl<S: AudioSink> PlaybackService<S> {
         }
 
         let mode = self.settings.mode(track.provider);
+        // A stream with no remote source cannot play. Fail now
+        // instead of waiting for a download that never starts.
+        if mode == PlaybackMode::Stream && track.source.is_none() {
+            return self.fail_start("track has no stream source".to_string());
+        }
         if matches!(
             mode,
             PlaybackMode::Stream | PlaybackMode::StreamThenDownload
@@ -1314,5 +1319,23 @@ mod tests {
         service.set_wait_for_downloads(true);
         assert!(service.play_playlist(vec![stream_track()]).await.is_err());
         assert_eq!(service.snapshot().status, PlaybackStatus::Stopped);
+    }
+
+    #[tokio::test]
+    async fn stream_mode_with_no_source_fails_fast() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut service = PlaybackService::with_streams(
+            MockSink::default(),
+            dir.path(),
+            50,
+            mode_settings(PlaybackMode::Stream),
+            Arc::new(MockStreams),
+        );
+        service.set_wait_for_downloads(true);
+        let mut track = stream_track();
+        track.source = None;
+        assert!(service.play_playlist(vec![track]).await.is_err());
+        assert_eq!(service.snapshot().status, PlaybackStatus::Stopped);
+        assert!(service.sink.plays.is_empty());
     }
 }
