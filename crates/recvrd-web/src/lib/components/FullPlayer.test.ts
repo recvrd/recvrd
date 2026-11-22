@@ -45,6 +45,45 @@ describe('FullPlayer', () => {
     );
   });
 
+  it('shows provider metadata, source and the loaded description', async () => {
+    const api = makeApi();
+    const store = new AppStore(api);
+    const track = makeTrack('YvIRJrjZVe', {
+      provider: 'podverse',
+      title: 'Podcast Song',
+      album: 'Rock The Halls',
+      metadata: {
+        channel_title: 'Rock The Halls',
+        published_at: '2026-11-10T18:49:40.000Z',
+        year: 2026,
+        season_number: 1,
+        episode_number: 2,
+        genre: 'Music',
+      },
+    });
+    store.status = makeStatus({
+      playback: {
+        state: 'playing',
+        current: track,
+        position_secs: 0,
+        volume: 50,
+        repeat: 'off',
+        shuffle: false,
+        source_kind: 'stream',
+      },
+    });
+    store.queue = makeQueue([track], { current: 0 });
+    store.fullPlayerOpen = true;
+    render(FullPlayer, { props: { store } });
+
+    const dialog = screen.getByRole('dialog', { name: 'Full player' });
+    expect(within(dialog).getByText('S1E2 · 2026 · Music')).toBeInTheDocument();
+    expect(within(dialog).getByText('Published 2026-11-10')).toBeInTheDocument();
+    expect(within(dialog).getByText('streaming from the provider')).toBeInTheDocument();
+    await fireEvent.click(await within(dialog).findByText('Description'));
+    expect(await within(dialog).findByText('Description for Track YvIRJrjZVe')).toBeInTheDocument();
+  });
+
   it('runs the transport controls', async () => {
     const { api, store } = makeStore();
     render(FullPlayer, { props: { store } });

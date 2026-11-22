@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { DownloadStatus } from '@api/DownloadStatus';
   import type { Track } from '@api/Track';
-  import { downloadLabel, formatDuration, durationSeconds, coverUrl } from '../api';
+  import { downloadLabel, formatDuration, durationSeconds, coverUrl, trackMetadataFacts } from '../api';
   import type { MenuItem } from '../types';
   import ContextMenu from './ContextMenu.svelte';
 
@@ -183,7 +183,9 @@
           </span>
           <span class="title" title={track.title}>{track.title}</span>
           <span class="artist" title={track.artist}>{track.artist}</span>
-          <span class="optional album" title={track.album}>{track.album}</span>
+          <span class="optional album" title={track.album}>
+            {[track.album, ...trackMetadataFacts(track)].filter(Boolean).join(' · ')}
+          </span>
           <span class="time">{formatDuration(durationSeconds(track.duration))}</span>
           <span class="status">
             {#if download.state === 'failed'}

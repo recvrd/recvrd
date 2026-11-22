@@ -1,7 +1,9 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import type { PlaybackMode } from '@api/PlaybackMode';
   import type { AppStore } from './lib/store.svelte';
   import { appStore } from './lib/app-store';
+  import { playbackModeLabel } from './lib/api';
   import { Keymap } from './lib/keymap';
   import AuthBanner from './lib/components/AuthBanner.svelte';
   import ConnectionBanner from './lib/components/ConnectionBanner.svelte';
@@ -97,6 +99,21 @@
         {/each}
       </select>
     </label>
+    {#if store.playbackModes.length > 1}
+      <label class="provider-select" title="Playback mode">
+        <span class="visually-hidden">Playback mode</span>
+        <select
+          aria-label="Playback mode"
+          value={store.playbackMode ?? ''}
+          onchange={(event) =>
+            void store.setPlaybackMode(event.currentTarget.value as PlaybackMode)}
+        >
+          {#each store.playbackModes as mode (mode)}
+            <option value={mode}>{playbackModeLabel(mode)}</option>
+          {/each}
+        </select>
+      </label>
+    {/if}
     <button class="search-button" onclick={() => store.openSearch()}>
       <span aria-hidden="true">⌕</span>
       <span>Search</span>

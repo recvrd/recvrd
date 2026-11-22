@@ -48,8 +48,10 @@ artifacts contain the real app.
 - **Playlist** shows the track table, playlist actions and track edit actions.
 - **Queue** shows current and upcoming tracks.
 - **Search** is a modal palette.
-- **Now playing** shows the current track, cover art, controls, seek, volume
-  and download state.
+- **Now playing** shows the current track, cover art, controls, seek, volume,
+  playback source and download state.
+- **Full player** shows the large cover, track metadata, links and the full
+  description when the provider serves one.
 
 The top bar has a provider selector. It lists every provider from
 `GET /api/providers`. The choice is stored in `localStorage` under
@@ -61,10 +63,26 @@ hidden: the *New playlist* button and the playlist edit actions appear only
 when the active provider reports the matching capability. The auth banner shows
 the auth state of the active provider.
 
+Next to the provider selector, a playback mode selector appears when the
+provider reports more than one mode. The label is *Download*, *Stream* or
+*Stream + cache*. It changes at once and calls
+`PUT /api/providers/{provider}/playback`; a failed request restores the old
+choice and shows a toast. The selector is hidden for YouTube, which supports
+only downloads. The choice is stored by the daemon in
+`$XDG_CONFIG_HOME/recvrd/settings.toml`, not in the browser.
+
 With the RSS provider active, the library shows *Add feed* and *Refresh
 feeds* in the header, and each feed card has *Refresh* and *Remove*
 actions. A feed is a playlist: open it to see its episodes, and play or
 queue them like any other track.
+
+With the Podverse provider configured, it appears in the selector. Search
+returns music channels as playlists, with the author and item count. Open a
+channel to see its items as tracks. Track metadata appears in search results,
+the queue and the full player: channel, season and episode, year and genre.
+The full player loads `GET /api/tracks/{provider}/{track_id}` when the track
+belongs to Podverse and shows the description in a collapsible block. Search
+and queue responses never include the full description.
 
 The now-playing bar has two layouts:
 

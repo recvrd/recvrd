@@ -2,6 +2,7 @@
   import { tick } from 'svelte';
   import type { AppStore } from '../store.svelte';
   import type { SearchEntry } from '../types';
+  import { trackMetadataFacts } from '../api';
 
   let { store }: { store: AppStore } = $props();
 
@@ -22,6 +23,16 @@
   }
 
   const entries = $derived(buildEntries());
+
+  function subtitle(entry: SearchEntry): string {
+    if (entry.kind === 'track') {
+      return [entry.track.artist, ...trackMetadataFacts(entry.track)].join(' · ');
+    }
+    const count = entry.playlist.item_count;
+    return [entry.playlist.subtitle, count ? `${count} items` : null]
+      .filter(Boolean)
+      .join(' · ');
+  }
 
   $effect(() => {
     if (store.searchOpen) {
@@ -167,7 +178,7 @@
                     {entry.kind === 'track' ? entry.track.title : entry.playlist.name}
                   </span>
                   <span class="sub muted">
-                    {entry.kind === 'track' ? entry.track.artist : entry.playlist.subtitle}
+                    {subtitle(entry)}
                   </span>
                 </span>
                 {#if entry.kind === 'track'}

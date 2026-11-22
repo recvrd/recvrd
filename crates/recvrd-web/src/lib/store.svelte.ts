@@ -2,6 +2,7 @@ import type { CacheScope } from '@api/CacheScope';
 import type { CacheSizes } from '@api/CacheSizes';
 import type { DownloadStatus } from '@api/DownloadStatus';
 import type { EventKind } from '@api/EventKind';
+import type { PlaybackMode } from '@api/PlaybackMode';
 import type { Playlist } from '@api/Playlist';
 import type { PlaylistDetail } from '@api/PlaylistDetail';
 import type { ProviderId } from '@api/ProviderId';
@@ -12,6 +13,7 @@ import type { RssFeed } from '@api/RssFeed';
 import type { SearchResults } from '@api/SearchResults';
 import type { Status } from '@api/Status';
 import type { Track } from '@api/Track';
+import type { TrackDetail } from '@api/TrackDetail';
 import { ApiError, createApi, describeError, durationSeconds, formatBytes, type RecvrdApi } from './api';
 import { EventStream, type ConnectionState, type EventSourceLike } from './sse';
 
@@ -167,6 +169,9 @@ export class AppStore {
   volume = $state(50);
   playerLayout = $state<PlayerLayout>('compact');
   fullPlayerOpen = $state(false);
+  trackDetail = $state<TrackDetail | null>(null);
+  trackDetailKey = $state<string | null>(null);
+  trackDetailLoading = $state(false);
 
   private readonly events: EventStream;
   private readonly options: Required<Pick<StoreOptions, 'toastTtlMs' | 'searchDebounceMs'>> &
@@ -183,6 +188,8 @@ export class AppStore {
   /// Generation of the playback state. A status refresh applies only
   /// when this value is unchanged since the request started.
   private statusGeneration = 0;
+  /// Guards against an older track-detail response overwriting a newer one.
+  private trackDetailRequest = 0;
 
   constructor(api: RecvrdApi = createApi(), options: StoreOptions = {}) {
     this.api = api;
@@ -253,6 +260,14 @@ export class AppStore {
 
   get activeProviderName(): string {
     return this.activeProviderInfo?.name ?? 'YouTube Music';
+  }
+
+  get playbackMode(): PlaybackMode | null {
+    return this.activeProviderInfo?.playback ?? null;
+  }
+
+  get playbackModes(): PlaybackMode[] {
+    return this.activeProviderInfo?.playback_modes ?? [];
   }
 
   get canCreatePlaylist(): boolean {
@@ -355,6 +370,27 @@ export class AppStore {
     await this.loadPlaylists();
     if (this.view.kind === 'playlist') {
       await this.openPlaylist(this.view.id, this.view.name);
+    }
+  }
+
+  /// Change the active provider's playback mode. The selector updates
+  /// at once; a failed request restores the previous mode.
+  async setPlaybackMode(mode: PlaybackMode): Promise<void> {
+    const provider = this.activeProvider;
+    const info = this.activeProviderInfo;
+    if (!info || info.playback === mode) return;
+    const previous = this.providers;
+    this.providers = this.providers.map((entry) =>
+      entry.id === provider ? { ...entry, playback: mode } : entry,
+    );
+    try {
+      const updated = await this.api.setPlaybackMode(provider, mode);
+      this.providers = this.providers.map((entry) =>
+        entry.id === provider ? updated : entry,
+      );
+    } catch (error) {
+      this.providers = previous;
+      this.report(error);
     }
   }
 
@@ -1078,6 +1114,48 @@ export class AppStore {
 
   openFullPlayer(): void {
     this.fullPlayerOpen = true;
+    void this.loadTrackDetail();
+  }
+
+  /// Load the full detail for one track. Only Podverse serves a full
+  /// description today; other providers return the empty state without
+  /// a request.
+  async loadTrackDetail(track: Track | null = this.currentTrack): Promise<void> {
+    if (!track) {
+      this.trackDetail = null;
+      this.trackDetailKey = null;
+      this.trackDetailLoading = false;
+      return;
+    }
+    const key = `${track.provider}:${track.track_id}`;
+    if (this.trackDetailKey === key) return;
+    this.trackDetailKey = key;
+    this.trackDetail = null;
+    if (track.provider !== 'podverse') {
+      this.trackDetailLoading = false;
+      return;
+    }
+    const request = ++this.trackDetailRequest;
+    this.trackDetailLoading = true;
+    try {
+      const detail = await this.api.trackDetail(track.provider, track.track_id);
+      if (request === this.trackDetailRequest && this.trackDetailKey === key) {
+        this.trackDetail = detail;
+      }
+    } catch (error) {
+      if (request === this.trackDetailRequest) {
+        this.trackDetail = null;
+        if (error instanceof ApiError && error.code === 'not_found') {
+          // The provider has no detail route for this track.
+        } else {
+          this.report(error);
+        }
+      }
+    } finally {
+      if (request === this.trackDetailRequest) {
+        this.trackDetailLoading = false;
+      }
+    }
   }
 
   closeFullPlayer(): void {

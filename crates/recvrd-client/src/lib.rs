@@ -162,6 +162,19 @@ impl DaemonClient {
         .await
     }
 
+    async fn put<T: serde::de::DeserializeOwned, B: serde::Serialize>(
+        &self,
+        path: &str,
+        body: &B,
+    ) -> Result<T, DaemonError> {
+        self.request(
+            reqwest::Method::PUT,
+            path,
+            Some(serde_json::to_value(body).map_err(DaemonError::invalid_response)?),
+        )
+        .await
+    }
+
     async fn delete<T: serde::de::DeserializeOwned>(&self, path: &str) -> Result<T, DaemonError> {
         self.request(reqwest::Method::DELETE, path, None).await
     }
@@ -234,6 +247,19 @@ impl DaemonClient {
     /// and its auth state.
     pub async fn providers(&self) -> Result<Vec<ProviderInfo>, DaemonError> {
         self.get("/api/providers").await
+    }
+
+    /// Change the playback mode for one provider.
+    pub async fn set_playback_mode(
+        &self,
+        provider: ProviderId,
+        mode: recvrd_api::PlaybackMode,
+    ) -> Result<ProviderInfo, DaemonError> {
+        self.put(
+            &format!("/api/providers/{}/playback", provider.as_str()),
+            &recvrd_api::PlaybackModeRequest { mode },
+        )
+        .await
     }
 
     /// Return all library playlists for one provider.

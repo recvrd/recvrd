@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { AppStore } from '../store.svelte';
-  import { downloadLabel, durationSeconds, formatDuration } from '../api';
+  import { downloadLabel, durationSeconds, formatDuration, trackMetadataFacts } from '../api';
 
   let { store }: { store: AppStore } = $props();
 
@@ -101,6 +101,9 @@
           <span class="track">
             <span class="title" title={item.track.title}>{item.track.title}</span>
             <span class="artist" title={item.track.artist}>{item.track.artist}</span>
+            {#if trackMetadataFacts(item.track).length > 0}
+              <span class="extra">{trackMetadataFacts(item.track).join(' · ')}</span>
+            {/if}
           </span>
           <span class="time">{formatDuration(durationSeconds(item.track.duration))}</span>
           {#if failed}
@@ -262,6 +265,15 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .extra {
+    color: var(--accent-2);
+    font-size: 0.68rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    opacity: 0.85;
   }
 
   .time {

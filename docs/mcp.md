@@ -47,10 +47,12 @@ your-mcp-client --server "recvrd mcp"
 
 | Tool | Arguments | Result |
 | --- | --- | --- |
-| `list_providers` | none | Providers with capabilities and auth state |
-| `search` | `query`, `provider` (default `youtube`) | Tracks and playlists |
+| `list_providers` | none | Providers with capabilities, auth state and playback mode |
+| `set_playback_mode` | `provider`, `mode` | Updated provider |
+| `search` | `query`, `provider` (default `youtube`) | Tracks and channels (playlists) |
 | `list_playlists` | `provider` (default `youtube`) | Library playlists |
-| `get_playlist` | `playlist_id`, `provider` (default `youtube`) | Playlist detail and tracks |
+| `get_playlist` | `playlist_id`, `provider` (default `youtube`) | Playlist or channel detail and tracks |
+| `get_track` | `provider`, `track_id` | Track detail with the full description |
 | `create_playlist` | `title`, `description`, `privacy` | New playlist |
 | `rename_playlist` | `playlist_id`, `title` | Updated playlist |
 | `delete_playlist` | `playlist_id` | `{ok: true}` |
@@ -81,8 +83,27 @@ your-mcp-client --server "recvrd mcp"
 | `rss_refresh_feed` | `feed_id` | Refreshed feed |
 | `rss_refresh_feeds` | none | Refreshed feeds |
 
-`track` is the object from `search` or `get_playlist`:
-`provider`, `track_id`, `title`, `artist`, `album` and `duration`.
+`track` is the object from `search`, `get_playlist` or the queue:
+`provider`, `track_id`, `title`, `artist`, `album` and `duration`. Providers
+that serve a remote enclosure also include `source` (`url`, `mime`, `length`,
+`seekable`, `kind`) and `metadata` (`channel_title`, `published_at`, `year`,
+`season_number`, `episode_number`, `genre`, `feed_url` and `website_url`).
+Search and queue responses never include the full show notes. Call `get_track`
+with the provider and track ID only when the description is needed.
+
+### Channel-first flow
+
+Podverse returns channels from search, so a bot can:
+
+1. Call `search` with `provider: "podverse"`.
+2. Pick a channel playlist and call `get_playlist` with its `id`.
+3. Inspect each track's `metadata` and `source`.
+4. Call `play_track` with the chosen track.
+5. Call `get_track` only when the full description matters.
+
+`set_playback_mode` changes how the provider plays: `download`, `stream` or
+`stream_then_download`. Use `list_providers` to read the current mode and the
+supported modes. An unsupported mode returns an invalid-parameter error.
 
 Tool results include `structuredContent` with a JSON schema. The schema comes
 from the shared `recvrd-api` DTOs.
@@ -106,7 +127,7 @@ The proxy does not crash on daemon errors. The client shows the message.
 
 ## Scope
 
-The proxy has the 33 tools above. These items are post-v1:
+The proxy has the 35 tools above. These items are post-v1:
 
 - lyrics;
 - streamable HTTP MCP transport;
@@ -120,8 +141,10 @@ cargo test -p recvrd --test mcp_stdio
 ```
 
 The unit tests use an in-process mock daemon. The stdio test starts the real
-binary, performs the MCP handshake, lists 33 tools, calls `now_playing` and
+binary, performs the MCP handshake, lists 35 tools, calls `now_playing` and
 checks that the process exits when stdin closes. The playlist tool tests cover
 the create, rename, delete, add, remove and move calls. The new tool tests
 cover seek, shuffle, repeat, queue remove, queue reorder, queue play next,
-queue clear and retry download.
+queue clear, retry download, `get_track` and `set_playback_mode`. A docs test
+checks that `README.md`, this file and `docs/architecture.md` name every tool
+and the current count.

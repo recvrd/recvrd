@@ -9,6 +9,7 @@ import type { RssFeed } from '@api/RssFeed';
 import type { SearchResults } from '@api/SearchResults';
 import type { Status } from '@api/Status';
 import type { Track } from '@api/Track';
+import type { TrackDetail } from '@api/TrackDetail';
 import type { RecvrdApi } from '../lib/api';
 import type { EventSourceLike } from '../lib/sse';
 
@@ -59,6 +60,17 @@ export function makePlaylistDetail(
   tracks: Track[],
 ): PlaylistDetail {
   return { playlist, tracks };
+}
+
+export function makeTrackDetail(
+  track: Track,
+  overrides: Partial<TrackDetail> = {},
+): TrackDetail {
+  return {
+    track,
+    description: `Description for ${track.title}`,
+    ...overrides,
+  };
 }
 
 export function makeQueue(
@@ -122,13 +134,21 @@ export function makeApi(
 ): RecvrdApi {
   let status = initialStatus;
   let queue = initialQueue;
+  let providers = [makeProviderInfo()];
   const playlists = [makePlaylist('p1'), makePlaylist('p2')];
   const tracks = [makeTrack('v1'), makeTrack('v2')];
   const feeds = [makeRssFeed()];
 
   const api: RecvrdApi = {
     status: vi.fn(async () => status),
-    providers: vi.fn(async () => [makeProviderInfo()]),
+    providers: vi.fn(async () => providers),
+    setPlaybackMode: vi.fn(async (provider, mode) => {
+      const current = providers.find((entry) => entry.id === provider) ??
+        makeProviderInfo({ id: provider, name: provider, default: false });
+      const updated = { ...current, playback: mode };
+      providers = providers.map((entry) => (entry.id === provider ? updated : entry));
+      return updated;
+    }),
     playlists: vi.fn(async () => playlists),
     playlist: vi.fn(async (id: string) =>
       makePlaylistDetail(
@@ -137,6 +157,20 @@ export function makeApi(
       ),
     ),
     search: vi.fn(async () => makeSearchResults(tracks, playlists.slice(0, 1))),
+    trackDetail: vi.fn(async (provider, trackId) =>
+      makeTrackDetail(
+        makeTrack(trackId, {
+          provider,
+          metadata: {
+            channel_title: 'Test Channel',
+            published_at: '2026-11-10T18:49:40.000Z',
+            year: 2026,
+            season_number: 1,
+            episode_number: 2,
+          },
+        }),
+      ),
+    ),
     createPlaylist: vi.fn(async (request) => {
       const playlist = makePlaylist(`p${playlists.length + 1}`, {
         name: request.title,

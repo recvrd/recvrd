@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { AppStore } from '../store.svelte';
-  import { coverUrl, durationSeconds, formatDuration } from '../api';
+  import { coverUrl, durationSeconds, formatDuration, trackMetadataFacts } from '../api';
 
   let { store }: { store: AppStore } = $props();
 
@@ -13,6 +13,20 @@
   const isPlaying = $derived(playback?.state === 'playing');
   const queueIndex = $derived(store.queue?.current ?? null);
   const queueLength = $derived(store.queue?.items.length ?? 0);
+  const facts = $derived(track ? trackMetadataFacts(track) : []);
+  const description = $derived(store.trackDetail?.description ?? null);
+  const published = $derived(track?.metadata?.published_at?.slice(0, 10) ?? null);
+  const sourceLabel = $derived(
+    playback?.source_kind === 'stream'
+      ? 'streaming from the provider'
+      : playback?.source_kind === 'file'
+        ? 'playing from the cache'
+        : null,
+  );
+
+  $effect(() => {
+    if (store.fullPlayerOpen) void store.loadTrackDetail(track);
+  });
 
   function commitSeek(value: number): void {
     scrub = null;
@@ -69,8 +83,35 @@
           {#if track.album}
             <p class="album">{track.album}</p>
           {/if}
+          {#if facts.length > 0}
+            <p class="facts">{facts.join(' · ')}</p>
+          {/if}
+          {#if published}
+            <p class="published muted">Published {published}</p>
+          {/if}
+          {#if sourceLabel}
+            <p class="source">{sourceLabel}</p>
+          {/if}
           {#if queueIndex !== null && queueLength > 0}
             <p class="queue">Track {queueIndex + 1} of {queueLength}</p>
+          {/if}
+          {#if store.trackDetailLoading}
+            <p class="description muted">Loading description…</p>
+          {:else if description}
+            <details class="description">
+              <summary>Description</summary>
+              <p>{description}</p>
+            </details>
+          {/if}
+          {#if track.metadata?.feed_url || track.metadata?.website_url}
+            <p class="links">
+              {#if track.metadata.feed_url}
+                <a href={track.metadata.feed_url} target="_blank" rel="noreferrer">Feed</a>
+              {/if}
+              {#if track.metadata.website_url}
+                <a href={track.metadata.website_url} target="_blank" rel="noreferrer">Website</a>
+              {/if}
+            </p>
           {/if}
         {:else}
           <p class="eyebrow">now playing</p>
@@ -301,6 +342,57 @@
     font-size: 0.78rem;
     color: var(--accent-2);
     opacity: 0.85;
+  }
+
+  .facts {
+    margin: 0.35rem 0 0;
+    font-size: 0.86rem;
+    color: var(--accent-2);
+  }
+
+  .published {
+    margin: 0.25rem 0 0;
+    font-size: 0.76rem;
+  }
+
+  .source {
+    margin: 0.35rem 0 0;
+    font-size: 0.76rem;
+    color: var(--fg-muted);
+  }
+
+  .description {
+    margin: 0.9rem 0 0;
+    max-width: 48rem;
+    font-size: 0.84rem;
+    color: var(--fg-muted);
+  }
+
+  .description summary {
+    cursor: pointer;
+    color: var(--accent-2);
+    font-size: 0.78rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+
+  .description p {
+    margin: 0.5rem 0 0;
+    max-height: 16rem;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    line-height: 1.5;
+  }
+
+  .links {
+    display: flex;
+    gap: 0.8rem;
+    margin: 0.6rem 0 0;
+    font-size: 0.76rem;
+  }
+
+  .links a {
+    color: var(--accent-2);
   }
 
   .timeline {

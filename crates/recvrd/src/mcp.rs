@@ -1,7 +1,7 @@
 use recvrd_api::{
-    CreatePlaylistRequest, DownloadSummary, OkResponse, Playlist, PlaylistDetail, PlaylistPrivacy,
-    ProviderId, ProviderInfo, Queue, QueueItem, RepeatMode, RssFeed, SearchResults, Status, Track,
-    TrackKey, UpdatePlaylistRequest,
+    CreatePlaylistRequest, DownloadSummary, OkResponse, PlaybackMode, Playlist, PlaylistDetail,
+    PlaylistPrivacy, ProviderId, ProviderInfo, Queue, QueueItem, RepeatMode, RssFeed,
+    SearchResults, Status, Track, TrackDetail, TrackKey, UpdatePlaylistRequest,
 };
 use recvrd_client::DaemonClient;
 use rmcp::{
@@ -136,6 +136,24 @@ pub struct TrackArgs {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct TrackIdArgs {
+    /// Provider that owns the track. Default: youtube.
+    #[serde(default)]
+    pub provider: ProviderId,
+    /// Track ID from search, get_playlist or the queue.
+    pub track_id: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct PlaybackModeArgs {
+    /// Provider to change. Default: youtube.
+    #[serde(default)]
+    pub provider: ProviderId,
+    /// Playback mode. Only modes listed in list_providers are accepted.
+    pub mode: PlaybackMode,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct VolumeArgs {
     /// Volume from 0 to 100.
     pub volume: u8,
@@ -212,15 +230,32 @@ pub struct DownloadStatusOutput {
 
 #[tool_router]
 impl McpServer {
-    /// List every provider the daemon knows, with its capabilities
-    /// and its auth state.
-    #[tool(description = "List the providers the daemon knows, with capabilities and auth state")]
+    /// List every provider the daemon knows, with its capabilities,
+    /// auth state and playback mode.
+    #[tool(
+        description = "List the providers the daemon knows, with capabilities, auth state and playback mode"
+    )]
     async fn list_providers(&self) -> Result<Json<Vec<ProviderInfo>>, McpError> {
         self.client.providers().await.map(Json).map_err(to_mcp)
     }
 
-    /// Search YouTube Music for tracks and playlists.
-    #[tool(description = "Search one provider for tracks and playlists")]
+    /// Change the playback mode for one provider.
+    #[tool(
+        description = "Set a provider's playback mode (download, stream or stream_then_download)"
+    )]
+    async fn set_playback_mode(
+        &self,
+        Parameters(args): Parameters<PlaybackModeArgs>,
+    ) -> Result<Json<ProviderInfo>, McpError> {
+        self.client
+            .set_playback_mode(args.provider, args.mode)
+            .await
+            .map(Json)
+            .map_err(to_mcp)
+    }
+
+    /// Search one provider for tracks and channels.
+    #[tool(description = "Search one provider for tracks and channels (playlists)")]
     async fn search(
         &self,
         Parameters(args): Parameters<SearchArgs>,
@@ -232,7 +267,7 @@ impl McpServer {
             .map_err(to_mcp)
     }
 
-    /// List the playlists in the YouTube Music library.
+    /// List the playlists in one provider library.
     #[tool(description = "List the playlists in one provider library")]
     async fn list_playlists(
         &self,
@@ -245,14 +280,29 @@ impl McpServer {
             .map_err(to_mcp)
     }
 
-    /// Get one playlist and its tracks.
-    #[tool(description = "Get one playlist and its tracks")]
+    /// Get one playlist or channel and its tracks.
+    #[tool(description = "Get one playlist or channel and its tracks")]
     async fn get_playlist(
         &self,
         Parameters(args): Parameters<PlaylistArgs>,
     ) -> Result<Json<PlaylistDetail>, McpError> {
         self.client
             .playlist(args.provider, &args.playlist_id)
+            .await
+            .map(Json)
+            .map_err(to_mcp)
+    }
+
+    /// Get the full detail and description for one track.
+    #[tool(
+        description = "Get the full detail and description for one track. Use it only when the search or playlist metadata is not enough"
+    )]
+    async fn get_track(
+        &self,
+        Parameters(args): Parameters<TrackIdArgs>,
+    ) -> Result<Json<TrackDetail>, McpError> {
+        self.client
+            .track_detail(args.provider, &args.track_id)
             .await
             .map(Json)
             .map_err(to_mcp)
@@ -653,13 +703,13 @@ mod tests {
         extract::{Path, State},
         http::StatusCode,
         response::{IntoResponse, Response},
-        routing::{delete, get, post},
+        routing::{delete, get, post, put},
     };
     use recvrd_api::{
         AddPlaylistTracksRequest, ApiError, AuthState, AuthStatus, DownloadStatus, ErrorEnvelope,
         MovePlaylistTrackRequest, OkResponse, PlayPlaylistRequest, PlayTrackRequest,
-        PlaybackSnapshot, PlaybackState, Playlist, PlaylistPrivacy, QueueItem, QueueRequest,
-        RemovePlaylistTracksRequest, RepeatMode,
+        PlaybackModeRequest, PlaybackSnapshot, PlaybackState, Playlist, PlaylistPrivacy, QueueItem,
+        QueueRequest, RemovePlaylistTracksRequest, RepeatMode, TrackDetail,
     };
     use recvrd_client::{DaemonError, encode};
     use rmcp::model::ErrorCode;
@@ -738,6 +788,10 @@ mod tests {
             .route("/api/status", get(mock_status))
             .route("/api/providers", get(mock_providers))
             .route(
+                "/api/providers/{provider}/playback",
+                put(mock_set_playback_mode),
+            )
+            .route(
                 "/api/playlists",
                 get(mock_playlists).post(mock_create_playlist),
             )
@@ -757,6 +811,7 @@ mod tests {
                 post(mock_move_playlist_track),
             )
             .route("/api/search", get(mock_search))
+            .route("/api/tracks/{provider}/{track_id}", get(mock_track_detail))
             .route(
                 "/api/queue",
                 get(mock_queue)
@@ -820,6 +875,40 @@ mod tests {
             },
             recvrd_api::PlaybackMode::Download,
         )])
+    }
+
+    async fn mock_set_playback_mode(
+        State(state): State<MockState>,
+        Path(provider): Path<String>,
+        AxumJson(request): AxumJson<PlaybackModeRequest>,
+    ) -> AxumJson<ProviderInfo> {
+        state.calls.lock().unwrap().push(format!(
+            "PUT /api/providers/{provider}/playback {}",
+            request.mode.as_str()
+        ));
+        let provider = provider.parse().unwrap_or(ProviderId::Youtube);
+        AxumJson(ProviderInfo::new(
+            provider,
+            AuthStatus::default(),
+            request.mode,
+        ))
+    }
+
+    async fn mock_track_detail(
+        State(state): State<MockState>,
+        Path((provider, track_id)): Path<(String, String)>,
+    ) -> AxumJson<TrackDetail> {
+        state
+            .calls
+            .lock()
+            .unwrap()
+            .push(format!("GET /api/tracks/{provider}/{track_id}"));
+        let mut track = track(&track_id);
+        track.provider = provider.parse().unwrap_or(ProviderId::Youtube);
+        AxumJson(TrackDetail {
+            track,
+            description: Some("The full description.".to_string()),
+        })
     }
 
     async fn mock_playlists(State(state): State<MockState>) -> AxumJson<Vec<Playlist>> {
@@ -1169,6 +1258,7 @@ mod tests {
                 "delete_playlist",
                 "download_status",
                 "get_playlist",
+                "get_track",
                 "list_playlists",
                 "list_providers",
                 "move_playlist_track",
@@ -1195,6 +1285,7 @@ mod tests {
                 "rss_remove_feed",
                 "search",
                 "seek",
+                "set_playback_mode",
                 "shuffle",
                 "volume",
             ]
@@ -1210,12 +1301,36 @@ mod tests {
         assert_eq!(providers[0].name, "YouTube Music");
         assert!(providers[0].default);
         assert!(providers[0].capabilities.search);
+        assert_eq!(providers[0].playback, PlaybackMode::Download);
+        assert_eq!(providers[0].playback_modes, vec![PlaybackMode::Download]);
         assert!(
             state
                 .calls
                 .lock()
                 .unwrap()
                 .contains(&"GET /api/providers".to_string())
+        );
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn sets_the_playback_mode() {
+        let (server, state, handle) = server().await;
+        let Json(updated) = server
+            .set_playback_mode(Parameters(PlaybackModeArgs {
+                provider: ProviderId::Rss,
+                mode: PlaybackMode::StreamThenDownload,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(updated.id, ProviderId::Rss);
+        assert_eq!(updated.playback, PlaybackMode::StreamThenDownload);
+        assert!(
+            state
+                .calls
+                .lock()
+                .unwrap()
+                .contains(&"PUT /api/providers/rss/playback stream_then_download".to_string())
         );
         handle.abort();
     }
@@ -1321,6 +1436,16 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(detail.tracks.len(), 1);
+
+        let Json(full) = server
+            .get_track(Parameters(TrackIdArgs {
+                provider: ProviderId::Youtube,
+                track_id: "v1".to_string(),
+            }))
+            .await
+            .unwrap();
+        assert_eq!(full.track.track_id, "v1");
+        assert_eq!(full.description.as_deref(), Some("The full description."));
 
         let Json(played) = server
             .play_track(Parameters(TrackArgs {
@@ -1607,6 +1732,32 @@ mod tests {
         assert!(error.message.contains("playlist p9 not found"));
         assert_eq!(error.data, Some(json!({ "code": "not_found" })));
         handle.abort();
+    }
+
+    #[test]
+    fn docs_list_every_tool() {
+        let server = McpServer::new(DaemonClient::new("http://127.0.0.1:1").unwrap());
+        let mut names = server.tool_names();
+        names.sort();
+        let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
+        for file in ["docs/mcp.md", "README.md"] {
+            let text = std::fs::read_to_string(format!("{root}/{file}")).unwrap();
+            for name in &names {
+                assert!(
+                    text.contains(&format!("`{name}`")),
+                    "{file} does not mention `{name}`"
+                );
+            }
+            assert!(
+                text.contains(&format!("{} tools", names.len())),
+                "{file} does not name the current tool count"
+            );
+        }
+        let architecture = std::fs::read_to_string(format!("{root}/docs/architecture.md")).unwrap();
+        assert!(
+            architecture.contains(&format!("{} tools", names.len())),
+            "docs/architecture.md does not name the current tool count"
+        );
     }
 
     #[test]
