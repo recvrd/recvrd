@@ -261,6 +261,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn offline_uses_only_cached_covers() {
+        let dir = tempdir().unwrap();
+        let fetcher = Arc::new(CountingFetcher::with_bytes(vec![7; 16]));
+        let offline = Arc::new(AtomicBool::new(false));
+        let cache = ArtworkCache::with_offline(
+            dir.path().to_path_buf(),
+            0,
+            fetcher.clone(),
+            offline.clone(),
+        );
+
+        let first = cache.ensure(&key(ID)).await.unwrap();
+        offline.store(true, Ordering::SeqCst);
+        let second = cache.ensure(&key(ID)).await.unwrap();
+        assert_eq!(first, second);
+        assert!(cache.ensure(&key("abcdefghij2")).await.is_none());
+        assert_eq!(fetcher.calls(), 1);
+    }
+
+    #[tokio::test]
     async fn caches_concurrent_requests_once() {
         let dir = tempdir().unwrap();
         let fetcher = Arc::new(CountingFetcher::with_bytes(vec![7; 16]));

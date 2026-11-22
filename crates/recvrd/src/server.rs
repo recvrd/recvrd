@@ -13,7 +13,7 @@ use recvrd_api::{
     AddPlaylistTracksRequest, AddRssFeedRequest, ApiError, AuthState, AuthStatus as ApiAuthStatus,
     CacheCleanRequest, CacheCleanResult, CacheScope, CacheSizes, CreatePlaylistRequest,
     DownloadStatus, DownloadSummary, ErrorEnvelope, Event, EventKind, MovePlaylistTrackRequest,
-    MusicApi, OkResponse, PlayNextRequest, PlayPlaylistRequest, PlayTrackRequest,
+    MusicApi, OfflineRequest, OkResponse, PlayNextRequest, PlayPlaylistRequest, PlayTrackRequest,
     PlaybackModeRequest, PlaybackSnapshot as ApiPlaybackSnapshot, PlaybackState, Playlist,
     PlaylistDetail, PlaylistEditError, ProviderInfo, Queue as ApiQueue, QueueItem as ApiQueueItem,
     QueueRequest, RemovePlaylistTracksRequest, RemoveQueueRequest, ReorderQueueRequest,
@@ -199,6 +199,7 @@ pub fn router<S: AudioSink + Send + 'static>(state: AppState<S>) -> Router {
     Router::new()
         .route("/api/status", get(status))
         .route("/api/providers", get(providers))
+        .route("/api/offline", get(offline_status).put(set_offline))
         .route("/api/providers/{provider}/playback", put(set_playback_mode))
         .route("/api/playlists", get(playlists).post(create_playlist))
         .route(
@@ -250,6 +251,52 @@ async fn status<S: AudioSink + Send + 'static>(State(state): State<AppState<S>>)
         &playback.snapshot(),
         &playback.queue_snapshot(),
     ))
+}
+
+/// Report the manual offline switch.
+async fn offline_status<S: AudioSink + Send + 'static>(
+    State(state): State<AppState<S>>,
+) -> Json<OfflineRequest> {
+    Json(OfflineRequest {
+        enabled: state.settings.offline(),
+    })
+}
+
+/// Flip the manual offline switch. Enabling cancels downloads and
+/// resets their statuses. Disabling creates the provider client again
+/// if the daemon started offline.
+async fn set_offline<S: AudioSink + Send + 'static>(
+    State(state): State<AppState<S>>,
+    Json(request): Json<OfflineRequest>,
+) -> Result<Json<Status>, ApiFailure> {
+    let enabled = request.enabled;
+    let previous = state.settings.offline();
+    state
+        .settings
+        .set_offline(enabled)
+        .map_err(|error| ApiFailure::internal(format!("could not save settings: {error}")))?;
+    state.artwork.set_offline(enabled);
+    if let Err(error) = state.music.set_offline(enabled).await {
+        log::warn!("could not update the provider client for offline mode: {error}");
+    }
+    if enabled && !previous {
+        state.downloads.stop_all_downloads();
+        state.downloads.reset_statuses();
+    }
+    let mut playback = state.playback.lock().await;
+    playback
+        .set_offline(enabled)
+        .await
+        .map_err(playback_failure)?;
+    if enabled && !previous {
+        let keep = playback.snapshot().current.as_ref().map(|track| track.key());
+        playback.reset_download_statuses(keep.as_ref());
+    }
+    Ok(Json(status_from_parts(
+        &state,
+        &playback.snapshot(),
+        &playback.queue_snapshot(),
+    )))
 }
 
 async fn playlists<S: AudioSink + Send + 'static>(
@@ -323,7 +370,15 @@ fn cached_playlist_detail<S: AudioSink + Send + 'static>(
                         .and_then(|metadata| metadata.feed_url.clone()),
                     item_count: Some(group.tracks.len() as u32),
                 },
-                tracks: group.tracks.iter().map(api_track).collect(),
+                tracks: group
+                    .tracks
+                    .iter()
+                    .map(|track| {
+                        let mut track = api_track(track);
+                        track.cached = true;
+                        track
+                    })
+                    .collect(),
             }
         })
 }
@@ -342,16 +397,12 @@ fn provider_failure<S: AudioSink + Send + 'static>(
     if error.contains("is not synced") {
         return ApiFailure::not_found(format!("{provider}: {error}"));
     }
-    let live = state.music.auth_status(provider);
     let auth = provider_auth(state, provider);
-    // A live provider state needs the matching error message. A
-    // transient failure while the state is Expired stays a 502. If
-    // the YouTube provider has no live state, the headers state is
-    // the only signal. An expired file then owns the failure, and
-    // the 401 names the session even when the failure was a network
-    // failure. RSS never reaches this branch: its auth state is Ok.
-    let expired = auth.state == AuthState::Expired
-        && (live.is_none() || error.contains(AUTH_EXPIRED_MESSAGE));
+    // Only the provider's own auth error is a 401. A network or
+    // transport failure is a 502 even when the stored session is
+    // expired, so the daemon never misreports a connectivity problem
+    // as an auth problem.
+    let expired = auth.state == AuthState::Expired && error.contains(AUTH_EXPIRED_MESSAGE);
     if expired {
         ApiFailure::auth_expired(
             auth.message
@@ -536,13 +587,14 @@ async fn playlist<S: AudioSink + Send + 'static>(
     // Load the playlist direct, not through the library. A public
     // playlist has tracks without a session, and the library load
     // would reject it as expired.
-    let detail = match state.music.playlist_detail(provider, &id).await {
+    let mut detail = match state.music.playlist_detail(provider, &id).await {
         Ok(detail) => detail,
         Err(error) if error == format!("playlist {id} not found") => {
             return Err(ApiFailure::not_found(error));
         }
         Err(error) => return Err(provider_failure(&state, provider, error)),
     };
+    state.cache.annotate_tracks(&mut detail.tracks);
     Ok(Json(detail))
 }
 
@@ -846,7 +898,11 @@ async fn search<S: AudioSink + Send + 'static>(
                     || track.author.to_lowercase().contains(&needle)
                     || track.album.to_lowercase().contains(&needle)
             })
-            .map(|track| api_track(&track))
+            .map(|track| {
+                let mut track = api_track(&track);
+                track.cached = true;
+                track
+            })
             .collect();
         let playlists: Vec<Playlist> = state
             .cache
@@ -873,12 +929,13 @@ async fn search<S: AudioSink + Send + 'static>(
             .collect();
         return Ok(Json(SearchResults { tracks, playlists }));
     }
-    state
+    let mut results = state
         .music
         .search(provider, &query.q)
         .await
-        .map(Json)
-        .map_err(|error| ApiFailure::upstream(format!("{provider}: {error}")))
+        .map_err(|error| ApiFailure::upstream(format!("{provider}: {error}")))?;
+    state.cache.annotate_tracks(&mut results.tracks);
+    Ok(Json(results))
 }
 
 /// Load the full detail for one track.
@@ -902,7 +959,11 @@ async fn track_detail<S: AudioSink + Send + 'static>(
             .cached_tracks(provider)
             .into_iter()
             .find(|track| track.track_id == track_id)
-            .map(|track| api_track(&track))
+            .map(|track| {
+                let mut track = api_track(&track);
+                track.cached = true;
+                track
+            })
             .ok_or_else(|| {
                 ApiFailure::offline_unavailable(format!(
                     "track {provider}:{track_id} is not cached"
@@ -913,11 +974,10 @@ async fn track_detail<S: AudioSink + Send + 'static>(
             description: None,
         }));
     }
-    state
+    let mut detail = state
         .music
         .track_detail(provider, &track_id)
         .await
-        .map(Json)
         .map_err(|error| {
             let lower = error.to_ascii_lowercase();
             if lower.contains("not found")
@@ -928,7 +988,11 @@ async fn track_detail<S: AudioSink + Send + 'static>(
             } else {
                 ApiFailure::upstream(format!("{provider}: {error}"))
             }
-        })
+        })?;
+    state
+        .cache
+        .annotate_tracks(std::slice::from_mut(&mut detail.track));
+    Ok(Json(detail))
 }
 
 /// Serve a cached cover image.
@@ -1236,7 +1300,11 @@ async fn cached_tracks<S: AudioSink + Send + 'static>(
             .cache
             .cached_tracks(provider)
             .iter()
-            .map(api_track)
+            .map(|track| {
+                let mut track = api_track(track);
+                track.cached = true;
+                track
+            })
             .collect(),
     ))
 }
@@ -1270,7 +1338,15 @@ async fn cached_playlists<S: AudioSink + Send + 'static>(
                             .and_then(|metadata| metadata.feed_url.clone()),
                         item_count: Some(group.tracks.len() as u32),
                     },
-                    tracks: group.tracks.iter().map(api_track).collect(),
+                    tracks: group
+                    .tracks
+                    .iter()
+                    .map(|track| {
+                        let mut track = api_track(track);
+                        track.cached = true;
+                        track
+                    })
+                    .collect(),
                 }
             })
             .collect(),
@@ -1647,6 +1723,8 @@ fn api_track(track: &recvrd_core::Track) -> Track {
         duration: track.duration.clone(),
         source: track.source.clone(),
         metadata: track.metadata.clone(),
+        // The queue does not carry the flag. List responses set it.
+        cached: false,
     }
 }
 
@@ -1716,6 +1794,9 @@ fn playback_failure(error: PlaybackError) -> ApiFailure {
         PlaybackError::IndexOutOfBounds => ApiFailure::bad_request("queue index out of bounds"),
         PlaybackError::InvalidPosition => ApiFailure::bad_request("invalid seek position"),
         PlaybackError::UnsupportedMode(message) => ApiFailure::bad_request(message),
+        PlaybackError::NotCached => {
+            ApiFailure::offline_unavailable("track is not cached for offline mode")
+        }
         PlaybackError::Sink(message) => ApiFailure::internal(message),
     }
 }
@@ -1765,6 +1846,7 @@ mod tests {
         fail_playlist: Option<String>,
         playlist_detail: Option<Result<PlaylistDetail, String>>,
         track_detail: Option<Result<TrackDetail, String>>,
+        search: Option<SearchResults>,
     }
 
     fn track(id: &str) -> Track {
@@ -1827,6 +1909,9 @@ mod tests {
             _provider: ProviderId,
             _query: &str,
         ) -> Result<SearchResults, String> {
+            if let Some(results) = &self.search {
+                return Ok(results.clone());
+            }
             Ok(SearchResults {
                 tracks: vec![track("v3")],
                 playlists: vec![],
@@ -2225,6 +2310,20 @@ mod tests {
         music: Arc<dyn MusicApi>,
         downloads: Arc<dyn DownloadControl>,
     ) -> AppState<MockSink> {
+        test_state_in_with_providers(
+            cache_root,
+            music,
+            downloads,
+            vec![ProviderId::Youtube, ProviderId::Rss],
+        )
+    }
+
+    fn test_state_in_with_providers(
+        cache_root: &Path,
+        music: Arc<dyn MusicApi>,
+        downloads: Arc<dyn DownloadControl>,
+        providers: Vec<ProviderId>,
+    ) -> AppState<MockSink> {
         let artwork = Arc::new(ArtworkCache::with_fetcher(
             cache_root.join("covers"),
             0,
@@ -2254,7 +2353,7 @@ mod tests {
             artwork,
             cache,
             rss,
-            vec![ProviderId::Youtube, ProviderId::Rss],
+            providers,
             settings,
         )
     }
@@ -3646,6 +3745,152 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn playlist_detail_marks_cached_tracks() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("downloads/youtube")).unwrap();
+        std::fs::write(
+            dir.path().join("downloads/youtube/dQw4w9WgXcQ.mp4"),
+            b"audio",
+        )
+        .unwrap();
+        let detail = PlaylistDetail {
+            playlist: Playlist {
+                id: "p1".to_string(),
+                name: "Playlist One".to_string(),
+                subtitle: "Artist".to_string(),
+                ..Default::default()
+            },
+            tracks: vec![
+                Track {
+                    provider: ProviderId::Youtube,
+                    track_id: "dQw4w9WgXcQ".to_string(),
+                    title: "Track one".to_string(),
+                    artist: "Artist".to_string(),
+                    album: "Album".to_string(),
+                    duration: "3:00".to_string(),
+                    ..Default::default()
+                },
+                Track {
+                    provider: ProviderId::Youtube,
+                    track_id: "abcdefghijk".to_string(),
+                    title: "Track two".to_string(),
+                    artist: "Artist".to_string(),
+                    album: "Album".to_string(),
+                    duration: "3:00".to_string(),
+                    ..Default::default()
+                },
+            ],
+        };
+        let music = Arc::new(MockMusicApi {
+            playlist_detail: Some(Ok(detail)),
+            ..Default::default()
+        });
+        let state = test_state_in_with(dir.path(), music, Arc::new(MockDownloads::default()));
+        let (base, server) = start_server(state).await;
+        let response = reqwest::Client::new()
+            .get(format!("{base}/api/playlists/p1"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let body: serde_json::Value = response.json().await.unwrap();
+        let tracks = body["tracks"].as_array().unwrap();
+        assert_eq!(tracks.len(), 2);
+        assert_eq!(tracks[0]["cached"], true);
+        assert!(tracks[1].get("cached").is_none());
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn search_marks_cached_tracks() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("downloads/youtube")).unwrap();
+        std::fs::write(
+            dir.path().join("downloads/youtube/dQw4w9WgXcQ.mp4"),
+            b"audio",
+        )
+        .unwrap();
+        let music = Arc::new(MockMusicApi {
+            search: Some(SearchResults {
+                tracks: vec![
+                    Track {
+                        provider: ProviderId::Youtube,
+                        track_id: "dQw4w9WgXcQ".to_string(),
+                        title: "Track one".to_string(),
+                        artist: "Artist".to_string(),
+                        album: "Album".to_string(),
+                        duration: "3:00".to_string(),
+                        ..Default::default()
+                    },
+                    Track {
+                        provider: ProviderId::Youtube,
+                        track_id: "abcdefghijk".to_string(),
+                        title: "Track two".to_string(),
+                        artist: "Artist".to_string(),
+                        album: "Album".to_string(),
+                        duration: "3:00".to_string(),
+                        ..Default::default()
+                    },
+                ],
+                playlists: vec![],
+            }),
+            ..Default::default()
+        });
+        let state = test_state_in_with(dir.path(), music, Arc::new(MockDownloads::default()));
+        let (base, server) = start_server(state).await;
+        let response = reqwest::Client::new()
+            .get(format!("{base}/api/search?q=test"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let body: serde_json::Value = response.json().await.unwrap();
+        let tracks = body["tracks"].as_array().unwrap();
+        assert_eq!(tracks.len(), 2);
+        assert_eq!(tracks[0]["cached"], true);
+        assert!(tracks[1].get("cached").is_none());
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn track_detail_marks_a_cached_track() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("downloads/podverse")).unwrap();
+        std::fs::write(dir.path().join("downloads/podverse/52369.mp3"), b"audio").unwrap();
+        let music = Arc::new(MockMusicApi {
+            track_detail: Some(Ok(TrackDetail {
+                track: Track {
+                    provider: ProviderId::Podverse,
+                    track_id: "52369".to_string(),
+                    title: "Episode".to_string(),
+                    artist: "Channel".to_string(),
+                    album: "Show".to_string(),
+                    duration: "30:00".to_string(),
+                    ..Default::default()
+                },
+                description: None,
+            })),
+            ..Default::default()
+        });
+        let state = test_state_in_with_providers(
+            dir.path(),
+            music,
+            Arc::new(MockDownloads::default()),
+            vec![ProviderId::Youtube, ProviderId::Rss, ProviderId::Podverse],
+        );
+        let (base, server) = start_server(state).await;
+        let response = reqwest::Client::new()
+            .get(format!("{base}/api/tracks/podverse/52369"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let body: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(body["track"]["cached"], true);
+        server.abort();
+    }
+
+    #[tokio::test]
     async fn rss_playlist_detail_with_an_expired_youtube_file_returns_502() {
         // An expired YouTube file must not turn an RSS failure into
         // an auth error. RSS needs no auth.
@@ -4468,6 +4713,171 @@ mod tests {
                 .unwrap()
                 .contains("upstream unavailable")
         );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn offline_switch_persists_and_cancels_downloads() {
+        let downloads = Arc::new(MockDownloads::default());
+        let state = test_state_with_downloads(
+            Arc::new(MockMusicApi::default()),
+            downloads.clone(),
+        );
+        let settings_path = state.settings.path().to_path_buf();
+        let (base, server) = start_server(state).await;
+        let client = reqwest::Client::new();
+
+        let status: serde_json::Value = client
+            .put(format!("{base}/api/offline"))
+            .json(&OfflineRequest { enabled: true })
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(status["offline"], true);
+        assert!(downloads.stopped());
+        assert!(downloads.resets() > 0);
+        assert!(PlaybackSettingsStore::load(settings_path).offline());
+
+        let current: serde_json::Value = client
+            .get(format!("{base}/api/offline"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(current["enabled"], true);
+
+        let status: serde_json::Value = client
+            .put(format!("{base}/api/offline"))
+            .json(&OfflineRequest { enabled: false })
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(status["offline"], false);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn offline_library_serves_cached_content_without_provider_calls() {
+        let dir = tempfile::tempdir().unwrap();
+        seed_podverse_cache(dir.path());
+        let music = Arc::new(MockMusicApi {
+            fail_playlists: Some("provider is down".to_string()),
+            fail_playlist: Some("provider is down".to_string()),
+            ..Default::default()
+        });
+        let state = test_state_in_with_providers(
+            dir.path(),
+            music,
+            Arc::new(MockDownloads::default()),
+            vec![ProviderId::Youtube, ProviderId::Rss, ProviderId::Podverse],
+        );
+        state.settings.set_offline(true).unwrap();
+        let (base, server) = start_server(state).await;
+        let client = reqwest::Client::new();
+
+        let playlists: Vec<Playlist> = client
+            .get(format!("{base}/api/playlists?provider=podverse"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(playlists.len(), 2);
+        assert_eq!(playlists[0].id, "42");
+        assert_eq!(playlists[0].item_count, Some(2));
+
+        let detail: PlaylistDetail = client
+            .get(format!("{base}/api/playlists/42?provider=podverse"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(detail.tracks.len(), 2);
+        assert!(detail.tracks.iter().all(|track| track.cached));
+
+        let found: SearchResults = client
+            .get(format!("{base}/api/search?provider=podverse&q=alpha"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(found.tracks.len(), 1);
+        assert_eq!(found.tracks[0].track_id, "1002");
+        assert!(found.tracks[0].cached);
+
+        let track: TrackDetail = client
+            .get(format!("{base}/api/tracks/podverse/1002"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(track.track.track_id, "1002");
+        assert!(track.track.cached);
+
+        let missing = client
+            .get(format!("{base}/api/playlists/999?provider=podverse"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(missing.status(), reqwest::StatusCode::CONFLICT);
+        let body: serde_json::Value = missing.json().await.unwrap();
+        assert_eq!(body["error"]["code"], "offline_unavailable");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn offline_rejects_uncached_playback_and_downloads() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = test_state_in_with_providers(
+            dir.path(),
+            Arc::new(MockMusicApi::default()),
+            Arc::new(MockDownloads::default()),
+            vec![ProviderId::Youtube, ProviderId::Rss, ProviderId::Podverse],
+        );
+        state.settings.set_offline(true).unwrap();
+        state.playback.lock().await.set_offline(true).await.unwrap();
+        let (base, server) = start_server(state).await;
+        let client = reqwest::Client::new();
+
+        let play = client
+            .post(format!("{base}/api/play/track"))
+            .json(&PlayTrackRequest {
+                track: track("dQw4w9WgXcQ"),
+            })
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(play.status(), reqwest::StatusCode::CONFLICT);
+        let body: serde_json::Value = play.json().await.unwrap();
+        assert_eq!(body["error"]["code"], "offline_unavailable");
+
+        for path in ["/api/downloads/retry", "/api/rss/feeds/refresh"] {
+            let response = client
+                .post(format!("{base}{path}"))
+                .json(&serde_json::json!({
+                    "provider": "youtube",
+                    "track_id": "dQw4w9WgXcQ"
+                }))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), reqwest::StatusCode::CONFLICT, "{path}");
+        }
         server.abort();
     }
 

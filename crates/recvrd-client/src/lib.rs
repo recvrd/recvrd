@@ -7,8 +7,8 @@ use bytes::Bytes;
 use futures_util::{Stream, StreamExt};
 use recvrd_api::{
     AddPlaylistTracksRequest, AddRssFeedRequest, CreatePlaylistRequest, ErrorEnvelope, Event,
-    MovePlaylistTrackRequest, OkResponse, PlayNextRequest, PlayPlaylistRequest, PlayTrackRequest,
-    Playlist, PlaylistDetail, ProviderId, ProviderInfo, Queue, QueueRequest,
+    MovePlaylistTrackRequest, OfflineRequest, OkResponse, PlayNextRequest, PlayPlaylistRequest,
+    PlayTrackRequest, Playlist, PlaylistDetail, ProviderId, ProviderInfo, Queue, QueueRequest,
     RemovePlaylistTracksRequest, RemoveQueueRequest, ReorderQueueRequest, RepeatRequest,
     RetryDownloadRequest, RssFeed, SearchResults, SeekRequest, ShuffleRequest, Status, Track,
     TrackDetail, TrackKey, UpdatePlaylistRequest, VolumeRequest,
@@ -247,6 +247,16 @@ impl DaemonClient {
     /// and its auth state.
     pub async fn providers(&self) -> Result<Vec<ProviderInfo>, DaemonError> {
         self.get("/api/providers").await
+    }
+
+    /// Report the manual offline switch.
+    pub async fn offline(&self) -> Result<OfflineRequest, DaemonError> {
+        self.get("/api/offline").await
+    }
+
+    /// Turn offline mode on or off.
+    pub async fn set_offline(&self, enabled: bool) -> Result<Status, DaemonError> {
+        self.put("/api/offline", &OfflineRequest { enabled }).await
     }
 
     /// Change the playback mode for one provider.
@@ -780,6 +790,7 @@ mod tests {
             },
             queue_length: 1,
             downloads: DownloadSummary::default(),
+            offline: false,
             providers: vec![ProviderId::Youtube],
             default_provider: ProviderId::Youtube,
         }

@@ -17,6 +17,8 @@
     onremove,
     onmoveup,
     onmovedown,
+    offline = false,
+    onunavailable,
     emptyMessage = 'No tracks here.',
   }: {
     tracks: Track[];
@@ -30,6 +32,8 @@
     onremove?: (index: number) => void;
     onmoveup?: (index: number) => void;
     onmovedown?: (index: number) => void;
+    offline?: boolean;
+    onunavailable?: (track: Track) => void;
     emptyMessage?: string;
   } = $props();
 
@@ -148,10 +152,12 @@
         {@const index = start + offset}
         {@const download = downloadStatus(track)}
         {@const playing = currentTrack?.track_id === track.track_id}
+        {@const unavailable = offline && track.cached !== true}
         <div
           class="row"
           class:selected={index === selection}
           class:playing
+          class:unavailable
           role="row"
           tabindex={index === selection ? 0 : -1}
           aria-selected={index === selection}
@@ -181,7 +187,22 @@
               }}
             />
           </span>
-          <span class="title" title={track.title}>{track.title}</span>
+          <span class="title" title={track.title}>
+            {track.title}
+            {#if unavailable}
+              <button
+                class="info"
+                title="Not cached for offline mode"
+                aria-label={`Why ${track.title} is unavailable offline`}
+                onclick={(event) => {
+                  event.stopPropagation();
+                  onunavailable?.(track);
+                }}
+              >
+                i
+              </button>
+            {/if}
+          </span>
           <span class="artist" title={track.artist}>{track.artist}</span>
           <span class="optional album" title={track.album}>
             {[track.album, ...trackMetadataFacts(track)].filter(Boolean).join(' · ')}
@@ -276,6 +297,24 @@
   .row.playing .title,
   .row.playing .index {
     color: var(--accent);
+  }
+
+  .row.unavailable {
+    opacity: 0.5;
+  }
+
+  .info {
+    width: 1.05rem;
+    height: 1.05rem;
+    margin-left: 0.35rem;
+    padding: 0;
+    border: 1px solid var(--warning);
+    border-radius: 50%;
+    background: transparent;
+    color: var(--warning);
+    font-size: 0.66rem;
+    line-height: 1;
+    vertical-align: middle;
   }
 
   .index,

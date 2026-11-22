@@ -29,6 +29,8 @@ pub enum DaemonEvent {
     TrackEnded,
     /// The daemon reported an error.
     Error(ApiError),
+    /// The manual offline switch changed.
+    Offline(bool),
     /// The library changed on the daemon.
     LibraryChanged,
     /// A status response from a command.
@@ -81,6 +83,7 @@ impl DaemonEvent {
             },
             EventKind::TrackEnded { .. } => Self::TrackEnded,
             EventKind::Error { error } => Self::Error(error),
+            EventKind::Offline { enabled } => Self::Offline(enabled),
             EventKind::LibraryChanged => Self::LibraryChanged,
         }
     }

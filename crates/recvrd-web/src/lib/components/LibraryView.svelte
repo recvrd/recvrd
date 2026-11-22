@@ -348,6 +348,8 @@
           onremove={store.canEditPlaylist ? requestRemove : undefined}
           onmoveup={store.canEditPlaylist ? (index) => move(index, -1) : undefined}
           onmovedown={store.canEditPlaylist ? (index) => move(index, 1) : undefined}
+          offline={store.offline}
+          onunavailable={() => store.openOfflineHelp()}
           emptyMessage="This playlist has no tracks."
         />
       {/if}

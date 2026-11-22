@@ -458,6 +458,11 @@ fn run_serve(
         )));
         {
             let mut service = playback.lock().await;
+            if settings.offline()
+                && let Err(error) = service.set_offline(true).await
+            {
+                log::warn!("could not start in offline mode: {error:?}");
+            }
             match service.load_state(&state_path) {
                 Ok(()) => log::info!("restored playback state from {}", state_path.display()),
                 Err(error) => {

@@ -403,6 +403,7 @@ fn track_dto(episode: &StoredEpisode) -> Track {
             feed_url: Some(episode.feed_url.clone()),
             ..Default::default()
         })),
+        cached: false,
     }
 }
 

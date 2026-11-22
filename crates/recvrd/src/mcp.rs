@@ -154,6 +154,12 @@ pub struct PlaybackModeArgs {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct OfflineArgs {
+    /// Whether offline mode is on.
+    pub enabled: bool,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct VolumeArgs {
     /// Volume from 0 to 100.
     pub volume: u8,
@@ -249,6 +255,21 @@ impl McpServer {
     ) -> Result<Json<ProviderInfo>, McpError> {
         self.client
             .set_playback_mode(args.provider, args.mode)
+            .await
+            .map(Json)
+            .map_err(to_mcp)
+    }
+
+    /// Turn the manual offline switch on or off.
+    #[tool(
+        description = "Turn offline mode on or off. While on, the daemon uses cached content only"
+    )]
+    async fn set_offline(
+        &self,
+        Parameters(args): Parameters<OfflineArgs>,
+    ) -> Result<Json<Status>, McpError> {
+        self.client
+            .set_offline(args.enabled)
             .await
             .map(Json)
             .map_err(to_mcp)
@@ -707,7 +728,7 @@ mod tests {
     };
     use recvrd_api::{
         AddPlaylistTracksRequest, ApiError, AuthState, AuthStatus, DownloadStatus, ErrorEnvelope,
-        MovePlaylistTrackRequest, OkResponse, PlayPlaylistRequest, PlayTrackRequest,
+        MovePlaylistTrackRequest, OfflineRequest, OkResponse, PlayPlaylistRequest, PlayTrackRequest,
         PlaybackModeRequest, PlaybackSnapshot, PlaybackState, Playlist, PlaylistPrivacy, QueueItem,
         QueueRequest, RemovePlaylistTracksRequest, RepeatMode, TrackDetail,
     };
@@ -766,6 +787,7 @@ mod tests {
                 retrying: 0,
                 failed: 0,
             },
+            offline: false,
             providers: vec![ProviderId::Youtube],
             default_provider: ProviderId::Youtube,
         }
@@ -787,6 +809,7 @@ mod tests {
         let router = Router::new()
             .route("/api/status", get(mock_status))
             .route("/api/providers", get(mock_providers))
+            .route("/api/offline", get(mock_offline).put(mock_set_offline))
             .route(
                 "/api/providers/{provider}/playback",
                 put(mock_set_playback_mode),
@@ -875,6 +898,23 @@ mod tests {
             },
             recvrd_api::PlaybackMode::Download,
         )])
+    }
+
+    async fn mock_offline() -> AxumJson<OfflineRequest> {
+        AxumJson(OfflineRequest { enabled: false })
+    }
+
+    async fn mock_set_offline(
+        State(state): State<MockState>,
+        AxumJson(request): AxumJson<OfflineRequest>,
+    ) -> AxumJson<Status> {
+        state.calls.lock().unwrap().push(format!(
+            "PUT /api/offline {}",
+            request.enabled
+        ));
+        let mut status = status();
+        status.offline = request.enabled;
+        AxumJson(status)
     }
 
     async fn mock_set_playback_mode(

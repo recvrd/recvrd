@@ -339,6 +339,12 @@ curl 'http://127.0.0.1:8080/api/search?q=civilization'
 Search returns `{ "tracks": [...], "playlists": [...] }`. An empty `q` is
 rejected with 400. Upstream failures return 502 with an actionable message.
 
+Each track in a playlist detail, search, or track detail response carries
+a `cached` flag. The flag is true when a non-empty audio file exists for
+the track in the download cache. The field is omitted when false. Clients
+use the flag to show a track as cached or unavailable without a check per
+track. The queue does not carry the flag.
+
 ### Cover art
 
 ```sh

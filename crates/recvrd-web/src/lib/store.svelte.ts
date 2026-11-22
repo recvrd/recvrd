@@ -169,6 +169,7 @@ export class AppStore {
   volume = $state(50);
   playerLayout = $state<PlayerLayout>('compact');
   fullPlayerOpen = $state(false);
+  offlineHelpOpen = $state(false);
   trackDetail = $state<TrackDetail | null>(null);
   trackDetailKey = $state<string | null>(null);
   trackDetailLoading = $state(false);
@@ -268,6 +269,16 @@ export class AppStore {
 
   get playbackModes(): PlaybackMode[] {
     return this.activeProviderInfo?.playback_modes ?? [];
+  }
+
+  get offline(): boolean {
+    return this.status?.offline ?? false;
+  }
+
+  /// True when a track can play in the current mode. While offline,
+  /// only tracks with a local cache file are available.
+  trackAvailable(track: Track): boolean {
+    return !this.offline || track.cached === true;
   }
 
   get canCreatePlaylist(): boolean {
@@ -392,6 +403,35 @@ export class AppStore {
       this.providers = previous;
       this.report(error);
     }
+  }
+
+  /// Turn the manual offline switch on or off.
+  async setOffline(enabled: boolean): Promise<void> {
+    if (this.offline === enabled) return;
+    try {
+      const status = await this.api.setOffline(enabled);
+      this.status = status;
+      this.searchResults = null;
+      this.searchQuery = '';
+      await this.loadPlaylists();
+      if (this.view.kind === 'playlist') {
+        await this.openPlaylist(this.view.id, this.view.name);
+      }
+      this.notify(
+        'info',
+        enabled ? 'Offline mode is on. Showing cached content.' : 'Offline mode is off.',
+      );
+    } catch (error) {
+      this.report(error);
+    }
+  }
+
+  openOfflineHelp(): void {
+    this.offlineHelpOpen = true;
+  }
+
+  closeOfflineHelp(): void {
+    this.offlineHelpOpen = false;
   }
 
   async refreshQueue(): Promise<void> {
@@ -1247,6 +1287,12 @@ export class AppStore {
           };
         }
         this.scheduleStatusRefresh();
+        break;
+      case 'offline':
+        if (this.status) {
+          this.status = { ...this.status, offline: event.enabled };
+        }
+        void this.loadPlaylists();
         break;
       case 'track_ended':
         this.scheduleStatusRefresh();

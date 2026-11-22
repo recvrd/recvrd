@@ -11,6 +11,7 @@
   import HelpOverlay from './lib/components/HelpOverlay.svelte';
   import LibraryView from './lib/components/LibraryView.svelte';
   import NowPlaying from './lib/components/NowPlaying.svelte';
+  import OfflineHelp from './lib/components/OfflineHelp.svelte';
   import PlaylistPicker from './lib/components/PlaylistPicker.svelte';
   import QueueView from './lib/components/QueueView.svelte';
   import SearchPalette from './lib/components/SearchPalette.svelte';
@@ -114,6 +115,16 @@
         </select>
       </label>
     {/if}
+    <button
+      class="offline-toggle"
+      class:active={store.offline}
+      aria-pressed={store.offline}
+      aria-label="Offline mode"
+      title="Offline mode: use cached content only"
+      onclick={() => void store.setOffline(!store.offline)}
+    >
+      {store.offline ? 'offline mode' : 'online'}
+    </button>
     <button class="search-button" onclick={() => store.openSearch()}>
       <span aria-hidden="true">⌕</span>
       <span>Search</span>
@@ -182,6 +193,7 @@
   <FullPlayer {store} />
   <SearchPalette {store} />
   <PlaylistPicker {store} />
+  <OfflineHelp {store} />
   <HelpOverlay open={store.helpOpen} onclose={() => (store.helpOpen = false)} />
   <ToastHost {store} />
 </div>
@@ -234,6 +246,21 @@
 
   .provider-select select:hover {
     color: var(--accent);
+  }
+
+  .offline-toggle {
+    font-size: 0.74rem;
+    padding: 0.3rem 0.55rem;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: transparent;
+    color: var(--fg-muted);
+  }
+
+  .offline-toggle.active {
+    border-color: var(--warning);
+    color: var(--warning);
+    background: color-mix(in srgb, var(--warning) 12%, transparent);
   }
 
   .visually-hidden {

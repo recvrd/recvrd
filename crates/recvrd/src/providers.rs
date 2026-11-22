@@ -594,6 +594,39 @@ mod tests {
         assert_eq!(composite.audio_extension(&youtube_track), "mp4");
     }
 
+    #[tokio::test]
+    async fn offline_music_api_refuses_provider_calls() {
+        let api = ReloadableMusicApi::new(
+            None,
+            None,
+            rss(),
+            None,
+            Arc::new(AtomicBool::new(true)),
+        );
+        let error = api
+            .search(ProviderId::Youtube, "test")
+            .await
+            .unwrap_err();
+        assert_eq!(error, OFFLINE_MESSAGE);
+        assert!(api.auth_status(ProviderId::Youtube).is_none());
+    }
+
+    #[tokio::test]
+    async fn online_without_auth_uses_the_unavailable_api() {
+        let api = ReloadableMusicApi::new(
+            None,
+            None,
+            rss(),
+            None,
+            Arc::new(AtomicBool::new(false)),
+        );
+        let error = api
+            .search(ProviderId::Youtube, "test")
+            .await
+            .unwrap_err();
+        assert!(error.contains("unavailable"), "{error}");
+    }
+
     struct NamedDownloader;
 
     #[async_trait]

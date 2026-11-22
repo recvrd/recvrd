@@ -553,6 +553,12 @@ impl App {
                 self.show_toast(ToastLevel::Error, error.message);
                 Vec::new()
             }
+            DaemonEvent::Offline(enabled) => {
+                if let Some(status) = &mut self.status {
+                    status.offline = enabled;
+                }
+                self.refresh_library()
+            }
             DaemonEvent::LibraryChanged => self.refresh_library(),
             DaemonEvent::Providers(providers) => {
                 let known: Vec<ProviderId> = providers.iter().map(|provider| provider.id).collect();
@@ -2029,6 +2035,7 @@ mod tests {
             },
             queue_length: 1,
             downloads: DownloadSummary::default(),
+            offline: false,
             providers: vec![ProviderId::Youtube],
             default_provider: ProviderId::Youtube,
         }

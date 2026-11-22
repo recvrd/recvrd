@@ -152,6 +152,11 @@ pub struct Track {
     /// Provider metadata for the track.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Box<TrackMetadata>>,
+    /// True when a local audio file exists for this track. The
+    /// daemon sets this field on list responses. Providers leave
+    /// it false. Clients use it to show a track as cached.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub cached: bool,
 }
 
 impl Track {
@@ -159,6 +164,12 @@ impl Track {
     pub fn key(&self) -> TrackKey {
         TrackKey::new(self.provider, self.track_id.clone())
     }
+}
+
+/// True when the value is false. Serde uses this helper to omit a
+/// false boolean from JSON.
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -739,6 +750,7 @@ mod tests {
             playback: PlaybackSnapshot::default(),
             queue_length: 0,
             downloads: DownloadSummary::default(),
+            offline: false,
             providers: vec![ProviderId::Youtube],
             default_provider: ProviderId::Youtube,
         };

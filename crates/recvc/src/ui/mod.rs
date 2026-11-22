@@ -425,6 +425,7 @@ mod tests {
             },
             queue_length: 1,
             downloads: DownloadSummary::default(),
+            offline: false,
             providers: vec![ProviderId::Youtube],
             default_provider: ProviderId::Youtube,
         });
