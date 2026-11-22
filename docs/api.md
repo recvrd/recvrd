@@ -97,6 +97,8 @@ prompt. A session that expires during pagination ends the load with
 | POST | `/api/downloads/retry` | Retry a failed download (`{provider, track_id}`) |
 | GET | `/api/cache` | Download and cover cache sizes |
 | POST | `/api/cache/clean` | Delete cached files (`{scope}`) |
+| GET | `/api/library/cached?provider=...` | Cached tracks for a provider |
+| GET | `/api/library/cached/playlists?provider=...` | Cached playlists for a provider |
 | GET | `/api/rss/feeds` | RSS feeds the daemon follows |
 | POST | `/api/rss/feeds` | Add an RSS feed (`{url}`) |
 | POST | `/api/rss/feeds/refresh` | Refresh every RSS feed |
@@ -384,6 +386,28 @@ When the daemon answers, the command uses the API. When the daemon does not
 answer, the command cleans the files directly from disk and keeps the
 current track from the saved playback state. Active downloads are not
 stopped in that case, so stop the daemon first for a full clean.
+
+### Cached library
+
+```sh
+curl 'http://127.0.0.1:8080/api/library/cached?provider=podverse'
+curl 'http://127.0.0.1:8080/api/library/cached/playlists?provider=podverse'
+```
+
+`GET /api/library/cached` lists the complete downloads for one provider.
+The daemon reads the metadata sidecars below `downloads/<provider>/` and
+returns the tracks whose audio file exists and is not empty. The endpoint
+makes no provider call, so it works with no network. A track that is still
+downloading, or whose sidecar does not parse, is not listed.
+
+`GET /api/library/cached/playlists` groups the same tracks into playlists
+by channel. A track joins the playlist of its channel ID when it has one,
+otherwise the playlist of its album. A track with neither a channel nor an
+album appears in the track list but in no playlist. Each playlist carries
+its tracks, so one call returns the full cached library for the provider.
+
+A track from the cached list plays through `POST /api/play/track`, like any
+other track. The daemon plays the cached file.
 
 ### Playlist edits
 
