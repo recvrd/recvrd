@@ -1246,6 +1246,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_existing_cache_file_wins_over_stream_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("downloads/podverse")).unwrap();
+        std::fs::write(
+            dir.path().join("downloads/podverse/YvIRJrjZVe.mp3"),
+            b"audio",
+        )
+        .unwrap();
+        let mut service = PlaybackService::with_streams(
+            MockSink::default(),
+            dir.path(),
+            50,
+            mode_settings(PlaybackMode::Stream),
+            Arc::new(MockStreams),
+        );
+        service.play_playlist(vec![stream_track()]).await.unwrap();
+
+        assert_eq!(service.sink.sources, vec![PlaybackSourceKind::File]);
+        assert_eq!(
+            service.snapshot().source_kind,
+            Some(PlaybackSourceKind::File)
+        );
+    }
+
+    #[tokio::test]
     async fn stream_then_download_falls_back_to_download() {
         let dir = tempfile::tempdir().unwrap();
         let mut service = PlaybackService::with_streams(
