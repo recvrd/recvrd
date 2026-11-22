@@ -51,6 +51,8 @@ pub struct DaemonConfig {
     pub initial_volume: u8,
     /// Maximum size of the cover cache in MiB. 0 disables the limit.
     pub cover_cache_mb: u64,
+    /// Maximum size of the download cache in MiB. 0 disables the limit.
+    pub cache_limit_mb: u64,
     /// Podverse provider configuration.
     pub podverse: PodverseConfig,
 }
@@ -66,6 +68,7 @@ impl Default for DaemonConfig {
             dbus: true,
             initial_volume: 50,
             cover_cache_mb: 100,
+            cache_limit_mb: 10240,
             podverse: PodverseConfig::default(),
         }
     }
@@ -176,6 +179,7 @@ mod tests {
         assert!(config.dbus);
         assert_eq!(config.initial_volume, 50);
         assert_eq!(config.cover_cache_mb, 100);
+        assert_eq!(config.cache_limit_mb, 10240);
         assert_eq!(config.bind, None);
         assert_eq!(config.port, None);
         assert_eq!(config.headers, None);
@@ -197,6 +201,7 @@ downloader = "rusty_ytdl"
 dbus = false
 initial_volume = 75
 cover_cache_mb = 25
+cache_limit_mb = 2048
 
 [podverse]
 base_url = "https://podverse.example.com/api/v2"
@@ -214,6 +219,7 @@ token = "secret"
         assert!(!config.dbus);
         assert_eq!(config.initial_volume, 75);
         assert_eq!(config.cover_cache_mb, 25);
+        assert_eq!(config.cache_limit_mb, 2048);
         assert_eq!(
             config.podverse.base_url.as_deref(),
             Some("https://podverse.example.com/api/v2")

@@ -21,6 +21,9 @@
   skips RSS refresh, restored downloads and YouTube client creation.
 - Add the `offline_unavailable` error code and an in-app explanation for the
   web UI.
+- Add a `cache_limit_mb` download cache limit (default 10240 MiB, 0 disables).
+  The daemon evicts the oldest complete downloads first and keeps the current
+  queue.
 
 ### Changed
 
