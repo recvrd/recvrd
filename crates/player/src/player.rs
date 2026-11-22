@@ -7,7 +7,7 @@ use std::fs::File;
 use std::path::Path;
 use std::time::Duration;
 
-use crate::{PlayError, PlayerData, PlayerOptions, SEEK_STEP};
+use crate::{CurrentSource, PlayError, PlayerData, PlayerOptions, SEEK_STEP};
 
 pub struct Player {
     sink: Sink,
@@ -100,7 +100,8 @@ impl Player {
 
     pub fn play(&mut self, path: &Path) -> Result<(), PlayError> {
         log::info!("Playing file: {:?}", path);
-        self.data.set_current_file(Some(path.to_path_buf()));
+        self.data
+            .set_current_source(Some(CurrentSource::File(path.to_path_buf())));
 
         self.stop();
 
@@ -137,6 +138,9 @@ impl Player {
         mime: Option<&str>,
         seekable: bool,
     ) -> Result<(), PlayError> {
+        // A stream replaces any file. Clear the file so a later seek
+        // cannot replay the previous track.
+        self.data.set_current_source(Some(CurrentSource::Stream));
         self.stop();
         let mut builder = Decoder::builder().with_data(reader);
         if let Some(byte_len) = byte_len {
@@ -207,16 +211,15 @@ impl Player {
         if self.is_finished() {
             return Ok(());
         }
-        let file = self
-            .data
-            .current_file()
-            .ok_or_else(|| PlayError::Io(std::io::Error::other("no current file")))?;
 
         self.sink.try_seek(time).map_err(PlayError::SeekError)?;
 
         // If the sink is finished, we need to reset the music
         // This happens when the user seeks to the start of the song before the buffer.
-        if self.is_finished() {
+        // Only a file source can restart this way. A stream has no file to replay.
+        if self.is_finished()
+            && let Some(file) = self.data.seek_replay_file()
+        {
             log::info!("Sink is finished while seeking, resetting the music");
             self.play_at(&file, time)?;
         }

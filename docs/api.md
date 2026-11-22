@@ -196,7 +196,8 @@ A provider plays in one of three modes:
 
 The defaults are `download` for YouTube and RSS and `stream_then_download` for
 Podverse. YouTube supports only `download`. RSS and Podverse support all three.
-A provider without a remote source still falls back to a download.
+A provider without a remote source falls back to a download in `download` and
+`stream_then_download` modes. In `stream` mode, the track fails with an error.
 
 ```sh
 curl -X PUT http://127.0.0.1:8080/api/providers/rss/playback \
