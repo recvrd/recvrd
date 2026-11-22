@@ -5,7 +5,7 @@
 
 pub mod music;
 
-pub use common_structs::{ProviderId, TrackKey};
+pub use common_structs::{MediaKind, ProviderId, TrackKey, TrackMetadata, TrackSource};
 pub use music::{MusicApi, PlaylistEditError};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -34,8 +34,10 @@ impl ProviderCapabilities {
     /// The capabilities of one provider. YouTube Music supports
     /// every action today. RSS feeds support search, library,
     /// playlists, downloads and covers, but not playlist edits:
-    /// feeds are read-only. A provider that lacks an action must
-    /// set its flag to false, so clients can hide the action.
+    /// feeds are read-only. Podverse supports channel search,
+    /// playlists, downloads and covers, but no library or edits.
+    /// A provider that lacks an action must set its flag to false,
+    /// so clients can hide the action.
     pub fn for_provider(provider: ProviderId) -> Self {
         match provider {
             ProviderId::Youtube => Self {
@@ -50,6 +52,15 @@ impl ProviderCapabilities {
             ProviderId::Rss => Self {
                 search: true,
                 library: true,
+                playlists: true,
+                playlist_create: false,
+                playlist_edit: false,
+                downloads: true,
+                covers: true,
+            },
+            ProviderId::Podverse => Self {
+                search: true,
+                library: false,
                 playlists: true,
                 playlist_create: false,
                 playlist_edit: false,
@@ -90,7 +101,7 @@ impl ProviderInfo {
 }
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct Track {
     /// The provider this track came from. Old payloads without the
@@ -104,6 +115,12 @@ pub struct Track {
     pub artist: String,
     pub album: String,
     pub duration: String,
+    /// The remote media source, when the provider supplies one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<Box<TrackSource>>,
+    /// Provider metadata for the track.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<Box<TrackMetadata>>,
 }
 
 impl Track {
@@ -114,12 +131,27 @@ impl Track {
 }
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct Playlist {
     pub id: String,
     pub name: String,
     pub subtitle: String,
+    /// The cover image URL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_url: Option<String>,
+    /// The channel or playlist author.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
+    /// A short description.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// The feed URL for a channel.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub feed_url: Option<String>,
+    /// The number of items in the channel or playlist.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item_count: Option<u32>,
 }
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -128,6 +160,16 @@ pub struct Playlist {
 pub struct PlaylistDetail {
     pub playlist: Playlist,
     pub tracks: Vec<Track>,
+}
+
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct TrackDetail {
+    pub track: Track,
+    /// The full description. Providers that do not serve one omit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -554,6 +596,7 @@ mod tests {
             artist: "Artist".to_string(),
             album: "Album".to_string(),
             duration: "3:00".to_string(),
+            ..Default::default()
         }
     }
 

@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use common_structs::ProviderId;
 
 use crate::{
-    AuthStatus, CreatePlaylistRequest, Playlist, PlaylistDetail, SearchResults, Track,
+    AuthStatus, CreatePlaylistRequest, Playlist, PlaylistDetail, SearchResults, Track, TrackDetail,
     UpdatePlaylistRequest,
 };
 
@@ -50,6 +50,13 @@ pub trait MusicApi: Send + Sync {
     }
 
     async fn search(&self, provider: ProviderId, query: &str) -> Result<SearchResults, String>;
+
+    /// Load the full detail for one track. Providers that do not
+    /// serve detail return an error.
+    async fn track_detail(&self, _provider: ProviderId, _id: &str) -> Result<TrackDetail, String> {
+        Err("track detail is not supported".to_string())
+    }
+
     async fn create_playlist(
         &self,
         request: &CreatePlaylistRequest,

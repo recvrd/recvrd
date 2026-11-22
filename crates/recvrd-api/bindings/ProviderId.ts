@@ -4,4 +4,4 @@
  * A music provider. YouTube Music is the default provider.
  * RSS feeds are the second provider. New providers add a variant here.
  */
-export type ProviderId = "youtube" | "rss";
+export type ProviderId = "youtube" | "rss" | "podverse";

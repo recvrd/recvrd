@@ -20,3 +20,5 @@ cssparser
 # Web
 node_modules/
 dist/
+# Generated TS bindings used from recvrd-api
+crates/common-structs/bindings/

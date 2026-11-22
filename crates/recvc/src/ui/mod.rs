@@ -341,6 +341,7 @@ mod tests {
             artist: "Artist".to_string(),
             album: "Album".to_string(),
             duration: "3:00".to_string(),
+            ..Default::default()
         }
     }
 
@@ -383,6 +384,7 @@ mod tests {
             id: "p1".to_string(),
             name: "Playlist".to_string(),
             subtitle: "Artist".to_string(),
+            ..Default::default()
         }];
         app.sync_selection();
         app

@@ -1,0 +1,28 @@
+{
+  "id": 2984,
+  "id_text": "LJ24O9e4mv",
+  "title": "Rock The Halls",
+  "feed": {
+    "url": "https://wavlake.com/feed/music/1"
+  },
+  "channel_about": {
+    "author": "Jon Ross",
+    "episode_count": 3,
+    "website_link_url": "https://wavlake.com/jon-ross"
+  },
+  "channel_description": {
+    "value": "A holiday EP.",
+    "preview": "A holiday EP."
+  },
+  "channel_images": [
+    {
+      "url": "BASE/image.jpg"
+    }
+  ],
+  "channel_categories": [
+    {
+      "name": "Music"
+    }
+  ],
+  "item_count": 3
+}

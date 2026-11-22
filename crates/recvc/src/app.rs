@@ -2003,6 +2003,7 @@ mod tests {
             artist: "Artist".to_string(),
             album: "Album".to_string(),
             duration: "3:00".to_string(),
+            ..Default::default()
         }
     }
 
@@ -2050,11 +2051,13 @@ mod tests {
                 id: "p1".to_string(),
                 name: "One".to_string(),
                 subtitle: "First".to_string(),
+                ..Default::default()
             },
             Playlist {
                 id: "p2".to_string(),
                 name: "Two".to_string(),
                 subtitle: "Second".to_string(),
+                ..Default::default()
             },
         ]
     }

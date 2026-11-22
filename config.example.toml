@@ -27,3 +27,14 @@ initial_volume = 50
 
 # Maximum size of the cover cache in MiB. 0 disables the limit.
 cover_cache_mb = 100
+
+# Podverse provider. The provider is disabled when base_url is empty.
+# Set the URL to the API base, including the API version. Do not put a
+# secret in this file when other users can read it.
+# [podverse]
+# base_url = "https://podverse.example.com/api/v2"
+# token = "optional-bearer-token"
+
+# Environment overrides:
+#   RECVRD_PODVERSE_URL
+#   RECVRD_PODVERSE_TOKEN

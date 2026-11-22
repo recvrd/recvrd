@@ -5,10 +5,11 @@
 use async_trait::async_trait;
 use common_structs::{ProviderId, TrackKey};
 use download_manager::{DownloadError, TrackDownloader};
+use provider_podverse::PodverseProvider;
 use provider_rss::RssProvider;
 use recvrd_api::{
     AuthStatus, CreatePlaylistRequest, MusicApi, Playlist, PlaylistDetail, PlaylistEditError,
-    SearchResults, Track, UpdatePlaylistRequest,
+    SearchResults, Track, TrackDetail, UpdatePlaylistRequest,
 };
 use recvrd_core::{CoverFetcher, Track as CoreTrack};
 use std::{path::Path, sync::Arc};
@@ -19,20 +20,31 @@ use std::{path::Path, sync::Arc};
 pub struct CompositeMusicApi {
     youtube: Arc<dyn MusicApi>,
     rss: Arc<RssProvider>,
+    podverse: Option<Arc<PodverseProvider>>,
 }
 
 impl CompositeMusicApi {
-    pub fn new(youtube: Arc<dyn MusicApi>, rss: Arc<RssProvider>) -> Self {
-        Self { youtube, rss }
+    pub fn new(
+        youtube: Arc<dyn MusicApi>,
+        rss: Arc<RssProvider>,
+        podverse: Option<Arc<PodverseProvider>>,
+    ) -> Self {
+        Self {
+            youtube,
+            rss,
+            podverse,
+        }
     }
 
-    fn api(&self, provider: ProviderId) -> Arc<dyn MusicApi> {
+    fn api(&self, provider: ProviderId) -> Result<Arc<dyn MusicApi>, String> {
         match provider {
-            ProviderId::Youtube => self.youtube.clone(),
-            ProviderId::Rss => {
-                let api: Arc<dyn MusicApi> = self.rss.clone();
-                api
-            }
+            ProviderId::Youtube => Ok(self.youtube.clone()),
+            ProviderId::Rss => Ok(self.rss.clone()),
+            ProviderId::Podverse => self
+                .podverse
+                .clone()
+                .map(|provider| provider as Arc<dyn MusicApi>)
+                .ok_or_else(|| "Podverse is not configured".to_string()),
         }
     }
 }
@@ -40,15 +52,15 @@ impl CompositeMusicApi {
 #[async_trait]
 impl MusicApi for CompositeMusicApi {
     fn auth_status(&self, provider: ProviderId) -> Option<AuthStatus> {
-        self.api(provider).auth_status(provider)
+        self.api(provider).ok()?.auth_status(provider)
     }
 
     async fn playlists(&self, provider: ProviderId) -> Result<Vec<Playlist>, String> {
-        self.api(provider).playlists(provider).await
+        self.api(provider)?.playlists(provider).await
     }
 
     async fn playlist(&self, provider: ProviderId, id: &str) -> Result<Vec<Track>, String> {
-        self.api(provider).playlist(provider, id).await
+        self.api(provider)?.playlist(provider, id).await
     }
 
     async fn playlist_detail(
@@ -56,11 +68,15 @@ impl MusicApi for CompositeMusicApi {
         provider: ProviderId,
         id: &str,
     ) -> Result<PlaylistDetail, String> {
-        self.api(provider).playlist_detail(provider, id).await
+        self.api(provider)?.playlist_detail(provider, id).await
     }
 
     async fn search(&self, provider: ProviderId, query: &str) -> Result<SearchResults, String> {
-        self.api(provider).search(provider, query).await
+        self.api(provider)?.search(provider, query).await
+    }
+
+    async fn track_detail(&self, provider: ProviderId, id: &str) -> Result<TrackDetail, String> {
+        self.api(provider)?.track_detail(provider, id).await
     }
 
     async fn create_playlist(
@@ -114,20 +130,30 @@ impl MusicApi for CompositeMusicApi {
 pub struct CompositeDownloader {
     youtube: Arc<dyn TrackDownloader>,
     rss: Arc<RssProvider>,
+    podverse: Option<Arc<PodverseProvider>>,
 }
 
 impl CompositeDownloader {
-    pub fn new(youtube: Arc<dyn TrackDownloader>, rss: Arc<RssProvider>) -> Self {
-        Self { youtube, rss }
+    pub fn new(
+        youtube: Arc<dyn TrackDownloader>,
+        rss: Arc<RssProvider>,
+        podverse: Option<Arc<PodverseProvider>>,
+    ) -> Self {
+        Self {
+            youtube,
+            rss,
+            podverse,
+        }
     }
 
-    fn backend(&self, provider: ProviderId) -> Arc<dyn TrackDownloader> {
+    fn backend(&self, provider: ProviderId) -> Option<Arc<dyn TrackDownloader>> {
         match provider {
-            ProviderId::Youtube => self.youtube.clone(),
-            ProviderId::Rss => {
-                let backend: Arc<dyn TrackDownloader> = self.rss.clone();
-                backend
-            }
+            ProviderId::Youtube => Some(self.youtube.clone()),
+            ProviderId::Rss => Some(self.rss.clone()),
+            ProviderId::Podverse => self
+                .podverse
+                .clone()
+                .map(|provider| provider as Arc<dyn TrackDownloader>),
         }
     }
 }
@@ -140,13 +166,19 @@ impl TrackDownloader for CompositeDownloader {
         output: &Path,
         progress: &(dyn Fn(usize) + Send + Sync),
     ) -> Result<(), DownloadError> {
-        self.backend(track.provider)
-            .download(track, output, progress)
-            .await
+        let Some(backend) = self.backend(track.provider) else {
+            return Err(DownloadError::BackendFailed(format!(
+                "provider {} is not configured",
+                track.provider
+            )));
+        };
+        backend.download(track, output, progress).await
     }
 
     fn audio_extension(&self, track: &CoreTrack) -> String {
-        self.backend(track.provider).audio_extension(track)
+        self.backend(track.provider)
+            .map(|backend| backend.audio_extension(track))
+            .unwrap_or_else(|| "mp3".to_string())
     }
 }
 
@@ -155,11 +187,20 @@ impl TrackDownloader for CompositeDownloader {
 pub struct CompositeCoverFetcher {
     youtube: Arc<dyn CoverFetcher>,
     rss: Arc<RssProvider>,
+    podverse: Option<Arc<PodverseProvider>>,
 }
 
 impl CompositeCoverFetcher {
-    pub fn new(youtube: Arc<dyn CoverFetcher>, rss: Arc<RssProvider>) -> Self {
-        Self { youtube, rss }
+    pub fn new(
+        youtube: Arc<dyn CoverFetcher>,
+        rss: Arc<RssProvider>,
+        podverse: Option<Arc<PodverseProvider>>,
+    ) -> Self {
+        Self {
+            youtube,
+            rss,
+            podverse,
+        }
     }
 }
 
@@ -169,6 +210,7 @@ impl CoverFetcher for CompositeCoverFetcher {
         match key.provider {
             ProviderId::Youtube => self.youtube.fetch(key).await,
             ProviderId::Rss => self.rss.fetch(key).await,
+            ProviderId::Podverse => self.podverse.as_ref()?.fetch(key).await,
         }
     }
 }
@@ -188,6 +230,7 @@ mod tests {
                 id: self.name.to_string(),
                 name: self.name.to_string(),
                 subtitle: String::new(),
+                ..Default::default()
             }])
         }
 
@@ -211,6 +254,7 @@ mod tests {
                 id: self.name.to_string(),
                 name: self.name.to_string(),
                 subtitle: String::new(),
+                ..Default::default()
             })
         }
 
@@ -259,7 +303,7 @@ mod tests {
 
     #[tokio::test]
     async fn reads_route_by_provider_and_edits_stay_on_youtube() {
-        let composite = CompositeMusicApi::new(Arc::new(NamedApi { name: "youtube" }), rss());
+        let composite = CompositeMusicApi::new(Arc::new(NamedApi { name: "youtube" }), rss(), None);
         let youtube = composite.playlists(ProviderId::Youtube).await.unwrap();
         assert_eq!(youtube[0].id, "youtube");
         // RSS has no feeds yet, so its list is empty.
@@ -277,11 +321,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn podverse_routes_to_the_configured_provider() {
+        let podverse = Arc::new(
+            PodverseProvider::new(&recvrd_core::PodverseConfig {
+                base_url: Some("http://127.0.0.1".to_string()),
+                token: None,
+            })
+            .unwrap(),
+        );
+        let composite = CompositeMusicApi::new(
+            Arc::new(NamedApi { name: "youtube" }),
+            rss(),
+            Some(podverse),
+        );
+        assert!(
+            composite
+                .playlists(ProviderId::Podverse)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        let unconfigured =
+            CompositeMusicApi::new(Arc::new(NamedApi { name: "youtube" }), rss(), None);
+        assert!(unconfigured.playlists(ProviderId::Podverse).await.is_err());
+    }
+
+    #[tokio::test]
     async fn downloader_routes_by_track_provider() {
         let dir = tempfile::tempdir().unwrap();
         let store = dir.path().join("rss-feeds.json");
         let provider = Arc::new(RssProvider::new(store));
-        let composite = CompositeDownloader::new(Arc::new(NamedDownloader), provider.clone());
+        let composite = CompositeDownloader::new(Arc::new(NamedDownloader), provider.clone(), None);
         let rss_track = CoreTrack {
             provider: ProviderId::Rss,
             track_id: "0123456789abcdef0123456789abcdef".to_string(),
@@ -289,6 +359,7 @@ mod tests {
             author: "Artist".to_string(),
             album: "Album".to_string(),
             duration: "3:00".to_string(),
+            ..Default::default()
         };
         // The RSS backend reports mp3 for an unknown track, while
         // the YouTube backend reports mp4.

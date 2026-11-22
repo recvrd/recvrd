@@ -12,7 +12,7 @@ use std::{
 };
 
 use async_trait::async_trait;
-use common_structs::{ProviderId, TrackKey};
+use common_structs::{MediaKind, ProviderId, TrackKey, TrackMetadata, TrackSource};
 use download_manager::{DownloadError, TrackDownloader};
 use recvrd_api::{MusicApi, Playlist, PlaylistEditError, RssFeed, SearchResults, Track};
 use recvrd_core::{CoverFetcher, Track as CoreTrack};
@@ -335,6 +335,8 @@ fn apply_feed(
             album: album.clone(),
             duration: episode.duration.clone(),
             enclosure_url: episode.enclosure_url.clone(),
+            enclosure_type: episode.enclosure_type.clone(),
+            enclosure_length: episode.enclosure_length,
             extension: extension.to_string(),
             cover_url: episode.cover_url.clone().or(feed.image_url.clone()),
         });
@@ -376,6 +378,11 @@ fn feed_dto(state: &RssStore) -> impl Fn(&StoredFeed) -> RssFeed + '_ {
 
 /// Build the API track for one stored episode.
 fn track_dto(episode: &StoredEpisode) -> Track {
+    let mime = if episode.enclosure_type.is_empty() {
+        mime_for_extension(&episode.extension)
+    } else {
+        Some(episode.enclosure_type.clone())
+    };
     Track {
         provider: ProviderId::Rss,
         track_id: episode.track_id.clone(),
@@ -383,7 +390,32 @@ fn track_dto(episode: &StoredEpisode) -> Track {
         artist: episode.artist.clone(),
         album: episode.album.clone(),
         duration: episode.duration.clone(),
+        source: Some(Box::new(TrackSource {
+            url: episode.enclosure_url.clone(),
+            mime,
+            length: episode.enclosure_length,
+            seekable: episode.enclosure_length.is_some(),
+            kind: MediaKind::Audio,
+        })),
+        metadata: Some(Box::new(TrackMetadata {
+            image_url: episode.cover_url.clone(),
+            channel_title: Some(episode.album.clone()),
+            feed_url: Some(episode.feed_url.clone()),
+            ..Default::default()
+        })),
     }
+}
+
+/// The MIME type for a stored enclosure extension.
+fn mime_for_extension(extension: &str) -> Option<String> {
+    let mime = match extension {
+        "mp3" => "audio/mpeg",
+        "m4a" => "audio/mp4",
+        "ogg" => "audio/ogg",
+        "flac" => "audio/flac",
+        _ => return None,
+    };
+    Some(mime.to_string())
 }
 
 fn check_provider(provider: ProviderId) -> Result<(), String> {
@@ -414,6 +446,7 @@ impl MusicApi for RssProvider {
                 id: feed_id(&feed.url),
                 name: feed.title.clone(),
                 subtitle: feed.url.clone(),
+                ..Default::default()
             })
             .collect())
     }
@@ -621,9 +654,27 @@ mod tests {
             album: "Test Tones".to_string(),
             duration: "4:05".to_string(),
             enclosure_url: "https://example.com/ep1.mp3".to_string(),
+            enclosure_type: "audio/mpeg".to_string(),
+            enclosure_length: Some(1024),
             extension: "mp3".to_string(),
             cover_url: None,
         }
+    }
+
+    #[test]
+    fn track_dto_carries_the_enclosure_source() {
+        let episode = stored_episode();
+        let track = track_dto(&episode);
+        let source = track.source.unwrap();
+        assert_eq!(source.url, episode.enclosure_url);
+        assert_eq!(source.mime.as_deref(), Some("audio/mpeg"));
+        assert_eq!(source.length, Some(1024));
+        assert!(source.seekable);
+        assert_eq!(source.kind, MediaKind::Audio);
+        assert_eq!(
+            track.metadata.unwrap().feed_url.as_deref(),
+            Some("https://example.com/feed.xml")
+        );
     }
 
     /// Build the core track for one stored episode.
@@ -635,6 +686,7 @@ mod tests {
             author: episode.artist.clone(),
             album: episode.album.clone(),
             duration: episode.duration.clone(),
+            ..Default::default()
         }
     }
 

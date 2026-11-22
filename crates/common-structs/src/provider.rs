@@ -24,6 +24,7 @@ pub enum ProviderId {
     #[default]
     Youtube,
     Rss,
+    Podverse,
 }
 
 impl ProviderId {
@@ -31,7 +32,7 @@ impl ProviderId {
     /// YouTube Music is the default provider. RSS feeds are second.
     /// New providers add a variant here and an entry in this list.
     pub const fn all() -> &'static [Self] {
-        &[Self::Youtube, Self::Rss]
+        &[Self::Youtube, Self::Rss, Self::Podverse]
     }
 
     /// The default provider for a fresh install.
@@ -44,6 +45,7 @@ impl ProviderId {
         match self {
             Self::Youtube => "YouTube Music",
             Self::Rss => "RSS",
+            Self::Podverse => "Podverse",
         }
     }
 
@@ -52,6 +54,7 @@ impl ProviderId {
         match self {
             Self::Youtube => "youtube",
             Self::Rss => "rss",
+            Self::Podverse => "podverse",
         }
     }
 
@@ -70,6 +73,12 @@ impl ProviderId {
                         .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
             }
             Self::Rss => id.len() == 32 && id.bytes().all(|byte| byte.is_ascii_hexdigit()),
+            Self::Podverse => {
+                (1..=64).contains(&id.len())
+                    && id
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+            }
         }
     }
 }
@@ -87,6 +96,7 @@ impl FromStr for ProviderId {
         match value {
             "youtube" => Ok(Self::Youtube),
             "rss" => Ok(Self::Rss),
+            "podverse" => Ok(Self::Podverse),
             _ => Err(UnknownProvider),
         }
     }
@@ -133,6 +143,14 @@ impl TrackKey {
     pub fn rss(id: impl Into<String>) -> Self {
         Self {
             provider: ProviderId::Rss,
+            id: id.into(),
+        }
+    }
+
+    /// Build a key for the Podverse provider.
+    pub fn podverse(id: impl Into<String>) -> Self {
+        Self {
+            provider: ProviderId::Podverse,
             id: id.into(),
         }
     }
@@ -191,10 +209,14 @@ mod tests {
 
     #[test]
     fn provider_list_has_youtube_as_the_default() {
-        assert_eq!(ProviderId::all(), &[ProviderId::Youtube, ProviderId::Rss]);
+        assert_eq!(
+            ProviderId::all(),
+            &[ProviderId::Youtube, ProviderId::Rss, ProviderId::Podverse]
+        );
         assert_eq!(ProviderId::default_provider(), ProviderId::Youtube);
         assert_eq!(ProviderId::Youtube.display_name(), "YouTube Music");
         assert_eq!(ProviderId::Rss.display_name(), "RSS");
+        assert_eq!(ProviderId::Podverse.display_name(), "Podverse");
     }
 
     #[test]
@@ -216,22 +238,35 @@ mod tests {
     }
 
     #[test]
+    fn podverse_accepts_item_text_and_numeric_ids() {
+        assert!(ProviderId::Podverse.validate_id("YvIRJrjZVe"));
+        assert!(ProviderId::Podverse.validate_id("52369"));
+        assert!(ProviderId::Podverse.validate_id("item-id_1"));
+        assert!(!ProviderId::Podverse.validate_id(""));
+        assert!(!ProviderId::Podverse.validate_id("../item"));
+        assert!(!ProviderId::Podverse.validate_id("item/1"));
+    }
+
+    #[test]
     fn provider_parses_from_its_name() {
         assert_eq!(
             "youtube".parse::<ProviderId>().unwrap(),
             ProviderId::Youtube
         );
         assert_eq!("rss".parse::<ProviderId>().unwrap(), ProviderId::Rss);
+        assert_eq!(
+            "podverse".parse::<ProviderId>().unwrap(),
+            ProviderId::Podverse
+        );
         assert!("tidal".parse::<ProviderId>().is_err());
     }
 
     #[test]
     fn same_local_id_from_different_providers_is_a_different_key() {
-        // Only YouTube exists today, so the test pins the key shape:
-        // the provider is part of the key, not decoration on it.
         let key = TrackKey::youtube("dQw4w9WgXcQ");
         assert_eq!(key, TrackKey::new(ProviderId::Youtube, "dQw4w9WgXcQ"));
-        assert_ne!(key.id, TrackKey::youtube("dQw4w9WgXcR").id);
+        assert_ne!(key, TrackKey::rss("dQw4w9WgXcQ"));
+        assert_ne!(key, TrackKey::podverse("dQw4w9WgXcQ"));
     }
 
     #[test]

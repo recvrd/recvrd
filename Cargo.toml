@@ -1,9 +1,10 @@
 [workspace]
 resolver = "3"
-members = ["crates/common-structs","crates/database", "crates/download-manager","crates/player", "crates/provider-rss", "crates/provider-youtube", "crates/ytermusic", "crates/recvc", "crates/recvrd", "crates/recvrd-api", "crates/recvrd-client", "crates/recvrd-core", "crates/ytpapi2"]
+members = ["crates/common-structs","crates/database", "crates/download-manager","crates/player", "crates/provider-podverse", "crates/provider-rss", "crates/provider-youtube", "crates/ytermusic", "crates/recvc", "crates/recvrd", "crates/recvrd-api", "crates/recvrd-client", "crates/recvrd-core", "crates/ytpapi2"]
 
 [workspace.dependencies]
 player = { path = "crates/player" }
+provider-podverse = { path = "crates/provider-podverse" }
 provider-rss = { path = "crates/provider-rss" }
 provider-youtube = { path = "crates/provider-youtube" }
 ytpapi2 = { path = "crates/ytpapi2" }

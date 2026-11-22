@@ -1,0 +1,22 @@
+[package]
+name = "provider-podverse"
+version = "0.6.3"
+edition = "2024"
+license = "Apache-2.0"
+description = "Podverse provider for recvrd"
+
+[dependencies]
+async-trait = "0.1"
+common-structs.workspace = true
+download-manager.workspace = true
+log = "0.4"
+recvrd-api.workspace = true
+recvrd-core.workspace = true
+reqwest = { version = "0.13", default-features = false, features = ["json", "query", "rustls"] }
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+tokio = { version = "1", features = ["fs", "io-util"] }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread"] }

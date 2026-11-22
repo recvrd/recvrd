@@ -35,6 +35,10 @@ pub struct StoredEpisode {
     pub album: String,
     pub duration: String,
     pub enclosure_url: String,
+    #[serde(default)]
+    pub enclosure_type: String,
+    #[serde(default)]
+    pub enclosure_length: Option<u64>,
     pub extension: String,
     pub cover_url: Option<String>,
 }
@@ -120,6 +124,8 @@ mod tests {
                 album: "Test Tones".to_string(),
                 duration: "4:05".to_string(),
                 enclosure_url: "https://example.com/ep1.mp3".to_string(),
+                enclosure_type: "audio/mpeg".to_string(),
+                enclosure_length: Some(1024),
                 extension: "mp3".to_string(),
                 cover_url: None,
             }],

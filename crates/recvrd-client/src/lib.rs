@@ -11,7 +11,7 @@ use recvrd_api::{
     Playlist, PlaylistDetail, ProviderId, ProviderInfo, Queue, QueueRequest,
     RemovePlaylistTracksRequest, RemoveQueueRequest, ReorderQueueRequest, RepeatRequest,
     RetryDownloadRequest, RssFeed, SearchResults, SeekRequest, ShuffleRequest, Status, Track,
-    TrackKey, UpdatePlaylistRequest, VolumeRequest,
+    TrackDetail, TrackKey, UpdatePlaylistRequest, VolumeRequest,
 };
 use reqwest::header::ACCEPT;
 use std::fmt;
@@ -252,6 +252,20 @@ impl DaemonClient {
             "/api/playlists/{}?provider={}",
             encode(playlist_id),
             provider.as_str()
+        ))
+        .await
+    }
+
+    /// Return the full detail for one track.
+    pub async fn track_detail(
+        &self,
+        provider: ProviderId,
+        track_id: &str,
+    ) -> Result<TrackDetail, DaemonError> {
+        self.get(&format!(
+            "/api/tracks/{}/{}",
+            provider.as_str(),
+            encode(track_id)
         ))
         .await
     }
@@ -714,6 +728,7 @@ mod tests {
             artist: "Artist".to_string(),
             album: "Album".to_string(),
             duration: "3:00".to_string(),
+            ..Default::default()
         }
     }
 
@@ -804,6 +819,7 @@ mod tests {
             id: "p1".to_string(),
             name: "Playlist One".to_string(),
             subtitle: "Artist".to_string(),
+            ..Default::default()
         }])
         .into_response()
     }

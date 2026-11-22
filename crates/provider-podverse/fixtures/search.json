@@ -1,0 +1,20 @@
+{
+  "feeds": [
+    {
+      "id": 6654007,
+      "title": "Lofi Music",
+      "author": "Test Author",
+      "image": "BASE/image.jpg",
+      "url": "https://feed.example/lofi.xml",
+      "description": "A music feed.",
+      "medium": "music",
+      "item_count": 12
+    },
+    {
+      "id": 123,
+      "title": "A Podcast",
+      "author": "Podcast Author",
+      "medium": "podcast"
+    }
+  ]
+}

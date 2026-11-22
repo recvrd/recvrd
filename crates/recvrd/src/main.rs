@@ -32,6 +32,7 @@ use crate::{
     music::UnavailableMusicApi,
     providers::{CompositeCoverFetcher, CompositeDownloader, CompositeMusicApi},
 };
+use provider_podverse::PodverseProvider;
 use provider_rss::RssProvider;
 use provider_youtube::{
     AUTH_EXPIRED_MESSAGE, YoutubeCoverFetcher, YoutubeDownloader, YoutubeMusicApi,
@@ -308,11 +309,23 @@ fn run_serve(
     paths.ensure()?;
 
     let config_path = config.clone().unwrap_or_else(|| paths.config_file());
-    let config = match config {
+    let mut config = match config {
         Some(path) => DaemonConfig::load(&path),
         None => DaemonConfig::load_or_default(&config_path),
     }
     .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error.to_string()))?;
+    if let Some(value) = std::env::var("RECVRD_PODVERSE_URL")
+        .ok()
+        .or_else(|| std::env::var("YTERMUSICD_PODVERSE_URL").ok())
+    {
+        config.podverse.base_url = Some(value);
+    }
+    if let Some(value) = std::env::var("RECVRD_PODVERSE_TOKEN")
+        .ok()
+        .or_else(|| std::env::var("YTERMUSICD_PODVERSE_TOKEN").ok())
+    {
+        config.podverse.token = Some(value);
+    }
 
     let bind = bind
         .or(config.bind)
@@ -395,6 +408,24 @@ fn run_serve(
             }
         }
 
+        let podverse = match config.podverse.base_url.as_deref() {
+            Some(base_url) => match PodverseProvider::new(&config.podverse) {
+                Ok(provider) => {
+                    log::info!("Podverse provider ready for {base_url}");
+                    Some(Arc::new(provider))
+                }
+                Err(error) => {
+                    log::error!("Podverse provider disabled: {error}");
+                    None
+                }
+            },
+            None => None,
+        };
+        let mut providers = vec![ProviderId::Youtube, ProviderId::Rss];
+        if podverse.is_some() {
+            providers.push(ProviderId::Podverse);
+        }
+
         let music: Arc<dyn MusicApi> = match auth {
             Some(auth) => match connect(&auth).await {
                 Ok(client) => {
@@ -403,6 +434,7 @@ fn run_serve(
                     Arc::new(CompositeMusicApi::new(
                         Arc::new(YoutubeMusicApi::new(client, source)),
                         rss.clone(),
+                        podverse.clone(),
                     ))
                 }
                 Err(error) => {
@@ -416,12 +448,14 @@ fn run_serve(
                     Arc::new(CompositeMusicApi::new(
                         Arc::new(UnavailableMusicApi),
                         rss.clone(),
+                        podverse.clone(),
                     ))
                 }
             },
             None => Arc::new(CompositeMusicApi::new(
                 Arc::new(UnavailableMusicApi),
                 rss.clone(),
+                podverse.clone(),
             )),
         };
 
@@ -450,7 +484,11 @@ fn run_serve(
         let downloads = DownloadService::new(
             cache_dir,
             parallel_downloads,
-            Arc::new(CompositeDownloader::new(Arc::new(downloader), rss.clone())),
+            Arc::new(CompositeDownloader::new(
+                Arc::new(downloader),
+                rss.clone(),
+                podverse.clone(),
+            )),
         );
         downloads.spawn(playback.clone());
         let restored_tracks: Vec<recvrd_core::Track> = playback
@@ -471,6 +509,7 @@ fn run_serve(
             Arc::new(CompositeCoverFetcher::new(
                 Arc::new(YoutubeCoverFetcher::new()),
                 rss.clone(),
+                podverse,
             )),
         ));
         let cache = Arc::new(CacheService::new(
@@ -526,6 +565,7 @@ fn run_serve(
             commands,
             dbus,
             rss,
+            providers,
         )
         .await;
         if let Err(error) = playback.lock().await.save_state(&state_path) {

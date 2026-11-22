@@ -1,11 +1,11 @@
-use common_structs::{MusicDownloadStatus, ProviderId, TrackKey};
+use common_structs::{MusicDownloadStatus, ProviderId, TrackKey, TrackMetadata, TrackSource};
 use serde::{Deserialize, Serialize};
 
 /// A playable track independent of the YouTube Music API client.
 /// `provider` defaults to YouTube and `track_id` accepts the old
 /// `video_id` name, so state files written before the provider
 /// model still load.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Track {
     #[serde(default)]
     pub provider: ProviderId,
@@ -15,6 +15,12 @@ pub struct Track {
     pub author: String,
     pub album: String,
     pub duration: String,
+    /// The remote media source, when the provider supplies one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<Box<TrackSource>>,
+    /// Provider metadata for the track.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<Box<TrackMetadata>>,
 }
 
 impl Track {
@@ -478,6 +484,7 @@ mod tests {
                 author: "Artist".to_string(),
                 album: "Album".to_string(),
                 duration: "3:00".to_string(),
+                ..Default::default()
             })
             .collect()
     }
@@ -714,6 +721,7 @@ mod tests {
             author: "Artist".to_string(),
             album: "Album".to_string(),
             duration: "3:00".to_string(),
+            ..Default::default()
         };
         queue.play_now(new_track);
         assert_eq!(queue.current_track().unwrap().track_id, "video-new");
