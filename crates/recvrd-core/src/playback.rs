@@ -246,7 +246,7 @@ impl<S: AudioSink> PlaybackService<S> {
             }
         }
         if self.queue.repeat() == RepeatMode::All {
-            let end = current.unwrap_or(len);
+            let end = current.map_or(0, |index| index + 1);
             for index in 0..end {
                 if self.is_cached(&self.queue.items()[index].track) {
                     return Some(index);
@@ -257,7 +257,9 @@ impl<S: AudioSink> PlaybackService<S> {
     }
 
     /// The previous cached track before the current track. With repeat
-    /// all, the search wraps to the end of the queue once.
+    /// all, the search wraps to the end of the queue once. With repeat
+    /// off, a first cached track restarts itself like a normal
+    /// previous.
     fn previous_cached_index(&self) -> Option<usize> {
         let len = self.queue.len();
         if len == 0 {
@@ -272,13 +274,13 @@ impl<S: AudioSink> PlaybackService<S> {
             }
         }
         if self.queue.repeat() == RepeatMode::All {
-            let mut index = len;
-            while index > start {
-                index -= 1;
+            for index in (start..len).rev() {
                 if self.is_cached(&self.queue.items()[index].track) {
                     return Some(index);
                 }
             }
+        } else if self.is_cached(&self.queue.items()[start].track) {
+            return Some(start);
         }
         None
     }
@@ -1185,6 +1187,37 @@ mod tests {
 
         service.next_track().await.unwrap();
         assert_eq!(service.snapshot().current.unwrap().track_id, "00000000000");
+    }
+
+    #[tokio::test]
+    async fn offline_repeat_all_restarts_the_only_cached_track() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut service = offline_service(dir.path());
+        cache_track(dir.path(), "00000000000");
+        service.play_playlist(offline_tracks(2)).await.unwrap();
+        service.set_repeat(RepeatMode::All);
+        service.set_offline(true).await.unwrap();
+        assert_eq!(service.sink.plays.len(), 1);
+
+        service.next_track().await.unwrap();
+        assert_eq!(service.snapshot().current.unwrap().track_id, "00000000000");
+        assert_eq!(service.snapshot().status, PlaybackStatus::Playing);
+        assert_eq!(service.sink.plays.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn offline_previous_at_the_first_track_restarts_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut service = offline_service(dir.path());
+        cache_track(dir.path(), "00000000000");
+        service.play_playlist(offline_tracks(2)).await.unwrap();
+        service.set_offline(true).await.unwrap();
+        assert_eq!(service.sink.plays.len(), 1);
+
+        service.previous_track().await.unwrap();
+        assert_eq!(service.snapshot().current.unwrap().track_id, "00000000000");
+        assert_eq!(service.snapshot().status, PlaybackStatus::Playing);
+        assert_eq!(service.sink.plays.len(), 2);
     }
 
     #[tokio::test]
