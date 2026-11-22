@@ -49,6 +49,8 @@
   when no live client is available to confirm the session state.
 - Cancel in-flight downloads when offline mode turns on and reset their queue
   status, so no track stays at `Downloading`.
+- Do not initialize the YouTube client for a Podverse or RSS request, so those
+  providers keep working when the YouTube session is invalid.
 
 ## 0.6.3 — 2026-11-20
 
