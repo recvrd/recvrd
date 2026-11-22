@@ -96,6 +96,8 @@ pub enum Command {
     RefreshPlaylists,
     /// Switch the active provider for library and search requests.
     SetProvider(ProviderId),
+    /// Turn the manual offline switch on or off.
+    SetOffline(bool),
     /// Reload the provider list.
     RefreshProviders,
     /// Open one playlist.

@@ -728,9 +728,10 @@ mod tests {
     };
     use recvrd_api::{
         AddPlaylistTracksRequest, ApiError, AuthState, AuthStatus, DownloadStatus, ErrorEnvelope,
-        MovePlaylistTrackRequest, OfflineRequest, OkResponse, PlayPlaylistRequest, PlayTrackRequest,
-        PlaybackModeRequest, PlaybackSnapshot, PlaybackState, Playlist, PlaylistPrivacy, QueueItem,
-        QueueRequest, RemovePlaylistTracksRequest, RepeatMode, TrackDetail,
+        MovePlaylistTrackRequest, OfflineRequest, OkResponse, PlayPlaylistRequest,
+        PlayTrackRequest, PlaybackModeRequest, PlaybackSnapshot, PlaybackState, Playlist,
+        PlaylistPrivacy, QueueItem, QueueRequest, RemovePlaylistTracksRequest, RepeatMode,
+        TrackDetail,
     };
     use recvrd_client::{DaemonError, encode};
     use rmcp::model::ErrorCode;
@@ -908,10 +909,11 @@ mod tests {
         State(state): State<MockState>,
         AxumJson(request): AxumJson<OfflineRequest>,
     ) -> AxumJson<Status> {
-        state.calls.lock().unwrap().push(format!(
-            "PUT /api/offline {}",
-            request.enabled
-        ));
+        state
+            .calls
+            .lock()
+            .unwrap()
+            .push(format!("PUT /api/offline {}", request.enabled));
         let mut status = status();
         status.offline = request.enabled;
         AxumJson(status)
@@ -1325,6 +1327,7 @@ mod tests {
                 "rss_remove_feed",
                 "search",
                 "seek",
+                "set_offline",
                 "set_playback_mode",
                 "shuffle",
                 "volume",
@@ -1371,6 +1374,24 @@ mod tests {
                 .lock()
                 .unwrap()
                 .contains(&"PUT /api/providers/rss/playback stream_then_download".to_string())
+        );
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn sets_offline_mode() {
+        let (server, state, handle) = server().await;
+        let Json(updated) = server
+            .set_offline(Parameters(OfflineArgs { enabled: true }))
+            .await
+            .unwrap();
+        assert!(updated.offline);
+        assert!(
+            state
+                .calls
+                .lock()
+                .unwrap()
+                .contains(&"PUT /api/offline true".to_string())
         );
         handle.abort();
     }

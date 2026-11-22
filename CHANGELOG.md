@@ -13,6 +13,14 @@
   download. Set the mode with `PUT /api/providers/{provider}/playback`.
 - Add `PlaybackSourceKind` to `Status` as `playback.source_kind`.
 - Save playback modes in `$XDG_CONFIG_HOME/recvrd/settings.toml`.
+- Add an offline mode that plays cached content. The switch is exposed in the
+  API, the web UI, the TUI and MCP. While it is on, library, playlist, search
+  and track detail use cached data only, and the queue skips uncached tracks.
+- Add the cached-library index and a `cached` flag on list responses.
+- Persist the offline switch in `settings.toml`. A restart in offline mode
+  skips RSS refresh, restored downloads and YouTube client creation.
+- Add the `offline_unavailable` error code and an in-app explanation for the
+  web UI.
 
 ### Changed
 
@@ -23,6 +31,9 @@
 - Move the XDG directories from `ytermusicd` to `recvrd` on first start.
 - Change the MPRIS name, API name, web title and `localStorage` keys to
   `recvrd`.
+- Add `offline` to `Status` and an `offline` SSE event.
+- Call the daemon-unreachable state "disconnected" in the web UI and TUI, so it
+  is distinct from the manual offline mode.
 
 ### Fixed
 
@@ -31,6 +42,10 @@
 - Fail fast in `stream` mode when the provider supplies no remote source,
   instead of waiting for a download that never starts.
 - Prefer an existing cache file over a stream after a restart.
+- Report a provider network failure as `upstream_error`, not `auth_expired`,
+  when no live client is available to confirm the session state.
+- Cancel in-flight downloads when offline mode turns on and reset their queue
+  status, so no track stays at `Downloading`.
 
 ## 0.6.3 — 2026-11-20
 

@@ -3,7 +3,7 @@ import { tick } from 'svelte';
 import { describe, expect, it } from 'vitest';
 import QueueView from './QueueView.svelte';
 import { AppStore } from '../store.svelte';
-import { downloadStatus, makeApi, makeQueue, makeTrack } from '../../test/fixtures';
+import { downloadStatus, makeApi, makeQueue, makeStatus, makeTrack } from '../../test/fixtures';
 
 function makeStore() {
   const initial = makeQueue([makeTrack('v0'), makeTrack('v1'), makeTrack('v2')], {
@@ -104,6 +104,18 @@ describe('QueueView', () => {
     render(QueueView, { props: { store } });
 
     expect(screen.getByText('Rock The Halls · S1E2 · 2026')).toBeInTheDocument();
+  });
+
+  it('marks uncached queue items unavailable offline', async () => {
+    const { store } = makeStore();
+    store.status = makeStatus({ offline: true });
+    render(QueueView, { props: { store } });
+
+    const info = screen.getByRole('button', {
+      name: 'Why Track v0 is unavailable offline',
+    });
+    await fireEvent.click(info);
+    expect(store.offlineHelpOpen).toBe(true);
   });
 
   it('shows an empty state', () => {

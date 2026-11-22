@@ -43,22 +43,27 @@ The release version is `0.7.0`. The tag is `v0.7.0`.
    track may replay. Then set `stream_then_download`, play another track and
    let the cache download finish. Restart the daemon and confirm the cached
    track starts from the file (`playback.source_kind` is `file`).
-8. Check that the old `ytermusicd` and `ytmc` names still work, and that
+8. Turn offline mode on. Confirm the library and search show cached content
+   only, uncached rows are dimmed, a cached cover still renders, and download
+   retry/RSS refresh return `offline_unavailable`. Toggle offline off and
+   confirm providers work again without a restart. Restart once more while
+   offline and confirm the daemon makes no provider calls at startup.
+9. Check that the old `ytermusicd` and `ytmc` names still work, and that
    `recvrd --version` and `recvc --version` report `0.7.0`.
-9. Check the MCP proxy:
+10. Check the MCP proxy:
 
-   ```sh
-   npx @modelcontextprotocol/inspector recvrd mcp
-   ```
+    ```sh
+    npx @modelcontextprotocol/inspector recvrd mcp
+    ```
 
-10. Check the systemd unit:
+11. Check the systemd unit:
 
     ```sh
     systemctl --user restart recvrd
     systemctl --user status recvrd
     ```
 
-11. Confirm `CHANGELOG.md` and all versions name `0.7.0`, then open a pull
+12. Confirm `CHANGELOG.md` and all versions name `0.7.0`, then open a pull
     request for the release commit. Merge it after every CI check passes.
 
 ## Tag and publish

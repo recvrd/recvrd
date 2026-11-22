@@ -43,7 +43,8 @@ UI, terminal client and MCP proxy are clients.
 | Web UI (library, search, queue, now playing, vim keys) | ✅ |
 | Terminal client (`recvc`, mouse and vim keys) | ✅ |
 | systemd unit, Nix package/module | ✅ |
-| MCP proxy (35 tools) | ✅ |
+| MCP proxy (36 tools) | ✅ |
+| Offline mode with cached content | ✅ |
 | v0.7.0 release | ✅ |
 
 See the [roadmap](https://github.com/recvrd/recvrd/issues/25) for the
@@ -173,7 +174,7 @@ just test
 - [docs/api.md](docs/api.md) — REST/SSE reference, curl examples and reconnect semantics
 - [docs/web.md](docs/web.md) — web UI development, keymap and failure states
 - [docs/tui.md](docs/tui.md) — terminal client, keys, mouse and limits
-- [docs/mcp.md](docs/mcp.md) — MCP client setup and the 35 tools
+- [docs/mcp.md](docs/mcp.md) — MCP client setup and the 36 tools
 - [docs/release.md](docs/release.md) — release checklist and smoke tests
 - [CHANGELOG.md](CHANGELOG.md) — release notes
 - [CONTRIBUTING.md](CONTRIBUTING.md) — contribution rules
@@ -226,14 +227,14 @@ and the API under `/api`.
 
 ## MCP
 
-`recvrd mcp` is a stdio proxy to the daemon. It exposes 35 tools:
+`recvrd mcp` is a stdio proxy to the daemon. It exposes 36 tools:
 `search`, `list_playlists`, `get_playlist`, `get_track`, `create_playlist`,
 `rename_playlist`, `delete_playlist`, `add_playlist_tracks`,
 `remove_playlist_tracks`, `move_playlist_track`, `play_playlist`, `play_track`,
 `queue_add`, `queue_remove`, `queue_reorder`, `queue_play_next`,
 `queue_clear`, `retry_download`, `now_playing`, `pause`, `resume`, `next`,
 `previous`, `volume`, `seek`, `shuffle`, `repeat`, `download_status`,
-`list_providers`, `set_playback_mode`, `rss_list_feeds`, `rss_add_feed`,
+`list_providers`, `set_playback_mode`, `set_offline`, `rss_list_feeds`, `rss_add_feed`,
 `rss_remove_feed`, `rss_refresh_feed` and `rss_refresh_feeds`.
 
 ```sh

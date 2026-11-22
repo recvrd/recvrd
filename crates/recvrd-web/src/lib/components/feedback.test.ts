@@ -68,7 +68,7 @@ describe('ConnectionBanner', () => {
         onretry: () => {},
       },
     });
-    expect(screen.getByText('The daemon is offline.')).toBeInTheDocument();
+    expect(screen.getByText('The daemon is disconnected.')).toBeInTheDocument();
     expect(
       screen.getByText('Daemon is unreachable. Is recvrd running?'),
     ).toBeInTheDocument();

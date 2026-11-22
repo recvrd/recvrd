@@ -289,7 +289,12 @@ async fn set_offline<S: AudioSink + Send + 'static>(
         .await
         .map_err(playback_failure)?;
     if enabled && !previous {
-        let keep = playback.snapshot().current.as_ref().map(|track| track.key());
+        let keep = playback
+            .snapshot()
+            .current
+            .as_ref()
+            .map(|track| track.key())
+            .filter(|key| state.cache.is_cached(key));
         playback.reset_download_statuses(keep.as_ref());
     }
     Ok(Json(status_from_parts(
@@ -1339,14 +1344,14 @@ async fn cached_playlists<S: AudioSink + Send + 'static>(
                         item_count: Some(group.tracks.len() as u32),
                     },
                     tracks: group
-                    .tracks
-                    .iter()
-                    .map(|track| {
-                        let mut track = api_track(track);
-                        track.cached = true;
-                        track
-                    })
-                    .collect(),
+                        .tracks
+                        .iter()
+                        .map(|track| {
+                            let mut track = api_track(track);
+                            track.cached = true;
+                            track
+                        })
+                        .collect(),
                 }
             })
             .collect(),
@@ -3970,20 +3975,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unavailable_client_with_an_expired_file_returns_401() {
-        // The homepage redirects to sign-in, so no client exists.
-        // The headers file state is the only signal, and it is expired.
+    async fn unavailable_client_with_an_expired_file_returns_502() {
+        // With no live client, the daemon cannot tell a network failure
+        // from an expiry. A provider error stays a 502 instead of
+        // guessing auth_expired.
         let (base, server) = start_server(unavailable_expired_state()).await;
         let response = reqwest::Client::new()
             .get(format!("{base}/api/playlists"))
             .send()
             .await
             .unwrap();
-        assert_eq!(response.status(), reqwest::StatusCode::UNAUTHORIZED);
+        assert_eq!(response.status(), reqwest::StatusCode::BAD_GATEWAY);
         let body: serde_json::Value = response.json().await.unwrap();
-        assert_eq!(body["error"]["code"], "auth_expired");
-        let message = body["error"]["message"].as_str().unwrap();
-        assert!(message.contains("restart the daemon"), "{message}");
+        assert_eq!(body["error"]["code"], "upstream_error");
         server.abort();
     }
 
@@ -4719,13 +4723,28 @@ mod tests {
     #[tokio::test]
     async fn offline_switch_persists_and_cancels_downloads() {
         let downloads = Arc::new(MockDownloads::default());
-        let state = test_state_with_downloads(
-            Arc::new(MockMusicApi::default()),
-            downloads.clone(),
-        );
+        let state = test_state_with_downloads(Arc::new(MockMusicApi::default()), downloads.clone());
         let settings_path = state.settings.path().to_path_buf();
+        let playback = state.playback.clone();
         let (base, server) = start_server(state).await;
         let client = reqwest::Client::new();
+
+        client
+            .post(format!("{base}/api/queue"))
+            .json(&QueueRequest {
+                track: track("dQw4w9WgXcQ"),
+            })
+            .send()
+            .await
+            .unwrap();
+        playback
+            .lock()
+            .await
+            .set_download_status(
+                &TrackKey::youtube("dQw4w9WgXcQ"),
+                common_structs::MusicDownloadStatus::Downloading(10),
+            )
+            .await;
 
         let status: serde_json::Value = client
             .put(format!("{base}/api/offline"))
@@ -4740,6 +4759,19 @@ mod tests {
         assert!(downloads.stopped());
         assert!(downloads.resets() > 0);
         assert!(PlaybackSettingsStore::load(settings_path).offline());
+
+        let queue: ApiQueue = client
+            .get(format!("{base}/api/queue"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(
+            queue.items[0].download,
+            recvrd_api::DownloadStatus::NotDownloaded
+        );
 
         let current: serde_json::Value = client
             .get(format!("{base}/api/offline"))

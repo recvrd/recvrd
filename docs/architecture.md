@@ -158,8 +158,16 @@ turns on, it stops an uncached current track and advances to the next cached
 track. When no cached track remains, playback stops. Next and previous land on
 cached tracks only. Explicit play of an uncached track fails. Repeat-one never
 restarts an uncached track. A track counts as cached with a valid key and a
-non-empty audio file. The switch is in-memory only. It does not survive a
-restart.
+non-empty audio file.
+
+The switch lives in `settings.toml` and survives a restart. Enabling it stops
+and clears in-flight downloads and resets their queue status. The daemon skips
+the RSS refresh and restored download queue at startup while offline. The
+YouTube client is created lazily: startup does not fetch the homepage, and
+turning the switch off creates the client without a restart. Cover art uses
+only cached files while offline. Server routing returns cached library,
+playlist, search and track data without provider calls; anything that needs a
+provider returns 409 `offline_unavailable`.
 
 ## API
 
@@ -214,7 +222,7 @@ On Linux the daemon starts a `souvlaki` MPRIS client on a dedicated thread when
 ## MCP
 
 `recvrd mcp` is a stdio proxy to the REST API. It uses `rmcp` and holds no
-playback state. The proxy has 35 tools: search, channel and playlist metadata,
+playback state. The proxy has 36 tools: search, channel and playlist metadata,
 track detail, playback modes, playlist edits, playback transport, seek,
 shuffle, repeat, queue management, queue add, now playing, volume, download
 status and RSS feed management. It reads the daemon URL from `--url` or

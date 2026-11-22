@@ -282,7 +282,7 @@ export class AppStore {
   }
 
   get canCreatePlaylist(): boolean {
-    return this.activeProviderInfo?.capabilities.playlist_create ?? true;
+    return !this.offline && (this.activeProviderInfo?.capabilities.playlist_create ?? true);
   }
 
   get isRssProvider(): boolean {
@@ -290,7 +290,7 @@ export class AppStore {
   }
 
   get canEditPlaylist(): boolean {
-    return this.activeProviderInfo?.capabilities.playlist_edit ?? true;
+    return !this.offline && (this.activeProviderInfo?.capabilities.playlist_edit ?? true);
   }
 
   get canSearch(): boolean {

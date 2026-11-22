@@ -159,6 +159,7 @@ fn render_playlist(
     }
     let wide = inner.width >= 80;
     let rows = playlist.tracks.iter().enumerate().map(|(index, track)| {
+        let unavailable = app.is_offline() && !track.cached;
         let mut cells = vec![
             Cell::from(format!("{}", index + 1)),
             Cell::from(track.title.clone()),
@@ -168,7 +169,12 @@ fn render_playlist(
             cells.push(Cell::from(track.album.clone()).style(Style::default().fg(FG_MUTED)));
         }
         cells.push(Cell::from(track.duration.clone()).style(Style::default().fg(FG_MUTED)));
-        Row::new(cells)
+        let row = Row::new(cells);
+        if unavailable {
+            row.style(Style::default().fg(FG_MUTED).add_modifier(Modifier::DIM))
+        } else {
+            row
+        }
     });
     let mut headers = vec!["#", "Title", "Artist"];
     if wide {
@@ -255,6 +261,7 @@ fn render_queue(
                 detail.push_str("  ·  ");
                 detail.push_str(&facts.join(" · "));
             }
+            let unavailable = app.is_offline() && item.download != DownloadStatus::Downloaded;
             let line = Line::from(vec![
                 Span::styled(
                     format!("{marker} {:>3}  ", index + 1),
@@ -268,6 +275,11 @@ fn render_queue(
                 ),
                 Span::styled(format!("  {badge}"), badge_style),
             ]);
+            let line = if unavailable {
+                line.style(Style::default().add_modifier(Modifier::DIM))
+            } else {
+                line
+            };
             ListItem::new(line)
         })
         .collect::<Vec<_>>();

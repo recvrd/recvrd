@@ -396,6 +396,25 @@ impl App {
         self.provider.display_name()
     }
 
+    /// Whether the manual offline switch is on.
+    pub fn is_offline(&self) -> bool {
+        self.status.as_ref().is_some_and(|status| status.offline)
+    }
+
+    /// Toggle the manual offline switch.
+    pub fn toggle_offline(&mut self) -> Vec<Command> {
+        let enabled = !self.is_offline();
+        self.show_toast(
+            ToastLevel::Info,
+            if enabled {
+                "Offline mode is on. Showing cached content."
+            } else {
+                "Offline mode is off."
+            },
+        );
+        vec![Command::SetOffline(enabled)]
+    }
+
     /// Cycle to the next provider. With one provider, report that
     /// there is nothing to switch to.
     pub fn cycle_provider(&mut self) -> Vec<Command> {
@@ -891,6 +910,7 @@ impl App {
             KeyCode::Char('t') => return self.retry_selected(),
             KeyCode::Char('s') => return self.toggle_shuffle(),
             KeyCode::Char('o') => return self.cycle_provider(),
+            KeyCode::Char('O') => return self.toggle_offline(),
             KeyCode::Char('R') => return self.cycle_repeat(),
             KeyCode::Char('+') | KeyCode::Char('=') => return self.adjust_volume(5),
             KeyCode::Char('-') | KeyCode::Char('_') => return self.adjust_volume(-5),
@@ -2278,6 +2298,27 @@ mod tests {
             "{}",
             app.toasts[0].message
         );
+    }
+
+    #[test]
+    fn capital_o_toggles_offline_mode() {
+        let mut app = App::new("http://localhost");
+        app.status = Some(status());
+
+        let commands = app.handle_key(key(KeyCode::Char('O')));
+        assert!(matches!(commands.as_slice(), [Command::SetOffline(true)]));
+        assert!(
+            app.toasts
+                .last()
+                .unwrap()
+                .message
+                .to_lowercase()
+                .contains("offline")
+        );
+
+        app.status.as_mut().unwrap().offline = true;
+        let commands = app.handle_key(key(KeyCode::Char('O')));
+        assert!(matches!(commands.as_slice(), [Command::SetOffline(false)]));
     }
 
     #[test]

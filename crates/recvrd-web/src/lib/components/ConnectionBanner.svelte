@@ -16,7 +16,7 @@
       ? 'Connecting to the daemon…'
       : connection === 'reconnecting'
         ? 'Connection lost. Reconnecting…'
-        : 'The daemon is offline.',
+        : 'The daemon is disconnected.',
   );
 </script>
 
