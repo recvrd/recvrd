@@ -124,6 +124,8 @@ error data as `{"code": "<daemon code>"}`.
   invalid-parameter error. The daemon message stays in the error message.
 - An expired session returns an invalid-parameter error with code
   `auth_expired`. Refresh `headers.txt` and restart the daemon.
+- A request that needs a provider or an uncached track while offline returns
+  an invalid-parameter error with code `offline_unavailable`.
 - An upstream failure returns an internal error. The daemon message and the
   daemon code stay in the error message and in the error data.
 - A stopped daemon returns an internal error with `Cannot reach the daemon at
