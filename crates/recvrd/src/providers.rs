@@ -44,6 +44,8 @@ pub struct ReloadableMusicApi {
     /// Auth state learned while connecting. A failed login is sticky
     /// until the process restarts, like the old startup path.
     auth_override: std::sync::Mutex<Option<AuthStatus>>,
+    #[cfg(test)]
+    ensure_calls: std::sync::atomic::AtomicUsize,
 }
 
 impl ReloadableMusicApi {
@@ -62,6 +64,8 @@ impl ReloadableMusicApi {
             offline,
             inner: RwLock::new(None),
             auth_override: std::sync::Mutex::new(None),
+            #[cfg(test)]
+            ensure_calls: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
@@ -71,7 +75,36 @@ impl ReloadableMusicApi {
         self.ensure().await.map(|_| ())
     }
 
+    /// Route a non-YouTube provider without touching the YouTube
+    /// client. RSS and Podverse are local clients.
+    fn route(&self, provider: ProviderId) -> Result<Arc<dyn MusicApi>, String> {
+        match provider {
+            ProviderId::Youtube => Err("YouTube needs the lazy client".to_string()),
+            ProviderId::Rss => Ok(self.rss.clone()),
+            ProviderId::Podverse => self
+                .podverse
+                .clone()
+                .map(|provider| provider as Arc<dyn MusicApi>)
+                .ok_or_else(|| "Podverse is not configured".to_string()),
+        }
+    }
+
+    async fn api_for(&self, provider: ProviderId) -> Result<Arc<dyn MusicApi>, String> {
+        if provider == ProviderId::Youtube {
+            self.ensure().await
+        } else {
+            self.route(provider)
+        }
+    }
+
+    #[cfg(test)]
+    fn ensure_calls(&self) -> usize {
+        self.ensure_calls.load(Ordering::SeqCst)
+    }
+
     async fn ensure(&self) -> Result<Arc<dyn MusicApi>, String> {
+        #[cfg(test)]
+        self.ensure_calls.fetch_add(1, Ordering::SeqCst);
         if self.offline.load(Ordering::SeqCst) {
             return Err(OFFLINE_MESSAGE.to_string());
         }
@@ -135,11 +168,11 @@ impl MusicApi for ReloadableMusicApi {
     }
 
     async fn playlists(&self, provider: ProviderId) -> Result<Vec<Playlist>, String> {
-        self.ensure().await?.playlists(provider).await
+        self.api_for(provider).await?.playlists(provider).await
     }
 
     async fn playlist(&self, provider: ProviderId, id: &str) -> Result<Vec<Track>, String> {
-        self.ensure().await?.playlist(provider, id).await
+        self.api_for(provider).await?.playlist(provider, id).await
     }
 
     async fn playlist_detail(
@@ -147,15 +180,21 @@ impl MusicApi for ReloadableMusicApi {
         provider: ProviderId,
         id: &str,
     ) -> Result<PlaylistDetail, String> {
-        self.ensure().await?.playlist_detail(provider, id).await
+        self.api_for(provider)
+            .await?
+            .playlist_detail(provider, id)
+            .await
     }
 
     async fn search(&self, provider: ProviderId, query: &str) -> Result<SearchResults, String> {
-        self.ensure().await?.search(provider, query).await
+        self.api_for(provider).await?.search(provider, query).await
     }
 
     async fn track_detail(&self, provider: ProviderId, id: &str) -> Result<TrackDetail, String> {
-        self.ensure().await?.track_detail(provider, id).await
+        self.api_for(provider)
+            .await?
+            .track_detail(provider, id)
+            .await
     }
 
     async fn set_offline(&self, enabled: bool) -> Result<(), String> {
@@ -598,6 +637,17 @@ mod tests {
         let error = api.search(ProviderId::Youtube, "test").await.unwrap_err();
         assert_eq!(error, OFFLINE_MESSAGE);
         assert!(api.auth_status(ProviderId::Youtube).is_none());
+    }
+
+    #[tokio::test]
+    async fn non_youtube_calls_do_not_initialize_youtube() {
+        let api =
+            ReloadableMusicApi::new(None, None, rss(), None, Arc::new(AtomicBool::new(false)));
+        let _ = api.search(ProviderId::Rss, "test").await;
+        assert_eq!(api.ensure_calls(), 0);
+
+        let _ = api.search(ProviderId::Youtube, "test").await;
+        assert_eq!(api.ensure_calls(), 1);
     }
 
     #[tokio::test]
