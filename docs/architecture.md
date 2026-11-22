@@ -133,6 +133,25 @@ fields. `GET /api/tracks/podverse/{track_id}` returns the full item
 description. The provider is hidden unless `podverse.base_url` is set.
 Podverse channels are read-only.
 
+## Playback
+
+The daemon plays one track at a time through a dedicated audio thread. A
+cache file is played when one exists. Otherwise the provider's playback mode
+decides what happens:
+
+- `download` waits for the download manager and starts the file when it is
+  ready.
+- `stream` opens the remote source through `stream-download` and keeps no
+  cache.
+- `stream_then_download` opens the remote source and queues the cache
+  download. If the stream cannot open, it falls back to the download queue.
+
+The stream reader is opened on the async runtime; the audio thread receives an
+open blocking reader and performs no network I/O. Modes and their defaults are
+recorded in
+[0006 — Playback modes and the settings file](decisions/0006-playback-modes.md).
+Runtime choices live in `$XDG_CONFIG_HOME/recvrd/settings.toml`.
+
 ## API
 
 The full contract and curl examples live in [docs/api.md](api.md). DTOs come

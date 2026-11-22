@@ -8,6 +8,11 @@
 - Add `TrackSource`, `TrackMetadata` and `MediaKind` to the API and queue
   state. Populate media sources for RSS.
 - Add `GET /api/tracks/{provider}/{track_id}` for full track detail.
+- Add per-provider playback modes: `download`, `stream` and
+  `stream_then_download`. RSS and Podverse can stream; YouTube stays on
+  download. Set the mode with `PUT /api/providers/{provider}/playback`.
+- Add `PlaybackSourceKind` to `Status` as `playback.source_kind`.
+- Save playback modes in `$XDG_CONFIG_HOME/recvrd/settings.toml`.
 
 ### Changed
 

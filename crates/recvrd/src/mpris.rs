@@ -263,6 +263,7 @@ mod tests {
             volume: 50,
             repeat: RepeatMode::Off,
             shuffle: false,
+            source_kind: None,
         }
     }
 

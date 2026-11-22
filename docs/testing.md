@@ -79,11 +79,13 @@ Current offline coverage is in `crates/ytpapi2`, `crates/provider-youtube`,
   search, channel items, item detail, cover art and downloads. They do not
   call a live instance.
 - `recvrd-core` tests cover auth/config/paths, queue transitions,
-  repeat/shuffle restoration, download-failure handling, playback position and
+  repeat/shuffle restoration, download-failure handling, playback position,
+  streaming mode selection, stream-failure fallback, settings file loading and
   event-bus replay using a mock audio sink.
 - `recvrd` integration tests start the router on an ephemeral port and
   cover every REST endpoint, playlist edit validation, SSE replay, cover art
-  caching, download retry, static serving and upstream error envelopes.
+  caching, download retry, playback-mode changes, stream-mode download
+  queueing, static serving and upstream error envelopes.
 - Web tests cover the API client, event stream, store, keymap, track table,
   queue, now playing, search, playlist editing, feedback banners and the app
   shell. The track table and now-playing tests check cover URLs and the

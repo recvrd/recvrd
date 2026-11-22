@@ -2025,6 +2025,7 @@ mod tests {
                 volume: 50,
                 repeat: RepeatMode::Off,
                 shuffle: false,
+                source_kind: None,
             },
             queue_length: 1,
             downloads: DownloadSummary::default(),
@@ -2249,16 +2250,14 @@ mod tests {
 
     #[test]
     fn provider_event_stores_the_list_and_o_reports_one_provider() {
-        use recvrd_api::{AuthStatus, ProviderCapabilities, ProviderInfo};
+        use recvrd_api::{AuthStatus, ProviderInfo};
 
         let mut app = App::new("http://localhost");
-        let commands = app.handle_daemon_event(DaemonEvent::Providers(vec![ProviderInfo {
-            id: ProviderId::Youtube,
-            name: "YouTube Music".to_string(),
-            default: true,
-            capabilities: ProviderCapabilities::for_provider(ProviderId::Youtube),
-            auth: AuthStatus::default(),
-        }]));
+        let commands =
+            app.handle_daemon_event(DaemonEvent::Providers(vec![ProviderInfo::with_defaults(
+                ProviderId::Youtube,
+                AuthStatus::default(),
+            )]));
         assert!(commands.is_empty());
         assert_eq!(app.providers.len(), 1);
         assert_eq!(app.provider, ProviderId::Youtube);
@@ -2276,24 +2275,12 @@ mod tests {
 
     #[test]
     fn o_switches_provider_and_shows_the_new_name() {
-        use recvrd_api::{AuthStatus, ProviderCapabilities, ProviderInfo};
+        use recvrd_api::{AuthStatus, ProviderInfo};
 
         let mut app = App::new("http://localhost");
         app.handle_daemon_event(DaemonEvent::Providers(vec![
-            ProviderInfo {
-                id: ProviderId::Youtube,
-                name: "YouTube Music".to_string(),
-                default: true,
-                capabilities: ProviderCapabilities::for_provider(ProviderId::Youtube),
-                auth: AuthStatus::default(),
-            },
-            ProviderInfo {
-                id: ProviderId::Rss,
-                name: "RSS".to_string(),
-                default: false,
-                capabilities: ProviderCapabilities::for_provider(ProviderId::Rss),
-                auth: AuthStatus::default(),
-            },
+            ProviderInfo::with_defaults(ProviderId::Youtube, AuthStatus::default()),
+            ProviderInfo::with_defaults(ProviderId::Rss, AuthStatus::default()),
         ]));
 
         let commands = app.handle_key(key(KeyCode::Char('o')));

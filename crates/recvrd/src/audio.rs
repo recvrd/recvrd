@@ -1,7 +1,6 @@
 use player::{PlayError, Player, PlayerOptions};
-use recvrd_core::{AudioSink, Track};
+use recvrd_core::{AudioSink, PlaybackSource, Track};
 use std::{
-    path::Path,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -13,7 +12,7 @@ use std::{
 
 enum AudioCommand {
     Play {
-        path: std::path::PathBuf,
+        source: PlaybackSource,
         reply: mpsc::SyncSender<Result<(), String>>,
     },
     Pause,
@@ -70,7 +69,7 @@ impl RodioSink {
                         log::warn!("async player error: {error:?}");
                     }
                     match rx.recv_timeout(Duration::from_millis(250)) {
-                        Ok(AudioCommand::Play { path, reply }) => {
+                        Ok(AudioCommand::Play { source, reply }) => {
                             if player.is_none() {
                                 match Player::new(error_tx.clone(), PlayerOptions::new(volume)) {
                                     Ok(new_player) => {
@@ -91,7 +90,16 @@ impl RodioSink {
                                 let _ = reply.send(Err("audio output unavailable".to_string()));
                                 continue;
                             };
-                            match player.play(&path) {
+                            let result = match source {
+                                PlaybackSource::File(path) => player.play(&path),
+                                PlaybackSource::Stream(reader) => player.play_reader(
+                                    reader.reader,
+                                    reader.length,
+                                    reader.mime.as_deref(),
+                                    reader.seekable,
+                                ),
+                            };
+                            match result {
                                 Ok(()) => {
                                     *thread_duration.lock().unwrap() =
                                         player.duration().map(Duration::from_secs_f64);
@@ -100,7 +108,7 @@ impl RodioSink {
                                     let _ = reply.send(Ok(()));
                                 }
                                 Err(error) => {
-                                    log::error!("failed to play {}: {error:?}", path.display());
+                                    log::error!("failed to start playback: {error:?}");
                                     *thread_duration.lock().unwrap() = None;
                                     thread_finished.store(true, Ordering::SeqCst);
                                     playing = false;
@@ -176,12 +184,9 @@ impl RodioSink {
 impl AudioSink for RodioSink {
     type Error = std::io::Error;
 
-    fn play(&mut self, _track: &Track, path: &Path) -> Result<(), Self::Error> {
+    fn play(&mut self, _track: &Track, source: PlaybackSource) -> Result<(), Self::Error> {
         let (reply, response) = mpsc::sync_channel(1);
-        self.send(AudioCommand::Play {
-            path: path.to_path_buf(),
-            reply,
-        })?;
+        self.send(AudioCommand::Play { source, reply })?;
         match response.recv_timeout(Duration::from_secs(5)) {
             Ok(Ok(())) => Ok(()),
             Ok(Err(message)) => Err(std::io::Error::other(message)),

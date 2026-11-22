@@ -5,7 +5,9 @@
 
 pub mod music;
 
-pub use common_structs::{MediaKind, ProviderId, TrackKey, TrackMetadata, TrackSource};
+pub use common_structs::{
+    MediaKind, PlaybackMode, PlaybackSourceKind, ProviderId, TrackKey, TrackMetadata, TrackSource,
+};
 pub use music::{MusicApi, PlaylistEditError};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -85,19 +87,40 @@ pub struct ProviderInfo {
     pub capabilities: ProviderCapabilities,
     /// The auth state of this provider.
     pub auth: AuthStatus,
+    /// The current playback mode.
+    pub playback: PlaybackMode,
+    /// The playback modes this provider supports.
+    pub playback_modes: Vec<PlaybackMode>,
 }
 
 impl ProviderInfo {
     /// Build the description of one provider.
-    pub fn new(id: ProviderId, auth: AuthStatus) -> Self {
+    pub fn new(id: ProviderId, auth: AuthStatus, playback: PlaybackMode) -> Self {
         Self {
             id,
             name: id.display_name().to_string(),
             default: id == ProviderId::default_provider(),
             capabilities: ProviderCapabilities::for_provider(id),
             auth,
+            playback,
+            playback_modes: PlaybackMode::supported_for(id).to_vec(),
         }
     }
+}
+
+impl ProviderInfo {
+    /// Build the description of one provider with its default mode.
+    pub fn with_defaults(id: ProviderId, auth: AuthStatus) -> Self {
+        Self::new(id, auth, PlaybackMode::default_for(id))
+    }
+}
+
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PlaybackModeRequest {
+    /// The requested playback mode.
+    pub mode: PlaybackMode,
 }
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -300,6 +323,9 @@ pub struct PlaybackSnapshot {
     pub volume: u8,
     pub repeat: RepeatMode,
     pub shuffle: bool,
+    /// The source that is currently playing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_kind: Option<PlaybackSourceKind>,
 }
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -677,6 +703,7 @@ mod tests {
                 source: Some("headers.txt".to_string()),
                 message: None,
             },
+            PlaybackMode::Download,
         );
         assert_eq!(info.name, "YouTube Music");
         assert!(info.default);

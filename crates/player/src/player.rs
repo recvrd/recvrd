@@ -1,3 +1,4 @@
+use common_structs::ReadSeek;
 use flume::Sender;
 use rodio::cpal::traits::HostTrait;
 use rodio::{Decoder, OutputStream, OutputStreamBuilder, Sink, Source};
@@ -125,6 +126,33 @@ impl Player {
         self.sink.set_volume(self.data.volume_f32());
         self.sink.append(decoder);
 
+        Ok(())
+    }
+
+    /// Play a reader with an optional byte length, MIME type and seek flag.
+    pub fn play_reader(
+        &mut self,
+        reader: Box<dyn ReadSeek + Send + Sync>,
+        byte_len: Option<u64>,
+        mime: Option<&str>,
+        seekable: bool,
+    ) -> Result<(), PlayError> {
+        self.stop();
+        let mut builder = Decoder::builder().with_data(reader);
+        if let Some(byte_len) = byte_len {
+            builder = builder.with_byte_len(byte_len);
+        }
+        if let Some(mime) = mime {
+            builder = builder.with_mime_type(mime);
+        }
+        builder = builder.with_seekable(seekable);
+        let decoder = builder.build().map_err(PlayError::DecoderError)?;
+        self.data.set_total_duration(decoder.total_duration());
+        if self.sink.empty() {
+            self.sink = Sink::connect_new(self.stream.mixer());
+        }
+        self.sink.set_volume(self.data.volume_f32());
+        self.sink.append(decoder);
         Ok(())
     }
 

@@ -86,9 +86,9 @@ impl DownloadService {
             while let Some((key, status)) = receiver.recv().await {
                 let mut playback = playback.lock().await;
                 if status == common_structs::MusicDownloadStatus::DownloadFailed {
-                    playback.on_download_failed(&key);
+                    playback.on_download_failed(&key).await;
                 } else {
-                    playback.set_download_status(&key, status);
+                    playback.set_download_status(&key, status).await;
                 }
             }
         });

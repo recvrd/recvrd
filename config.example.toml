@@ -38,3 +38,10 @@ cover_cache_mb = 100
 # Environment overrides:
 #   RECVRD_PODVERSE_URL
 #   RECVRD_PODVERSE_TOKEN
+
+# Playback modes are not set here. The daemon stores per-provider choices
+# in $XDG_CONFIG_HOME/recvrd/settings.toml and changes them through
+# PUT /api/providers/{provider}/playback. The defaults are:
+#   youtube = "download"
+#   rss     = "download"
+#   podverse = "stream_then_download"

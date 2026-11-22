@@ -183,6 +183,7 @@ just test
 - [docs/decisions](docs/decisions/) — architecture decision records
 - [0004 — upstream strategy](docs/decisions/0004-upstream-strategy.md) — fork-first with selective upstreaming
 - [0005 — terminal client](docs/decisions/0005-tui-client.md) — `recvc` is a daemon client
+- [0006 — playback modes](docs/decisions/0006-playback-modes.md) — per-provider download, stream or stream-then-download
 
 ### Workspace layout
 
@@ -215,9 +216,13 @@ curl -N http://127.0.0.1:8080/api/events
 
 See [docs/api.md](docs/api.md) for every endpoint, request/response shapes,
 error handling, SSE event types and `Last-Event-ID` replay. Playing a playlist
-or track automatically queues the audio for download; playback starts when the
+or track queues the audio for download by default; playback starts when the
 cached file is ready, and failed downloads can be retried from the API or UI.
-The daemon serves the web UI at `/` and the API under `/api`.
+RSS and Podverse tracks can also stream instead. The mode is per provider:
+`download`, `stream` or `stream_then_download`, changed with
+`PUT /api/providers/{provider}/playback`. The choice is saved in
+`$XDG_CONFIG_HOME/recvrd/settings.toml`. The daemon serves the web UI at `/`
+and the API under `/api`.
 
 ## MCP
 

@@ -706,6 +706,7 @@ mod tests {
                 volume: 50,
                 repeat: RepeatMode::Off,
                 shuffle: false,
+                source_kind: None,
             },
             queue_length: 1,
             downloads: DownloadSummary {
@@ -817,6 +818,7 @@ mod tests {
                 source: None,
                 message: None,
             },
+            recvrd_api::PlaybackMode::Download,
         )])
     }
 

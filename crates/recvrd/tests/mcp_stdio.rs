@@ -40,6 +40,7 @@ async fn mock_daemon() -> String {
             volume: 50,
             repeat: Default::default(),
             shuffle: false,
+            source_kind: None,
         },
         queue_length: 1,
         downloads: DownloadSummary::default(),

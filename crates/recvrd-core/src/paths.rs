@@ -159,6 +159,11 @@ impl Paths {
         self.config_dir.join("config.toml")
     }
 
+    /// The auto-generated playback settings file.
+    pub fn settings_file(&self) -> PathBuf {
+        self.config_dir.join("settings.toml")
+    }
+
     pub fn headers_file(&self) -> PathBuf {
         self.config_dir.join("headers.txt")
     }
@@ -265,6 +270,10 @@ mod tests {
         };
 
         assert_eq!(paths.config_file(), PathBuf::from("/config/config.toml"));
+        assert_eq!(
+            paths.settings_file(),
+            PathBuf::from("/config/settings.toml")
+        );
         assert_eq!(paths.headers_file(), PathBuf::from("/config/headers.txt"));
         assert_eq!(
             paths.legacy_headers_file(),

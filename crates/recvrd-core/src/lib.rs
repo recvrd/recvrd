@@ -8,6 +8,7 @@ pub mod events;
 pub mod model;
 pub mod paths;
 pub mod playback;
+pub mod settings;
 pub mod state;
 
 pub use auth::{Auth, AuthError, AuthState, AuthStatus, LoadedAuth, resolve_auth};
@@ -18,5 +19,9 @@ pub use model::{
     PlaybackSnapshot, PlaybackStatus, Queue, QueueItem, QueueSnapshot, RepeatMode, Track,
 };
 pub use paths::{Paths, PathsError};
-pub use playback::{AudioSink, PlaybackCommand, PlaybackError, PlaybackService};
+pub use playback::{
+    AudioSink, NoStreamFactory, PlaybackCommand, PlaybackError, PlaybackService, PlaybackSource,
+    StreamFactory, StreamReader,
+};
+pub use settings::{PlaybackSettings, PlaybackSettingsStore, SETTINGS_VERSION};
 pub use state::{PersistedState, STATE_VERSION, StateError};

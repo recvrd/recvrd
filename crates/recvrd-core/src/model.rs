@@ -1,4 +1,6 @@
-use common_structs::{MusicDownloadStatus, ProviderId, TrackKey, TrackMetadata, TrackSource};
+use common_structs::{
+    MusicDownloadStatus, PlaybackSourceKind, ProviderId, TrackKey, TrackMetadata, TrackSource,
+};
 use serde::{Deserialize, Serialize};
 
 /// A playable track independent of the YouTube Music API client.
@@ -71,6 +73,7 @@ pub struct PlaybackSnapshot {
     pub volume: u8,
     pub repeat: RepeatMode,
     pub shuffle: bool,
+    pub source_kind: Option<PlaybackSourceKind>,
 }
 
 impl Default for PlaybackSnapshot {
@@ -83,6 +86,7 @@ impl Default for PlaybackSnapshot {
             volume: 50,
             repeat: RepeatMode::Off,
             shuffle: false,
+            source_kind: None,
         }
     }
 }
