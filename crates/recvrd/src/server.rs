@@ -209,6 +209,8 @@ pub fn router<S: AudioSink + Send + 'static>(state: AppState<S>) -> Router {
         .route("/api/downloads/retry", post(retry_download))
         .route("/api/cache", get(cache_status))
         .route("/api/cache/clean", post(cache_clean))
+        .route("/api/library/cached", get(cached_tracks))
+        .route("/api/library/cached/playlists", get(cached_playlists))
         .route("/api/rss/feeds", get(list_rss_feeds).post(add_rss_feed))
         .route("/api/rss/feeds/refresh", post(refresh_rss_feeds))
         .route("/api/rss/feeds/{id}", delete(remove_rss_feed))
@@ -434,13 +436,14 @@ async fn playlist<S: AudioSink + Send + 'static>(
     // Load the playlist direct, not through the library. A public
     // playlist has tracks without a session, and the library load
     // would reject it as expired.
-    let detail = match state.music.playlist_detail(provider, &id).await {
+    let mut detail = match state.music.playlist_detail(provider, &id).await {
         Ok(detail) => detail,
         Err(error) if error == format!("playlist {id} not found") => {
             return Err(ApiFailure::not_found(error));
         }
         Err(error) => return Err(provider_failure(&state, provider, error)),
     };
+    state.cache.annotate_tracks(&mut detail.tracks);
     Ok(Json(detail))
 }
 
@@ -727,12 +730,13 @@ async fn search<S: AudioSink + Send + 'static>(
         return Err(ApiFailure::bad_request("search query must not be empty"));
     }
     let provider = parse_provider(query.provider)?;
-    state
+    let mut results = state
         .music
         .search(provider, &query.q)
         .await
-        .map(Json)
-        .map_err(|error| ApiFailure::upstream(format!("{provider}: {error}")))
+        .map_err(|error| ApiFailure::upstream(format!("{provider}: {error}")))?;
+    state.cache.annotate_tracks(&mut results.tracks);
+    Ok(Json(results))
 }
 
 /// Load the full detail for one track.
@@ -750,11 +754,10 @@ async fn track_detail<S: AudioSink + Send + 'static>(
             "provider {provider} is not configured"
         )));
     }
-    state
+    let mut detail = state
         .music
         .track_detail(provider, &track_id)
         .await
-        .map(Json)
         .map_err(|error| {
             let lower = error.to_ascii_lowercase();
             if lower.contains("not found")
@@ -765,7 +768,11 @@ async fn track_detail<S: AudioSink + Send + 'static>(
             } else {
                 ApiFailure::upstream(format!("{provider}: {error}"))
             }
-        })
+        })?;
+    state
+        .cache
+        .annotate_tracks(std::slice::from_mut(&mut detail.track));
+    Ok(Json(detail))
 }
 
 /// Serve a cached cover image.
@@ -1040,6 +1047,59 @@ async fn cache_status<S: AudioSink + Send + 'static>(
     State(state): State<AppState<S>>,
 ) -> Json<CacheSizes> {
     Json(state.cache.sizes())
+}
+
+/// List the complete downloads for one provider, from the
+/// metadata sidecars. The endpoint makes no provider call.
+async fn cached_tracks<S: AudioSink + Send + 'static>(
+    State(state): State<AppState<S>>,
+    Query(query): Query<ProviderQuery>,
+) -> Result<Json<Vec<Track>>, ApiFailure> {
+    let provider = parse_provider(query.provider)?;
+    Ok(Json(
+        state
+            .cache
+            .cached_tracks(provider)
+            .iter()
+            .map(api_track)
+            .collect(),
+    ))
+}
+
+/// List the cached playlists for one provider, grouped by
+/// channel. The endpoint makes no provider call.
+async fn cached_playlists<S: AudioSink + Send + 'static>(
+    State(state): State<AppState<S>>,
+    Query(query): Query<ProviderQuery>,
+) -> Result<Json<Vec<PlaylistDetail>>, ApiFailure> {
+    let provider = parse_provider(query.provider)?;
+    Ok(Json(
+        state
+            .cache
+            .cached_playlists(provider)
+            .into_iter()
+            .map(|group| {
+                let first = group.tracks.first();
+                PlaylistDetail {
+                    playlist: Playlist {
+                        id: group.id,
+                        name: group.name,
+                        subtitle: String::new(),
+                        image_url: first
+                            .and_then(|track| track.metadata.as_ref())
+                            .and_then(|metadata| metadata.image_url.clone()),
+                        author: None,
+                        description: None,
+                        feed_url: first
+                            .and_then(|track| track.metadata.as_ref())
+                            .and_then(|metadata| metadata.feed_url.clone()),
+                        item_count: Some(group.tracks.len() as u32),
+                    },
+                    tracks: group.tracks.iter().map(api_track).collect(),
+                }
+            })
+            .collect(),
+    ))
 }
 
 /// Delete cached files for the requested scope and reset the queue
@@ -1411,6 +1471,8 @@ fn api_track(track: &recvrd_core::Track) -> Track {
         duration: track.duration.clone(),
         source: track.source.clone(),
         metadata: track.metadata.clone(),
+        // The queue does not carry the flag. List responses set it.
+        cached: false,
     }
 }
 
@@ -1529,6 +1591,7 @@ mod tests {
         fail_playlist: Option<String>,
         playlist_detail: Option<Result<PlaylistDetail, String>>,
         track_detail: Option<Result<TrackDetail, String>>,
+        search: Option<SearchResults>,
     }
 
     fn track(id: &str) -> Track {
@@ -1591,6 +1654,9 @@ mod tests {
             _provider: ProviderId,
             _query: &str,
         ) -> Result<SearchResults, String> {
+            if let Some(results) = &self.search {
+                return Ok(results.clone());
+            }
             Ok(SearchResults {
                 tracks: vec![track("v3")],
                 playlists: vec![],
@@ -1989,6 +2055,20 @@ mod tests {
         music: Arc<dyn MusicApi>,
         downloads: Arc<dyn DownloadControl>,
     ) -> AppState<MockSink> {
+        test_state_in_with_providers(
+            cache_root,
+            music,
+            downloads,
+            vec![ProviderId::Youtube, ProviderId::Rss],
+        )
+    }
+
+    fn test_state_in_with_providers(
+        cache_root: &Path,
+        music: Arc<dyn MusicApi>,
+        downloads: Arc<dyn DownloadControl>,
+        providers: Vec<ProviderId>,
+    ) -> AppState<MockSink> {
         let artwork = Arc::new(ArtworkCache::with_fetcher(
             cache_root.join("covers"),
             0,
@@ -2018,7 +2098,7 @@ mod tests {
             artwork,
             cache,
             rss,
-            vec![ProviderId::Youtube, ProviderId::Rss],
+            providers,
             settings,
         )
     }
@@ -2596,6 +2676,172 @@ mod tests {
         assert_eq!(sizes["downloads_bytes"], 10 + 2 + 11 + 2);
         assert_eq!(sizes["covers_files"], 2);
         assert_eq!(sizes["covers_bytes"], 9 + 10);
+        server.abort();
+    }
+
+    fn seed_podverse_track(root: &Path, id: &str, title: &str, channel_id: &str, channel: &str) {
+        let track = CoreTrack {
+            provider: ProviderId::Podverse,
+            track_id: id.to_string(),
+            title: title.to_string(),
+            author: "Artist".to_string(),
+            album: channel.to_string(),
+            duration: "3:00".to_string(),
+            source: None,
+            metadata: Some(Box::new(common_structs::TrackMetadata {
+                channel_id: Some(channel_id.to_string()),
+                channel_title: Some(channel.to_string()),
+                ..Default::default()
+            })),
+        };
+        write_cache_file(
+            &root.join(format!("downloads/podverse/{id}.mp3")),
+            b"audio-data",
+        );
+        write_cache_file(
+            &root.join(format!("downloads/podverse/{id}.json")),
+            serde_json::to_string(&track).unwrap().as_bytes(),
+        );
+    }
+
+    fn seed_podverse_cache(root: &Path) {
+        seed_podverse_track(root, "1001", "Beta song", "42", "Channel One");
+        seed_podverse_track(root, "1002", "Alpha song", "42", "Channel One");
+        seed_podverse_track(root, "1003", "Other song", "43", "Channel Two");
+        // A sidecar without audio is not a complete download.
+        let orphan = CoreTrack {
+            provider: ProviderId::Podverse,
+            track_id: "1004".to_string(),
+            title: "Orphan".to_string(),
+            author: "Artist".to_string(),
+            album: "Channel One".to_string(),
+            duration: "3:00".to_string(),
+            source: None,
+            metadata: None,
+        };
+        write_cache_file(
+            &root.join("downloads/podverse/1004.json"),
+            serde_json::to_string(&orphan).unwrap().as_bytes(),
+        );
+    }
+
+    /// Start a server whose provider fails every call, so a 200
+    /// from a cached endpoint proves it made no provider call.
+    fn failing_music() -> Arc<MockMusicApi> {
+        Arc::new(MockMusicApi {
+            fail_playlists: Some("provider is down".to_string()),
+            ..Default::default()
+        })
+    }
+
+    #[tokio::test]
+    async fn cached_tracks_lists_cached_podverse_tracks() {
+        let dir = tempfile::tempdir().unwrap();
+        seed_podverse_cache(dir.path());
+        let (base, server) = start_server(test_state_in_with(
+            dir.path(),
+            failing_music(),
+            Arc::new(MockDownloads::default()),
+        ))
+        .await;
+        let client = reqwest::Client::new();
+
+        let tracks: Vec<Track> = client
+            .get(format!("{base}/api/library/cached?provider=podverse"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(tracks.len(), 3);
+        assert_eq!(tracks[0].title, "Alpha song");
+        assert_eq!(tracks[0].provider, ProviderId::Podverse);
+        assert_eq!(tracks[0].track_id, "1002");
+        assert_eq!(tracks[1].title, "Beta song");
+        assert_eq!(tracks[2].title, "Other song");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn cached_playlists_groups_cached_tracks_by_channel() {
+        let dir = tempfile::tempdir().unwrap();
+        seed_podverse_cache(dir.path());
+        let (base, server) = start_server(test_state_in_with(
+            dir.path(),
+            failing_music(),
+            Arc::new(MockDownloads::default()),
+        ))
+        .await;
+        let client = reqwest::Client::new();
+
+        let playlists: Vec<PlaylistDetail> = client
+            .get(format!(
+                "{base}/api/library/cached/playlists?provider=podverse"
+            ))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(playlists.len(), 2);
+        assert_eq!(playlists[0].playlist.id, "42");
+        assert_eq!(playlists[0].playlist.name, "Channel One");
+        assert_eq!(playlists[0].playlist.item_count, Some(2));
+        assert_eq!(playlists[0].tracks.len(), 2);
+        assert_eq!(playlists[0].tracks[0].title, "Alpha song");
+        assert_eq!(playlists[1].playlist.id, "43");
+        assert_eq!(playlists[1].playlist.item_count, Some(1));
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn cached_library_rejects_an_unknown_provider() {
+        let dir = tempfile::tempdir().unwrap();
+        seed_podverse_cache(dir.path());
+        let (base, server) = start_server(test_state_in(dir.path())).await;
+        let client = reqwest::Client::new();
+
+        let response = client
+            .get(format!("{base}/api/library/cached?provider=nope"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+        let body: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(body["error"]["code"], "bad_request");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn a_cached_track_from_the_index_plays() {
+        let dir = tempfile::tempdir().unwrap();
+        seed_podverse_cache(dir.path());
+        let (base, server) = start_server(test_state_in(dir.path())).await;
+        let client = reqwest::Client::new();
+
+        let tracks: Vec<Track> = client
+            .get(format!("{base}/api/library/cached?provider=podverse"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let started: serde_json::Value = client
+            .post(format!("{base}/api/play/track"))
+            .json(&PlayTrackRequest {
+                track: tracks[0].clone(),
+            })
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(started["playback"]["state"], "playing");
+        assert_eq!(started["playback"]["current"]["track_id"], "1002");
         server.abort();
     }
 
@@ -3240,6 +3486,152 @@ mod tests {
         let detail: PlaylistDetail = response.json().await.unwrap();
         assert_eq!(detail.playlist.name, "Playlist One");
         assert_eq!(detail.tracks.len(), 2);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn playlist_detail_marks_cached_tracks() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("downloads/youtube")).unwrap();
+        std::fs::write(
+            dir.path().join("downloads/youtube/dQw4w9WgXcQ.mp4"),
+            b"audio",
+        )
+        .unwrap();
+        let detail = PlaylistDetail {
+            playlist: Playlist {
+                id: "p1".to_string(),
+                name: "Playlist One".to_string(),
+                subtitle: "Artist".to_string(),
+                ..Default::default()
+            },
+            tracks: vec![
+                Track {
+                    provider: ProviderId::Youtube,
+                    track_id: "dQw4w9WgXcQ".to_string(),
+                    title: "Track one".to_string(),
+                    artist: "Artist".to_string(),
+                    album: "Album".to_string(),
+                    duration: "3:00".to_string(),
+                    ..Default::default()
+                },
+                Track {
+                    provider: ProviderId::Youtube,
+                    track_id: "abcdefghijk".to_string(),
+                    title: "Track two".to_string(),
+                    artist: "Artist".to_string(),
+                    album: "Album".to_string(),
+                    duration: "3:00".to_string(),
+                    ..Default::default()
+                },
+            ],
+        };
+        let music = Arc::new(MockMusicApi {
+            playlist_detail: Some(Ok(detail)),
+            ..Default::default()
+        });
+        let state = test_state_in_with(dir.path(), music, Arc::new(MockDownloads::default()));
+        let (base, server) = start_server(state).await;
+        let response = reqwest::Client::new()
+            .get(format!("{base}/api/playlists/p1"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let body: serde_json::Value = response.json().await.unwrap();
+        let tracks = body["tracks"].as_array().unwrap();
+        assert_eq!(tracks.len(), 2);
+        assert_eq!(tracks[0]["cached"], true);
+        assert!(tracks[1].get("cached").is_none());
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn search_marks_cached_tracks() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("downloads/youtube")).unwrap();
+        std::fs::write(
+            dir.path().join("downloads/youtube/dQw4w9WgXcQ.mp4"),
+            b"audio",
+        )
+        .unwrap();
+        let music = Arc::new(MockMusicApi {
+            search: Some(SearchResults {
+                tracks: vec![
+                    Track {
+                        provider: ProviderId::Youtube,
+                        track_id: "dQw4w9WgXcQ".to_string(),
+                        title: "Track one".to_string(),
+                        artist: "Artist".to_string(),
+                        album: "Album".to_string(),
+                        duration: "3:00".to_string(),
+                        ..Default::default()
+                    },
+                    Track {
+                        provider: ProviderId::Youtube,
+                        track_id: "abcdefghijk".to_string(),
+                        title: "Track two".to_string(),
+                        artist: "Artist".to_string(),
+                        album: "Album".to_string(),
+                        duration: "3:00".to_string(),
+                        ..Default::default()
+                    },
+                ],
+                playlists: vec![],
+            }),
+            ..Default::default()
+        });
+        let state = test_state_in_with(dir.path(), music, Arc::new(MockDownloads::default()));
+        let (base, server) = start_server(state).await;
+        let response = reqwest::Client::new()
+            .get(format!("{base}/api/search?q=test"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let body: serde_json::Value = response.json().await.unwrap();
+        let tracks = body["tracks"].as_array().unwrap();
+        assert_eq!(tracks.len(), 2);
+        assert_eq!(tracks[0]["cached"], true);
+        assert!(tracks[1].get("cached").is_none());
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn track_detail_marks_a_cached_track() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("downloads/podverse")).unwrap();
+        std::fs::write(dir.path().join("downloads/podverse/52369.mp3"), b"audio").unwrap();
+        let music = Arc::new(MockMusicApi {
+            track_detail: Some(Ok(TrackDetail {
+                track: Track {
+                    provider: ProviderId::Podverse,
+                    track_id: "52369".to_string(),
+                    title: "Episode".to_string(),
+                    artist: "Channel".to_string(),
+                    album: "Show".to_string(),
+                    duration: "30:00".to_string(),
+                    ..Default::default()
+                },
+                description: None,
+            })),
+            ..Default::default()
+        });
+        let state = test_state_in_with_providers(
+            dir.path(),
+            music,
+            Arc::new(MockDownloads::default()),
+            vec![ProviderId::Youtube, ProviderId::Rss, ProviderId::Podverse],
+        );
+        let (base, server) = start_server(state).await;
+        let response = reqwest::Client::new()
+            .get(format!("{base}/api/tracks/podverse/52369"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let body: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(body["track"]["cached"], true);
         server.abort();
     }
 

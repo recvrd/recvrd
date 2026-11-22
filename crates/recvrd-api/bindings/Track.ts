@@ -20,4 +20,10 @@ source?: TrackSource | null,
 /**
  * Provider metadata for the track.
  */
-metadata?: TrackMetadata | null, };
+metadata?: TrackMetadata | null, 
+/**
+ * True when a local audio file exists for this track. The
+ * daemon sets this field on list responses. Providers leave
+ * it false. Clients use it to show a track as cached.
+ */
+cached?: boolean, };

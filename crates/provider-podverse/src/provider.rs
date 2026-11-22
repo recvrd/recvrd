@@ -385,6 +385,7 @@ fn track_from_item(item: &Item, channel: Option<&ChannelResponse>) -> Option<Tra
         ),
         source: source_from_item(item).map(Box::new),
         metadata: Some(Box::new(metadata_from_item(item, channel))),
+        cached: false,
     })
 }
 
