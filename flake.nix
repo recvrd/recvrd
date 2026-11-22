@@ -22,7 +22,7 @@
           pname = "recvrd-web";
           version = (builtins.fromJSON (builtins.readFile ./crates/recvrd-web/package.json)).version;
           src = ./crates/recvrd-web;
-          npmDepsHash = "sha256-Tx90TH1byadDPgUJ0UbcBi0CyKv3FEVnTLke0FZ1i1M=";
+          npmDepsHash = "sha256-FLctRc1LGgubPxgO3n9OhrrMNGwobekV1x6jFh0FBUw=";
           buildPhase = "npm run build";
           installPhase = "cp -r dist $out";
         };

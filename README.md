@@ -1,6 +1,6 @@
 # recvrd
 
-> **v0.6.3.** `recvrd` is an A/V receiver daemon for music, podcasts, video
+> **v0.7.0.** `recvrd` is an A/V receiver daemon for music, podcasts, video
 > and live TV. The audio path works today; video and live TV are future work.
 > `recvrd` is a headless fork of
 > [ytermusic](https://github.com/ccgauche/ytermusic), adding a web UI, terminal
@@ -44,7 +44,7 @@ UI, terminal client and MCP proxy are clients.
 | Terminal client (`recvc`, mouse and vim keys) | ✅ |
 | systemd unit, Nix package/module | ✅ |
 | MCP proxy (35 tools) | ✅ |
-| v0.6.3 release | ✅ |
+| v0.7.0 release | ✅ |
 
 See the [roadmap](https://github.com/recvrd/recvrd/issues/25) for the
 ordered backlog.
