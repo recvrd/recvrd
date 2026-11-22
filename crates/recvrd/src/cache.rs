@@ -7,13 +7,22 @@
 //! deletes regular files, except the files of the kept track.
 
 use std::{
+    collections::HashMap,
     fs,
     path::{Path, PathBuf},
+    time::SystemTime,
 };
 
-use common_structs::{ProviderId, TrackKey};
+use common_structs::{AUDIO_EXTENSIONS, ProviderId, TrackKey};
 use recvrd_api::{CacheCleanResult, CacheScope, CacheSizes};
 use recvrd_core::Track;
+
+/// The result of one cache eviction pass.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct CacheEviction {
+    pub freed_bytes: u64,
+    pub deleted_files: usize,
+}
 
 /// One channel's cached tracks: the playlist id and name plus
 /// the tracks in it, sorted by title.
@@ -150,6 +159,97 @@ impl CacheService {
         for track in tracks {
             track.cached = self.is_cached(&track.key());
         }
+    }
+
+    /// Evict the oldest complete downloads until the download cache
+    /// is at or below `max_bytes`. A value of 0 disables the limit.
+    /// Track keys in `keep` are never evicted. Incomplete downloads
+    /// and `.part` files are left alone, so an active download is
+    /// never damaged. Returns the freed bytes and deleted file count.
+    pub fn enforce_limit(&self, max_bytes: u64, keep: &[TrackKey]) -> CacheEviction {
+        if max_bytes == 0 {
+            return CacheEviction::default();
+        }
+        let mut total = sum_tree(&self.downloads_dir).0;
+        if total <= max_bytes {
+            return CacheEviction::default();
+        }
+
+        #[derive(Default)]
+        struct Group {
+            paths: Vec<PathBuf>,
+            bytes: u64,
+            newest: Option<SystemTime>,
+            has_json: bool,
+            has_audio: bool,
+        }
+
+        let mut groups: HashMap<TrackKey, Group> = HashMap::new();
+        let Ok(providers) = fs::read_dir(&self.downloads_dir) else {
+            return CacheEviction::default();
+        };
+        for provider_dir in providers.flatten().filter(|entry| entry.path().is_dir()) {
+            let Some(provider) = provider_dir
+                .file_name()
+                .to_str()
+                .and_then(|name| name.parse::<ProviderId>().ok())
+            else {
+                continue;
+            };
+            let Ok(files) = fs::read_dir(provider_dir.path()) else {
+                continue;
+            };
+            for file in files.flatten() {
+                let path = file.path();
+                let Some(extension) = path.extension().and_then(|ext| ext.to_str()) else {
+                    continue;
+                };
+                if extension == "part" || !path.is_file() {
+                    continue;
+                }
+                let Some(stem) = path.file_stem().and_then(|name| name.to_str()) else {
+                    continue;
+                };
+                let key = TrackKey::new(provider, stem);
+                if !key.validate() {
+                    continue;
+                }
+                let Ok(metadata) = file.metadata() else {
+                    continue;
+                };
+                let group = groups.entry(key).or_default();
+                group.bytes += metadata.len();
+                if let Ok(modified) = metadata.modified() {
+                    group.newest = Some(group.newest.map_or(modified, |old| old.max(modified)));
+                }
+                group.has_json |= extension == "json";
+                group.has_audio |= AUDIO_EXTENSIONS.contains(&extension);
+                group.paths.push(path);
+            }
+        }
+
+        let mut groups: Vec<(TrackKey, Group)> = groups
+            .into_iter()
+            .filter(|(key, group)| {
+                group.has_json && group.has_audio && !keep.iter().any(|keep| keep == key)
+            })
+            .collect();
+        groups.sort_by_key(|(_, group)| group.newest);
+
+        let mut eviction = CacheEviction::default();
+        for (_, group) in groups {
+            if total <= max_bytes {
+                break;
+            }
+            for path in group.paths {
+                if fs::remove_file(&path).is_ok() {
+                    eviction.deleted_files += 1;
+                }
+            }
+            total = total.saturating_sub(group.bytes);
+            eviction.freed_bytes += group.bytes;
+        }
+        eviction
     }
 
     /// Delete cached files for `scope`, except the files of the
@@ -331,6 +431,110 @@ mod tests {
         );
         write_file(&dir.join("covers/youtube/abcdefghijk.jpg"), b"jpeg-data");
         write_file(&dir.join("covers/youtube/zyxwvutsrqp.jpg"), b"other-jpeg");
+    }
+
+    fn set_age(path: &Path, seconds: u64) {
+        let file = fs::File::open(path).unwrap();
+        file.set_modified(SystemTime::now() - std::time::Duration::from_secs(seconds))
+            .unwrap();
+    }
+
+    fn seed_download_pair(dir: &Path, id: &str) {
+        write_file(
+            &dir.join(format!("downloads/youtube/{id}.mp4")),
+            b"0123456789",
+        );
+        write_file(&dir.join(format!("downloads/youtube/{id}.json")), b"{}");
+    }
+
+    #[test]
+    fn enforce_limit_evicts_the_oldest_complete_download() {
+        let dir = tempfile::tempdir().unwrap();
+        seed_download_pair(dir.path(), "abcdefghijk");
+        seed_download_pair(dir.path(), "zyxwvutsrqp");
+        set_age(&dir.path().join("downloads/youtube/abcdefghijk.mp4"), 120);
+        set_age(&dir.path().join("downloads/youtube/abcdefghijk.json"), 120);
+
+        let eviction = service(dir.path()).enforce_limit(12, &[]);
+
+        assert_eq!(eviction.deleted_files, 2);
+        assert_eq!(eviction.freed_bytes, 12);
+        assert!(
+            !dir.path()
+                .join("downloads/youtube/abcdefghijk.mp4")
+                .exists()
+        );
+        assert!(
+            !dir.path()
+                .join("downloads/youtube/abcdefghijk.json")
+                .exists()
+        );
+        assert!(
+            dir.path()
+                .join("downloads/youtube/zyxwvutsrqp.mp4")
+                .exists()
+        );
+        assert!(
+            dir.path()
+                .join("downloads/youtube/zyxwvutsrqp.json")
+                .exists()
+        );
+    }
+
+    #[test]
+    fn enforce_limit_never_evicts_a_protected_track() {
+        let dir = tempfile::tempdir().unwrap();
+        seed_download_pair(dir.path(), "abcdefghijk");
+        seed_download_pair(dir.path(), "zyxwvutsrqp");
+        set_age(&dir.path().join("downloads/youtube/abcdefghijk.mp4"), 120);
+        set_age(&dir.path().join("downloads/youtube/abcdefghijk.json"), 120);
+
+        let eviction = service(dir.path()).enforce_limit(12, &[key("abcdefghijk")]);
+
+        assert_eq!(eviction.deleted_files, 2);
+        assert!(
+            dir.path()
+                .join("downloads/youtube/abcdefghijk.mp4")
+                .exists()
+        );
+        assert!(
+            !dir.path()
+                .join("downloads/youtube/zyxwvutsrqp.mp4")
+                .exists()
+        );
+    }
+
+    #[test]
+    fn enforce_limit_leaves_part_files_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        write_file(
+            &dir.path().join("downloads/youtube/abcdefghijk.part"),
+            b"part",
+        );
+
+        let eviction = service(dir.path()).enforce_limit(1, &[]);
+
+        assert_eq!(eviction, CacheEviction::default());
+        assert!(
+            dir.path()
+                .join("downloads/youtube/abcdefghijk.part")
+                .exists()
+        );
+    }
+
+    #[test]
+    fn enforce_limit_zero_disables_eviction() {
+        let dir = tempfile::tempdir().unwrap();
+        seed_download_pair(dir.path(), "abcdefghijk");
+
+        let eviction = service(dir.path()).enforce_limit(0, &[]);
+
+        assert_eq!(eviction, CacheEviction::default());
+        assert!(
+            dir.path()
+                .join("downloads/youtube/abcdefghijk.mp4")
+                .exists()
+        );
     }
 
     #[test]

@@ -382,6 +382,12 @@ the playback state, and the settings are kept. The file of the current track
 is kept, and the track is queued again when its file is missing, so a
 download in progress resumes and the current track keeps playing.
 
+The download cache has a size limit from `cache_limit_mb` in `config.toml`
+(default 10240 MiB, 0 disables). When the cache exceeds it, the daemon evicts
+the oldest complete download pairs (audio plus sidecar) until it is back under
+the limit. The current track and the current queue are kept. `.part` files
+and incomplete downloads are never evicted, so an active download is safe.
+
 The headless command does the same clean:
 
 ```sh

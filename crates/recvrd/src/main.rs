@@ -368,6 +368,7 @@ fn run_serve(
     let dbus = config.dbus;
     let parallel_downloads = config.parallel_downloads;
     let cover_cache_bytes = config.cover_cache_mb.saturating_mul(1024 * 1024);
+    let cache_limit_bytes = config.cache_limit_mb.saturating_mul(1024 * 1024);
     let downloader = match config.downloader {
         ConfigDownloader::Ytdlp => YoutubeDownloader::new(),
         ConfigDownloader::RustyYtdl => {
@@ -495,7 +496,28 @@ fn run_serve(
                 podverse.clone(),
             )),
         );
-        downloads.spawn(playback.clone());
+        let cache = Arc::new(CacheService::new(
+            paths.cache_dir.join("downloads"),
+            covers_dir.clone(),
+        ));
+        {
+            let keep = playback
+                .lock()
+                .await
+                .snapshot()
+                .current
+                .as_ref()
+                .map(|track| track.key());
+            let eviction = cache.enforce_limit(cache_limit_bytes, keep.as_slice());
+            if eviction.freed_bytes > 0 {
+                log::info!(
+                    "cache limit evicted {} files ({} bytes)",
+                    eviction.deleted_files,
+                    eviction.freed_bytes
+                );
+            }
+        }
+        downloads.spawn(playback.clone(), cache.clone(), cache_limit_bytes);
         let restored_tracks: Vec<recvrd_core::Track> = playback
             .lock()
             .await
@@ -517,10 +539,6 @@ fn run_serve(
                 rss.clone(),
                 podverse,
             )),
-        ));
-        let cache = Arc::new(CacheService::new(
-            paths.cache_dir.join("downloads"),
-            covers_dir,
         ));
 
         let (commands, mut command_rx) = mpsc::unbounded_channel();

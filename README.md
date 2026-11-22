@@ -149,6 +149,10 @@ defaults. CLI flags and environment variables override the config file:
 `config.toml` parse errors, invalid values and malformed headers are reported
 with the file path; they are never silently replaced with defaults.
 
+`cache_limit_mb` caps the download cache (default 10240 MiB, 0 disables). When
+it is exceeded, the oldest complete downloads are evicted, keeping the current
+queue. The cover cache has its own `cover_cache_mb` limit.
+
 To enable the Podverse provider, add a `[podverse]` table with the API base
 URL. The provider is hidden from `/api/providers` when the table is absent.
 

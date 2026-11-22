@@ -13,6 +13,9 @@
   download. Set the mode with `PUT /api/providers/{provider}/playback`.
 - Add `PlaybackSourceKind` to `Status` as `playback.source_kind`.
 - Save playback modes in `$XDG_CONFIG_HOME/recvrd/settings.toml`.
+- Add a `cache_limit_mb` download cache limit (default 10240 MiB, 0 disables).
+  The daemon evicts the oldest complete downloads first and keeps the current
+  queue.
 
 ### Changed
 

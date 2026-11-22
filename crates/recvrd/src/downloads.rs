@@ -15,6 +15,8 @@ use std::{
 };
 use tokio::sync::Mutex as AsyncMutex;
 
+use crate::cache::CacheService;
+
 /// Download operations needed by the HTTP layer. A trait keeps API tests
 /// independent of the download backend, the filesystem and the real download manager.
 pub trait DownloadControl: Send + Sync {
@@ -68,9 +70,15 @@ impl DownloadService {
     }
 
     /// Spawn the download workers and forward status updates into playback.
-    /// The future must be created inside a Tokio runtime.
-    pub fn spawn<S>(&self, playback: Arc<AsyncMutex<PlaybackService<S>>>)
-    where
+    /// The future must be created inside a Tokio runtime. After each
+    /// completed download, enforce the download cache limit while keeping
+    /// the current queue.
+    pub fn spawn<S>(
+        &self,
+        playback: Arc<AsyncMutex<PlaybackService<S>>>,
+        cache: Arc<CacheService>,
+        cache_limit_bytes: u64,
+    ) where
         S: AudioSink + Send + 'static,
     {
         let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
@@ -89,6 +97,29 @@ impl DownloadService {
                     playback.on_download_failed(&key).await;
                 } else {
                     playback.set_download_status(&key, status).await;
+                }
+                if status == common_structs::MusicDownloadStatus::Downloaded
+                    && cache_limit_bytes > 0
+                {
+                    let keep: Vec<common_structs::TrackKey> = playback
+                        .queue_snapshot()
+                        .items
+                        .into_iter()
+                        .map(|item| item.track.key())
+                        .collect();
+                    drop(playback);
+                    let cache = cache.clone();
+                    let _ = tokio::task::spawn_blocking(move || {
+                        let eviction = cache.enforce_limit(cache_limit_bytes, &keep);
+                        if eviction.freed_bytes > 0 {
+                            log::info!(
+                                "cache limit evicted {} files ({} bytes)",
+                                eviction.deleted_files,
+                                eviction.freed_bytes
+                            );
+                        }
+                    })
+                    .await;
                 }
             }
         });
