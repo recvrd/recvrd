@@ -65,7 +65,8 @@ prompt. A session that expires during pagination ends the load with
 | Method | Path | Purpose |
 | --- | --- | --- |
 | GET | `/api/status` | Daemon, auth, playback and queue summary |
-| GET | `/api/providers` | Providers with capabilities and auth state |
+| GET | `/api/providers` | Providers with capabilities, auth state and playback mode |
+| PUT | `/api/providers/{provider}/playback` | Set a provider's playback mode (`{mode}`) |
 | GET | `/api/playlists?provider=...` | Library playlists |
 | POST | `/api/playlists` | Create a playlist |
 | GET | `/api/playlists/{id}?provider=...` | Playlist metadata and tracks |
@@ -129,7 +130,8 @@ curl http://127.0.0.1:8080/api/status
     "position_secs": 0.0,
     "volume": 50,
     "repeat": "off",
-    "shuffle": false
+    "shuffle": false,
+    "source_kind": "stream"
   },
   "queue_length": 0,
   "downloads": {
@@ -169,16 +171,47 @@ curl http://127.0.0.1:8080/api/providers
       "state": "ok",
       "source": "/home/me/.config/recvrd/headers.txt",
       "message": null
-    }
+    },
+    "playback": "download",
+    "playback_modes": ["download"]
   }
 ]
 ```
 
 `GET /api/providers` lists every configured provider. Each entry names the
-provider, marks the default, lists the actions it supports, and reports its
-auth state. Clients hide actions a provider does not support. RSS needs no
-auth, so its auth state is always `ok` with no source. The Podverse provider
-is omitted until `podverse.base_url` or `RECVRD_PODVERSE_URL` is set.
+provider, marks the default, lists the actions it supports, reports its auth
+state and its playback mode. Clients hide actions a provider does not support.
+RSS needs no auth, so its auth state is always `ok` with no source. The
+Podverse provider is omitted until `podverse.base_url` or
+`RECVRD_PODVERSE_URL` is set.
+
+### Playback modes
+
+A provider plays in one of three modes:
+
+- `download` — wait for the cache download, then play the file.
+- `stream` — play the remote source without keeping a cache.
+- `stream_then_download` — play the remote source and download the cache in
+  the background.
+
+The defaults are `download` for YouTube and RSS and `stream_then_download` for
+Podverse. YouTube supports only `download`. RSS and Podverse support all three.
+A provider without a remote source still falls back to a download.
+
+```sh
+curl -X PUT http://127.0.0.1:8080/api/providers/rss/playback \
+  -H 'content-type: application/json' \
+  -d '{"mode": "stream"}'
+```
+
+The response is the updated `ProviderInfo`. An unsupported mode returns 400;
+an unknown or unconfigured provider returns 404. The choice is saved in
+`$XDG_CONFIG_HOME/recvrd/settings.toml`. The daemon owns that file: it is
+written atomically and replaced by defaults when it cannot be parsed. Keep
+user-managed settings in `config.toml`.
+
+`playback.source_kind` in `Status` is `file` or `stream` while a track plays.
+It is omitted when nothing is loaded.
 
 Library and search requests take an optional `provider` parameter. A missing
 value means the default provider. An unknown name returns 400 with
@@ -266,8 +299,9 @@ A Podverse track carries a media source and provider metadata:
 ```
 
 The detail route returns the same track in a `track` object and the full item
-description in `description`. Stream and download modes arrive in a later
-change. Podverse channels are read-only.
+description in `description`. Podverse plays in `stream_then_download` by
+default; see [Playback modes](#playback-modes). Podverse channels are
+read-only.
 
 ### Library and search
 

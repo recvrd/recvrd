@@ -365,6 +365,7 @@ mod tests {
                 volume: 50,
                 repeat: RepeatMode::Off,
                 shuffle: false,
+                source_kind: None,
             },
             queue_length: 1,
             downloads: DownloadSummary::default(),

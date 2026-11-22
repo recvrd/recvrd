@@ -27,6 +27,8 @@ export function makeProviderInfo(overrides: Partial<ProviderInfo> = {}): Provide
       covers: true,
     },
     auth: { state: 'ok', source: '/tmp/headers.txt', message: null },
+    playback: 'download',
+    playback_modes: ['download'],
     ...overrides,
   };
 }

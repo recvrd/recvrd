@@ -6,24 +6,24 @@ use axum::{
         IntoResponse, Response,
         sse::{Event as SseEvent, KeepAlive, Sse},
     },
-    routing::{delete, get, post},
+    routing::{delete, get, post, put},
 };
-use common_structs::{ProviderId, TrackKey};
+use common_structs::{PlaybackMode, ProviderId, TrackKey};
 use recvrd_api::{
     AddPlaylistTracksRequest, AddRssFeedRequest, ApiError, AuthState, AuthStatus as ApiAuthStatus,
     CacheCleanRequest, CacheCleanResult, CacheScope, CacheSizes, CreatePlaylistRequest,
     DownloadStatus, DownloadSummary, ErrorEnvelope, Event, EventKind, MovePlaylistTrackRequest,
     MusicApi, OkResponse, PlayNextRequest, PlayPlaylistRequest, PlayTrackRequest,
-    PlaybackSnapshot as ApiPlaybackSnapshot, PlaybackState, Playlist, PlaylistDetail,
-    PlaylistEditError, ProviderInfo, Queue as ApiQueue, QueueItem as ApiQueueItem, QueueRequest,
-    RemovePlaylistTracksRequest, RemoveQueueRequest, ReorderQueueRequest,
+    PlaybackModeRequest, PlaybackSnapshot as ApiPlaybackSnapshot, PlaybackState, Playlist,
+    PlaylistDetail, PlaylistEditError, ProviderInfo, Queue as ApiQueue, QueueItem as ApiQueueItem,
+    QueueRequest, RemovePlaylistTracksRequest, RemoveQueueRequest, ReorderQueueRequest,
     RepeatMode as ApiRepeatMode, RepeatRequest, RetryDownloadRequest, RssFeed, SearchResults,
     SeekRequest, ShuffleRequest, Status, Track, TrackDetail, UpdatePlaylistRequest, VolumeRequest,
 };
 use recvrd_core::{
     AudioSink, AuthState as CoreAuthState, AuthStatus, CoreEvent, EventBus, PlaybackCommand,
-    PlaybackError, PlaybackService, PlaybackSnapshot, PlaybackStatus, QueueSnapshot,
-    RepeatMode as CoreRepeatMode,
+    PlaybackError, PlaybackService, PlaybackSettingsStore, PlaybackSnapshot, PlaybackStatus,
+    QueueSnapshot, RepeatMode as CoreRepeatMode,
 };
 use serde::Deserialize;
 use std::{
@@ -55,6 +55,7 @@ pub struct AppState<S: AudioSink + Send + 'static> {
     cache: Arc<CacheService>,
     rss: Arc<RssProvider>,
     providers: Vec<ProviderId>,
+    settings: Arc<PlaybackSettingsStore>,
 }
 
 impl<S: AudioSink + Send + 'static> Clone for AppState<S> {
@@ -70,6 +71,7 @@ impl<S: AudioSink + Send + 'static> Clone for AppState<S> {
             cache: self.cache.clone(),
             rss: self.rss.clone(),
             providers: self.providers.clone(),
+            settings: self.settings.clone(),
         }
     }
 }
@@ -86,6 +88,7 @@ impl<S: AudioSink + Send + 'static> AppState<S> {
         cache: Arc<CacheService>,
         rss: Arc<RssProvider>,
         providers: Vec<ProviderId>,
+        settings: Arc<PlaybackSettingsStore>,
     ) -> Self {
         Self {
             started_at: Instant::now(),
@@ -98,6 +101,7 @@ impl<S: AudioSink + Send + 'static> AppState<S> {
             cache,
             rss,
             providers,
+            settings,
         }
     }
 }
@@ -172,6 +176,7 @@ pub fn router<S: AudioSink + Send + 'static>(state: AppState<S>) -> Router {
     Router::new()
         .route("/api/status", get(status))
         .route("/api/providers", get(providers))
+        .route("/api/providers/{provider}/playback", put(set_playback_mode))
         .route("/api/playlists", get(playlists).post(create_playlist))
         .route(
             "/api/playlists/{id}",
@@ -303,10 +308,43 @@ async fn providers<S: AudioSink + Send + 'static>(
             .iter()
             .map(|provider| {
                 let auth = provider_auth(&state, *provider);
-                ProviderInfo::new(*provider, auth)
+                let mode = state.settings.mode(*provider);
+                ProviderInfo::new(*provider, auth, mode)
             })
             .collect(),
     )
+}
+
+/// Set the playback mode for one provider.
+async fn set_playback_mode<S: AudioSink + Send + 'static>(
+    State(state): State<AppState<S>>,
+    AxumPath(provider): AxumPath<String>,
+    Json(request): Json<PlaybackModeRequest>,
+) -> Result<Json<ProviderInfo>, ApiFailure> {
+    let Ok(provider) = provider.parse::<ProviderId>() else {
+        return Err(ApiFailure::not_found(format!(
+            "unknown provider {provider}"
+        )));
+    };
+    if !state.providers.contains(&provider) {
+        return Err(ApiFailure::not_found(format!(
+            "provider {provider} is not configured"
+        )));
+    }
+    if !PlaybackMode::supported_for(provider).contains(&request.mode) {
+        return Err(ApiFailure::bad_request(format!(
+            "provider {provider} does not support playback mode {}",
+            request.mode.as_str()
+        )));
+    }
+    {
+        let playback = state.playback.lock().await;
+        playback
+            .set_playback_mode(provider, request.mode)
+            .map_err(playback_failure)?;
+    }
+    let auth = provider_auth(&state, provider);
+    Ok(Json(ProviderInfo::new(provider, auth, request.mode)))
 }
 
 /// List the RSS feeds the daemon follows.
@@ -814,9 +852,15 @@ async fn play_playlist<S: AudioSink + Send + 'static>(
         return Err(ApiFailure::bad_request("playlist has no tracks"));
     }
     let tracks: Vec<_> = tracks.into_iter().map(core_track).collect();
-    state.downloads.queue_playlist(&tracks);
+    let mode = state.settings.mode(provider);
     let mut playback = state.playback.lock().await;
-    playback.play_playlist(tracks).map_err(playback_failure)?;
+    playback
+        .play_playlist(tracks.clone())
+        .await
+        .map_err(playback_failure)?;
+    if mode != PlaybackMode::Stream {
+        state.downloads.queue_playlist(&tracks);
+    }
     Ok(Json(status_from_parts(
         &state,
         &playback.snapshot(),
@@ -833,9 +877,15 @@ async fn play_track<S: AudioSink + Send + 'static>(
         return Err(ApiFailure::bad_request(format!("invalid track ID {key}")));
     }
     let track = core_track(request.track);
-    state.downloads.queue_tracks(std::slice::from_ref(&track));
+    let mode = state.settings.mode(track.provider);
     let mut playback = state.playback.lock().await;
-    playback.play_track(track).map_err(playback_failure)?;
+    playback
+        .play_track(track.clone())
+        .await
+        .map_err(playback_failure)?;
+    if mode != PlaybackMode::Stream {
+        state.downloads.queue_tracks(std::slice::from_ref(&track));
+    }
     Ok(Json(status_from_parts(
         &state,
         &playback.snapshot(),
@@ -852,7 +902,10 @@ async fn queue_add<S: AudioSink + Send + 'static>(
         return Err(ApiFailure::bad_request(format!("invalid track ID {key}")));
     }
     let track = core_track(request.track);
-    state.downloads.queue_tracks(std::slice::from_ref(&track));
+    let mode = state.settings.mode(track.provider);
+    if mode != PlaybackMode::Stream {
+        state.downloads.queue_tracks(std::slice::from_ref(&track));
+    }
     let mut playback = state.playback.lock().await;
     playback.enqueue(track);
     Ok(Json(api_queue(&playback.queue_snapshot())))
@@ -886,7 +939,7 @@ async fn next<S: AudioSink + Send + 'static>(
     State(state): State<AppState<S>>,
 ) -> Result<Json<Status>, ApiFailure> {
     let mut playback = state.playback.lock().await;
-    playback.next_track().map_err(playback_failure)?;
+    playback.next_track().await.map_err(playback_failure)?;
     Ok(Json(status_from_parts(
         &state,
         &playback.snapshot(),
@@ -898,7 +951,7 @@ async fn previous<S: AudioSink + Send + 'static>(
     State(state): State<AppState<S>>,
 ) -> Result<Json<Status>, ApiFailure> {
     let mut playback = state.playback.lock().await;
-    playback.previous_track().map_err(playback_failure)?;
+    playback.previous_track().await.map_err(playback_failure)?;
     Ok(Json(status_from_parts(
         &state,
         &playback.snapshot(),
@@ -1054,7 +1107,10 @@ async fn queue_remove<S: AudioSink + Send + 'static>(
     if request.index >= playback.queue_snapshot().items.len() {
         return Err(ApiFailure::bad_request("invalid queue index"));
     }
-    playback.remove(request.index).map_err(playback_failure)?;
+    playback
+        .remove(request.index)
+        .await
+        .map_err(playback_failure)?;
     Ok(Json(api_queue(&playback.queue_snapshot())))
 }
 
@@ -1214,6 +1270,7 @@ pub async fn serve<S: AudioSink + Send + 'static>(
     dbus: bool,
     rss: Arc<RssProvider>,
     providers: Vec<ProviderId>,
+    settings: Arc<PlaybackSettingsStore>,
 ) -> io::Result<()> {
     let addr: SocketAddr = format!("{bind}:{port}").parse().map_err(|error| {
         io::Error::new(
@@ -1237,7 +1294,7 @@ pub async fn serve<S: AudioSink + Send + 'static>(
     println!("recvrd listening on http://{local_addr}");
 
     let state = AppState::new(
-        auth, music, playback, events, downloads, artwork, cache, rss, providers,
+        auth, music, playback, events, downloads, artwork, cache, rss, providers, settings,
     );
     axum::serve(listener, router(state))
         .with_graceful_shutdown(shutdown_signal())
@@ -1324,6 +1381,7 @@ fn api_playback(snapshot: &PlaybackSnapshot) -> ApiPlaybackSnapshot {
         volume: snapshot.volume,
         repeat: api_repeat(snapshot.repeat),
         shuffle: snapshot.shuffle,
+        source_kind: snapshot.source_kind,
     }
 }
 
@@ -1420,6 +1478,7 @@ fn playback_failure(error: PlaybackError) -> ApiFailure {
         PlaybackError::NoCurrentTrack => ApiFailure::bad_request("no current track"),
         PlaybackError::IndexOutOfBounds => ApiFailure::bad_request("queue index out of bounds"),
         PlaybackError::InvalidPosition => ApiFailure::bad_request("invalid seek position"),
+        PlaybackError::UnsupportedMode(message) => ApiFailure::bad_request(message),
         PlaybackError::Sink(message) => ApiFailure::internal(message),
     }
 }
@@ -1429,7 +1488,7 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use futures_util::StreamExt;
-    use recvrd_core::{CoverFetcher, Track as CoreTrack};
+    use recvrd_core::{CoverFetcher, PlaybackSource, Track as CoreTrack};
     use std::{
         path::{Path, PathBuf},
         sync::atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -1441,7 +1500,7 @@ mod tests {
     impl AudioSink for MockSink {
         type Error = std::io::Error;
 
-        fn play(&mut self, _track: &CoreTrack, _path: &Path) -> Result<(), Self::Error> {
+        fn play(&mut self, _track: &CoreTrack, _source: PlaybackSource) -> Result<(), Self::Error> {
             Ok(())
         }
         fn pause(&mut self) -> Result<(), Self::Error> {
@@ -1859,7 +1918,14 @@ mod tests {
         downloads: Arc<dyn DownloadControl>,
         artwork: Arc<ArtworkCache>,
     ) -> AppState<MockSink> {
-        let service = PlaybackService::new(MockSink, "/tmp/recvrd-test", 50);
+        let settings = fresh_settings();
+        let service = PlaybackService::with_streams(
+            MockSink,
+            "/tmp/recvrd-test",
+            50,
+            settings.clone(),
+            Arc::new(recvrd_core::NoStreamFactory),
+        );
         let events = service.events();
         let playback = Arc::new(Mutex::new(service));
         let cache = Arc::new(CacheService::new(
@@ -1877,7 +1943,23 @@ mod tests {
             cache,
             rss,
             vec![ProviderId::Youtube, ProviderId::Rss],
+            settings,
         )
+    }
+
+    /// Build a fresh settings store for one test.
+    fn fresh_settings() -> Arc<PlaybackSettingsStore> {
+        static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let id = COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let dir = tempfile::Builder::new()
+            .prefix(&format!(
+                "recvrd-test-settings-{}-{id}-",
+                std::process::id()
+            ))
+            .tempdir()
+            .unwrap()
+            .keep();
+        Arc::new(PlaybackSettingsStore::load(dir.join("settings.toml")))
     }
 
     /// Build a fresh RSS provider with its own store file, so feed
@@ -1916,7 +1998,14 @@ mod tests {
             cache_root.join("covers"),
         ));
         let rss = fresh_rss();
-        let service = PlaybackService::new(MockSink, cache_root.to_path_buf(), 50);
+        let settings = fresh_settings();
+        let service = PlaybackService::with_streams(
+            MockSink,
+            cache_root.to_path_buf(),
+            50,
+            settings.clone(),
+            Arc::new(recvrd_core::NoStreamFactory),
+        );
         let events = service.events();
         let playback = Arc::new(Mutex::new(service));
         AppState::new(
@@ -1929,6 +2018,7 @@ mod tests {
             cache,
             rss,
             vec![ProviderId::Youtube, ProviderId::Rss],
+            settings,
         )
     }
 
@@ -2363,11 +2453,127 @@ mod tests {
     async fn mark_downloaded(state: &AppState<MockSink>, ids: &[&str]) {
         let mut playback = state.playback.lock().await;
         for id in ids {
-            playback.set_download_status(
-                &TrackKey::youtube(*id),
-                common_structs::MusicDownloadStatus::Downloaded,
-            );
+            playback
+                .set_download_status(
+                    &TrackKey::youtube(*id),
+                    common_structs::MusicDownloadStatus::Downloaded,
+                )
+                .await;
         }
+    }
+
+    #[tokio::test]
+    async fn stream_mode_skips_the_download_queue() {
+        let downloads = Arc::new(MockDownloads::default());
+        let state = test_state_with_downloads(Arc::new(MockMusicApi::default()), downloads.clone());
+        state
+            .settings
+            .set_mode(ProviderId::Rss, PlaybackMode::Stream)
+            .unwrap();
+        let (base, server) = start_server(state).await;
+        let client = reqwest::Client::new();
+
+        let mut rss_track = track("0123456789abcdef0123456789abcdef");
+        rss_track.provider = ProviderId::Rss;
+        client
+            .post(format!("{base}/api/queue"))
+            .json(&QueueRequest { track: rss_track })
+            .send()
+            .await
+            .unwrap();
+
+        assert!(downloads.queued.lock().unwrap().is_empty());
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn stream_then_download_queues_the_cache() {
+        let downloads = Arc::new(MockDownloads::default());
+        let (base, server) = start_server(test_state_with_downloads(
+            Arc::new(MockMusicApi::default()),
+            downloads.clone(),
+        ))
+        .await;
+        let client = reqwest::Client::new();
+
+        let mut podverse_track = track("YvIRJrjZVe");
+        podverse_track.provider = ProviderId::Podverse;
+        client
+            .post(format!("{base}/api/queue"))
+            .json(&QueueRequest {
+                track: podverse_track,
+            })
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(
+            downloads.queued.lock().unwrap().as_slice(),
+            &["YvIRJrjZVe".to_string()]
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn playback_mode_route_validates_and_persists() {
+        let state = test_state();
+        let (base, server) = start_server(state).await;
+        let client = reqwest::Client::new();
+
+        let changed: serde_json::Value = client
+            .put(format!("{base}/api/providers/rss/playback"))
+            .json(&PlaybackModeRequest {
+                mode: PlaybackMode::Stream,
+            })
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(changed["id"], "rss");
+        assert_eq!(changed["playback"], "stream");
+        assert_eq!(
+            changed["playback_modes"],
+            serde_json::json!(["download", "stream", "stream_then_download"])
+        );
+
+        let providers: serde_json::Value = client
+            .get(format!("{base}/api/providers"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let rss = providers
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|provider| provider["id"] == "rss")
+            .unwrap();
+        assert_eq!(rss["playback"], "stream");
+
+        let unsupported = client
+            .put(format!("{base}/api/providers/youtube/playback"))
+            .json(&PlaybackModeRequest {
+                mode: PlaybackMode::Stream,
+            })
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(unsupported.status(), reqwest::StatusCode::BAD_REQUEST);
+
+        let unconfigured = client
+            .put(format!("{base}/api/providers/podverse/playback"))
+            .json(&PlaybackModeRequest {
+                mode: PlaybackMode::Stream,
+            })
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(unconfigured.status(), reqwest::StatusCode::NOT_FOUND);
+        server.abort();
     }
 
     #[tokio::test]

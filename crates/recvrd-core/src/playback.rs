@@ -1,21 +1,62 @@
 use crate::{
     events::{CoreEvent, EventBus, Snapshot},
     model::{PlaybackSnapshot, PlaybackStatus, Queue, RepeatMode, Track},
+    settings::PlaybackSettingsStore,
     state::{PersistedState, STATE_VERSION, StateError},
 };
-use common_structs::TrackKey;
+use async_trait::async_trait;
+use common_structs::{PlaybackMode, PlaybackSourceKind, ReadSeek, TrackKey, TrackSource};
 use std::{
     path::{Path, PathBuf},
+    sync::Arc,
     time::{Duration, Instant},
 };
 use thiserror::Error;
+
+/// A stream reader that the daemon opens before it starts playback.
+pub struct StreamReader {
+    /// The blocking reader for the audio decoder.
+    pub reader: Box<dyn ReadSeek + Send + Sync>,
+    /// The MIME type of the stream.
+    pub mime: Option<String>,
+    /// The byte length of the stream.
+    pub length: Option<u64>,
+    /// Whether the stream supports seek requests.
+    pub seekable: bool,
+}
+
+/// The media that the audio sink must play.
+pub enum PlaybackSource {
+    /// A local cache file.
+    File(PathBuf),
+    /// A remote stream with an open reader.
+    Stream(StreamReader),
+}
+
+/// Opens a remote stream without blocking the audio thread.
+#[async_trait]
+#[allow(clippy::double_must_use)]
+pub trait StreamFactory: Send + Sync {
+    /// Open a reader for a track source.
+    async fn open(&self, source: &TrackSource) -> Result<StreamReader, String>;
+}
+
+/// A stream factory for tests and clients without streaming support.
+pub struct NoStreamFactory;
+
+#[async_trait]
+impl StreamFactory for NoStreamFactory {
+    async fn open(&self, _source: &TrackSource) -> Result<StreamReader, String> {
+        Err("streaming is not available".to_string())
+    }
+}
 
 /// Abstraction over the audio backend so playback can be tested without a
 /// device, and swapped for a real implementation in the daemon.
 pub trait AudioSink {
     type Error: std::error::Error + Send + Sync + 'static;
 
-    fn play(&mut self, track: &Track, path: &Path) -> Result<(), Self::Error>;
+    fn play(&mut self, track: &Track, source: PlaybackSource) -> Result<(), Self::Error>;
     fn pause(&mut self) -> Result<(), Self::Error>;
     fn resume(&mut self) -> Result<(), Self::Error>;
     fn stop(&mut self) -> Result<(), Self::Error>;
@@ -65,6 +106,8 @@ pub enum PlaybackError {
     IndexOutOfBounds,
     #[error("invalid seek position")]
     InvalidPosition,
+    #[error("unsupported playback mode: {0}")]
+    UnsupportedMode(String),
 }
 
 /// Headless playback service. Owns the queue, playback state and event bus.
@@ -79,10 +122,32 @@ pub struct PlaybackService<S: AudioSink> {
     events: EventBus,
     wait_for_downloads: bool,
     pending_start: bool,
+    settings: Arc<PlaybackSettingsStore>,
+    streams: Arc<dyn StreamFactory>,
+    source_kind: Option<PlaybackSourceKind>,
 }
 
 impl<S: AudioSink> PlaybackService<S> {
     pub fn new(sink: S, cache_dir: impl Into<PathBuf>, initial_volume: u8) -> Self {
+        Self::with_streams(
+            sink,
+            cache_dir,
+            initial_volume,
+            Arc::new(PlaybackSettingsStore::new(
+                PathBuf::new(),
+                crate::settings::PlaybackSettings::default(),
+            )),
+            Arc::new(NoStreamFactory),
+        )
+    }
+
+    pub fn with_streams(
+        sink: S,
+        cache_dir: impl Into<PathBuf>,
+        initial_volume: u8,
+        settings: Arc<PlaybackSettingsStore>,
+        streams: Arc<dyn StreamFactory>,
+    ) -> Self {
         let queue = Queue::new();
         let events = EventBus::new(Snapshot {
             playback: PlaybackSnapshot::default(),
@@ -99,7 +164,31 @@ impl<S: AudioSink> PlaybackService<S> {
             events,
             wait_for_downloads: false,
             pending_start: false,
+            settings,
+            streams,
+            source_kind: None,
         }
+    }
+
+    /// Return the current playback mode for a provider.
+    pub fn playback_mode(&self, provider: common_structs::ProviderId) -> PlaybackMode {
+        self.settings.mode(provider)
+    }
+
+    /// Set the playback mode for a provider.
+    pub fn set_playback_mode(
+        &self,
+        provider: common_structs::ProviderId,
+        mode: PlaybackMode,
+    ) -> Result<(), PlaybackError> {
+        if !PlaybackMode::supported_for(provider).contains(&mode) {
+            return Err(PlaybackError::UnsupportedMode(format!(
+                "{mode:?} for {provider}"
+            )));
+        }
+        self.settings
+            .set_mode(provider, mode)
+            .map_err(|error| PlaybackError::Sink(error.to_string()))
     }
 
     /// When enabled, tracks that are not in the download cache yet are queued
@@ -122,6 +211,7 @@ impl<S: AudioSink> PlaybackService<S> {
             volume: self.volume,
             repeat: self.queue.repeat(),
             shuffle: self.queue.shuffle(),
+            source_kind: self.source_kind,
         }
     }
 
@@ -145,10 +235,10 @@ impl<S: AudioSink> PlaybackService<S> {
 
     /// Poll the audio sink, publish progress and advance automatically when a
     /// track ends.
-    pub fn tick(&mut self) -> Result<(), PlaybackError> {
+    pub async fn tick(&mut self) -> Result<(), PlaybackError> {
         if self.status == PlaybackStatus::Playing {
             if self.sink.is_finished() {
-                self.on_track_finished()?;
+                self.on_track_finished().await?;
             } else {
                 self.publish_playback();
             }
@@ -157,15 +247,15 @@ impl<S: AudioSink> PlaybackService<S> {
     }
 
     /// Apply a command from an API/MPRIS/MCP client.
-    pub fn handle_command(&mut self, command: PlaybackCommand) -> Result<(), PlaybackError> {
+    pub async fn handle_command(&mut self, command: PlaybackCommand) -> Result<(), PlaybackError> {
         match command {
-            PlaybackCommand::PlayPlaylist(tracks) => self.play_playlist(tracks),
-            PlaybackCommand::PlayTrack(track) => self.play_track(track),
+            PlaybackCommand::PlayPlaylist(tracks) => self.play_playlist(tracks).await,
+            PlaybackCommand::PlayTrack(track) => self.play_track(track).await,
             PlaybackCommand::Enqueue(track) => {
                 self.enqueue(track);
                 Ok(())
             }
-            PlaybackCommand::Remove(index) => self.remove(index),
+            PlaybackCommand::Remove(index) => self.remove(index).await,
             PlaybackCommand::MoveItem { from, to } => {
                 self.move_item(from, to);
                 Ok(())
@@ -175,12 +265,12 @@ impl<S: AudioSink> PlaybackService<S> {
                 self.stop();
                 Ok(())
             }
-            PlaybackCommand::PlayIndex(index) => self.play_index(index),
+            PlaybackCommand::PlayIndex(index) => self.play_index(index).await,
             PlaybackCommand::Pause => self.pause(),
             PlaybackCommand::Resume => self.resume(),
-            PlaybackCommand::Toggle => self.toggle(),
-            PlaybackCommand::Next => self.next_track(),
-            PlaybackCommand::Previous => self.previous_track(),
+            PlaybackCommand::Toggle => self.toggle().await,
+            PlaybackCommand::Next => self.next_track().await,
+            PlaybackCommand::Previous => self.previous_track().await,
             PlaybackCommand::Seek(position) => self.seek(position),
             PlaybackCommand::SeekBy(delta) => {
                 if !delta.is_finite() {
@@ -249,6 +339,7 @@ impl<S: AudioSink> PlaybackService<S> {
         self.started_at = None;
         self.pending_start = false;
         self.status = PlaybackStatus::Stopped;
+        self.source_kind = None;
         self.sink
             .set_volume(self.volume)
             .map_err(|error| PlaybackError::Sink(error.to_string()))?;
@@ -256,14 +347,14 @@ impl<S: AudioSink> PlaybackService<S> {
         Ok(())
     }
 
-    pub fn play_playlist(&mut self, tracks: Vec<Track>) -> Result<(), PlaybackError> {
+    pub async fn play_playlist(&mut self, tracks: Vec<Track>) -> Result<(), PlaybackError> {
         self.queue.replace(tracks);
-        self.start_current()
+        self.start_current().await
     }
 
-    pub fn play_track(&mut self, track: Track) -> Result<(), PlaybackError> {
+    pub async fn play_track(&mut self, track: Track) -> Result<(), PlaybackError> {
         self.queue.play_now(track);
-        self.start_current()
+        self.start_current().await
     }
 
     pub fn enqueue(&mut self, track: Track) {
@@ -271,11 +362,11 @@ impl<S: AudioSink> PlaybackService<S> {
         self.publish_queue();
     }
 
-    pub fn remove(&mut self, index: usize) -> Result<(), PlaybackError> {
+    pub async fn remove(&mut self, index: usize) -> Result<(), PlaybackError> {
         let was_current = self.queue.current_index() == Some(index);
         self.queue.remove(index);
         if was_current {
-            self.start_current()
+            self.start_current().await
         } else {
             self.publish_all();
             Ok(())
@@ -295,6 +386,7 @@ impl<S: AudioSink> PlaybackService<S> {
         self.queue.clear();
         self.status = PlaybackStatus::Stopped;
         self.position = Duration::ZERO;
+        self.source_kind = None;
         self.publish_all();
         Ok(())
     }
@@ -303,11 +395,11 @@ impl<S: AudioSink> PlaybackService<S> {
         self.stop_playback();
     }
 
-    pub fn play_index(&mut self, index: usize) -> Result<(), PlaybackError> {
+    pub async fn play_index(&mut self, index: usize) -> Result<(), PlaybackError> {
         if !self.queue.play_index(index) {
             return Err(PlaybackError::IndexOutOfBounds);
         }
-        self.start_current()
+        self.start_current().await
     }
 
     pub fn pause(&mut self) -> Result<(), PlaybackError> {
@@ -334,19 +426,19 @@ impl<S: AudioSink> PlaybackService<S> {
         Ok(())
     }
 
-    pub fn toggle(&mut self) -> Result<(), PlaybackError> {
+    pub async fn toggle(&mut self) -> Result<(), PlaybackError> {
         match self.status {
             PlaybackStatus::Playing => self.pause(),
             PlaybackStatus::Paused => self.resume(),
-            PlaybackStatus::Stopped => self.start_current(),
+            PlaybackStatus::Stopped => self.start_current().await,
         }
     }
 
-    pub fn next_track(&mut self) -> Result<(), PlaybackError> {
+    pub async fn next_track(&mut self) -> Result<(), PlaybackError> {
         match self.queue.next_index() {
             Some(index) => {
                 self.queue.set_current(Some(index));
-                self.start_current()
+                self.start_current().await
             }
             None => {
                 self.stop_playback();
@@ -355,11 +447,11 @@ impl<S: AudioSink> PlaybackService<S> {
         }
     }
 
-    pub fn previous_track(&mut self) -> Result<(), PlaybackError> {
+    pub async fn previous_track(&mut self) -> Result<(), PlaybackError> {
         match self.queue.previous_index() {
             Some(index) => {
                 self.queue.set_current(Some(index));
-                self.start_current()
+                self.start_current().await
             }
             None => {
                 self.stop_playback();
@@ -407,20 +499,20 @@ impl<S: AudioSink> PlaybackService<S> {
         self.publish_all();
     }
 
-    pub fn on_track_finished(&mut self) -> Result<(), PlaybackError> {
+    pub async fn on_track_finished(&mut self) -> Result<(), PlaybackError> {
         if let Some(track) = self.queue.current_track() {
             self.events.publish(CoreEvent::TrackEnded {
                 track_id: track.key(),
             });
         }
         if self.queue.repeat() == RepeatMode::One {
-            self.start_current()
+            self.start_current().await
         } else {
-            self.next_track()
+            self.next_track().await
         }
     }
 
-    pub fn on_download_failed(&mut self, key: &TrackKey) {
+    pub async fn on_download_failed(&mut self, key: &TrackKey) {
         self.events.publish(CoreEvent::Error {
             message: format!("download failed for {key}"),
         });
@@ -430,7 +522,7 @@ impl<S: AudioSink> PlaybackService<S> {
             .is_some_and(|track| track.key() == *key)
         {
             self.pending_start = false;
-            let _ = self.next_track();
+            let _ = self.next_track().await;
         }
     }
 
@@ -442,7 +534,7 @@ impl<S: AudioSink> PlaybackService<S> {
         self.publish_queue();
     }
 
-    pub fn set_download_status(
+    pub async fn set_download_status(
         &mut self,
         key: &TrackKey,
         status: common_structs::MusicDownloadStatus,
@@ -460,61 +552,110 @@ impl<S: AudioSink> PlaybackService<S> {
                 .is_some_and(|track| track.key() == *key)
         {
             self.pending_start = false;
-            let _ = self.start_current();
+            let _ = self.start_current().await;
             return;
         }
         self.publish_queue();
     }
 
-    fn start_current(&mut self) -> Result<(), PlaybackError> {
+    async fn start_current(&mut self) -> Result<(), PlaybackError> {
         let Some(track) = self.queue.current_track().cloned() else {
             self.stop_playback();
             return Ok(());
         };
 
-        let path = track
+        if let Some(path) = track
             .key()
             .existing_audio_file(&self.cache_dir.join("downloads"))
-            // No downloaded file yet. Fall back to the YouTube path,
-            // so the sink reports the same error as before.
-            .unwrap_or_else(|| {
-                track
-                    .key()
-                    .download_file(&self.cache_dir.join("downloads"), "mp4")
-            });
-        if self.wait_for_downloads && !path.exists() {
-            self.pending_start = true;
-            self.status = PlaybackStatus::Stopped;
-            self.position = Duration::ZERO;
-            self.started_at = None;
-            self.publish_all();
+        {
+            return self.start_file(track, path);
+        }
+
+        let mode = self.settings.mode(track.provider);
+        if matches!(
+            mode,
+            PlaybackMode::Stream | PlaybackMode::StreamThenDownload
+        ) && let Some(source) = &track.source
+        {
+            match self.streams.open(source).await {
+                Ok(reader) => return self.start_stream(track, reader),
+                Err(error) => {
+                    if mode == PlaybackMode::StreamThenDownload && self.wait_for_downloads {
+                        self.wait_for_download();
+                        return Ok(());
+                    }
+                    return self.fail_start(format!("could not open the stream: {error}"));
+                }
+            }
+        }
+
+        if self.wait_for_downloads {
+            self.wait_for_download();
             return Ok(());
         }
 
-        self.pending_start = false;
-        if let Err(error) = self.sink.play(&track, &path) {
-            self.status = PlaybackStatus::Stopped;
-            self.position = Duration::ZERO;
-            self.started_at = None;
-            let message = error.to_string();
-            self.events.publish(CoreEvent::Error {
-                message: message.clone(),
-            });
-            self.publish_all();
-            return Err(PlaybackError::Sink(message));
-        }
+        let path = track
+            .key()
+            .download_file(&self.cache_dir.join("downloads"), "mp4");
+        self.start_file(track, path)
+    }
 
+    fn wait_for_download(&mut self) {
+        self.pending_start = true;
+        self.status = PlaybackStatus::Stopped;
+        self.position = Duration::ZERO;
+        self.started_at = None;
+        self.source_kind = None;
+        self.publish_all();
+    }
+
+    fn start_file(&mut self, track: Track, path: PathBuf) -> Result<(), PlaybackError> {
+        self.pending_start = false;
+        if let Err(error) = self.sink.play(&track, PlaybackSource::File(path)) {
+            return self.fail_start(error.to_string());
+        }
+        self.finish_start(&track, PlaybackSourceKind::File)
+    }
+
+    fn start_stream(&mut self, track: Track, reader: StreamReader) -> Result<(), PlaybackError> {
+        self.pending_start = false;
+        if let Err(error) = self.sink.play(&track, PlaybackSource::Stream(reader)) {
+            return self.fail_start(error.to_string());
+        }
+        self.finish_start(&track, PlaybackSourceKind::Stream)
+    }
+
+    fn finish_start(
+        &mut self,
+        track: &Track,
+        source_kind: PlaybackSourceKind,
+    ) -> Result<(), PlaybackError> {
         self.status = PlaybackStatus::Playing;
         self.position = Duration::ZERO;
         self.started_at = Some(Instant::now());
+        self.source_kind = Some(source_kind);
         self.sink
             .set_volume(self.volume)
             .map_err(|error| PlaybackError::Sink(error.to_string()))?;
-        if let Some(duration) = self.sink.duration() {
+        if track.duration.is_empty()
+            && let Some(duration) = self.sink.duration()
+        {
             self.queue.set_current_duration(format_duration(duration));
         }
         self.publish_all();
         Ok(())
+    }
+
+    fn fail_start(&mut self, message: String) -> Result<(), PlaybackError> {
+        self.status = PlaybackStatus::Stopped;
+        self.position = Duration::ZERO;
+        self.started_at = None;
+        self.source_kind = None;
+        self.events.publish(CoreEvent::Error {
+            message: message.clone(),
+        });
+        self.publish_all();
+        Err(PlaybackError::Sink(message))
     }
 
     fn stop_playback(&mut self) {
@@ -523,6 +664,7 @@ impl<S: AudioSink> PlaybackService<S> {
         self.position = Duration::ZERO;
         self.started_at = None;
         self.pending_start = false;
+        self.source_kind = None;
         self.publish_all();
     }
 
@@ -556,12 +698,14 @@ fn format_duration(duration: Duration) -> String {
 mod tests {
     use super::*;
     use crate::events::CoreEvent;
+    use async_trait::async_trait;
     use common_structs::MusicDownloadStatus;
     use std::path::PathBuf;
 
     #[derive(Default)]
     struct MockSink {
         plays: Vec<(String, PathBuf)>,
+        sources: Vec<PlaybackSourceKind>,
         actions: Vec<&'static str>,
         volume: u8,
         finished: bool,
@@ -571,9 +715,13 @@ mod tests {
     impl AudioSink for MockSink {
         type Error = std::io::Error;
 
-        fn play(&mut self, track: &Track, path: &Path) -> Result<(), Self::Error> {
-            self.plays
-                .push((track.track_id.clone(), path.to_path_buf()));
+        fn play(&mut self, track: &Track, source: PlaybackSource) -> Result<(), Self::Error> {
+            let (kind, path) = match source {
+                PlaybackSource::File(path) => (PlaybackSourceKind::File, path),
+                PlaybackSource::Stream(_) => (PlaybackSourceKind::Stream, PathBuf::new()),
+            };
+            self.plays.push((track.track_id.clone(), path));
+            self.sources.push(kind);
             self.actions.push("play");
             Ok(())
         }
@@ -631,10 +779,10 @@ mod tests {
         PlaybackService::new(MockSink::default(), "/tmp/recvrd-test", 50)
     }
 
-    #[test]
-    fn play_playlist_starts_first_track() {
+    #[tokio::test]
+    async fn play_playlist_starts_first_track() {
         let mut service = service();
-        service.play_playlist(tracks(2)).unwrap();
+        service.play_playlist(tracks(2)).await.unwrap();
         let snapshot = service.snapshot();
         assert_eq!(snapshot.status, PlaybackStatus::Playing);
         assert_eq!(snapshot.current.unwrap().track_id, "video-0");
@@ -645,13 +793,13 @@ mod tests {
         );
     }
 
-    #[test]
-    fn fills_missing_duration_from_the_sink() {
+    #[tokio::test]
+    async fn fills_missing_duration_from_the_sink() {
         let mut service = service();
         service.sink.duration = Some(Duration::from_secs(185));
         let mut playlist = tracks(1);
         playlist[0].duration.clear();
-        service.play_playlist(playlist).unwrap();
+        service.play_playlist(playlist).await.unwrap();
         assert_eq!(service.snapshot().current.unwrap().duration, "3:05");
         assert_eq!(service.queue_snapshot().items[0].track.duration, "3:05");
         assert_eq!(
@@ -660,69 +808,69 @@ mod tests {
         );
     }
 
-    #[test]
-    fn duration_format_includes_hours() {
+    #[tokio::test]
+    async fn duration_format_includes_hours() {
         assert_eq!(format_duration(Duration::from_secs(3723)), "1:02:03");
         assert_eq!(format_duration(Duration::from_secs(59)), "0:59");
     }
 
-    #[test]
-    fn pause_resume_and_toggle() {
+    #[tokio::test]
+    async fn pause_resume_and_toggle() {
         let mut service = service();
-        service.play_playlist(tracks(1)).unwrap();
+        service.play_playlist(tracks(1)).await.unwrap();
         service.pause().unwrap();
         assert_eq!(service.snapshot().status, PlaybackStatus::Paused);
         service.resume().unwrap();
         assert_eq!(service.snapshot().status, PlaybackStatus::Playing);
-        service.toggle().unwrap();
+        service.toggle().await.unwrap();
         assert_eq!(service.snapshot().status, PlaybackStatus::Paused);
     }
 
-    #[test]
-    fn next_previous_and_stop() {
+    #[tokio::test]
+    async fn next_previous_and_stop() {
         let mut service = service();
-        service.play_playlist(tracks(2)).unwrap();
-        service.next_track().unwrap();
+        service.play_playlist(tracks(2)).await.unwrap();
+        service.next_track().await.unwrap();
         assert_eq!(service.snapshot().current.unwrap().track_id, "video-1");
-        service.next_track().unwrap();
+        service.next_track().await.unwrap();
         assert_eq!(service.snapshot().status, PlaybackStatus::Stopped);
-        service.previous_track().unwrap();
+        service.previous_track().await.unwrap();
         assert_eq!(service.snapshot().current.unwrap().track_id, "video-0");
     }
 
-    #[test]
-    fn repeat_all_wraps() {
+    #[tokio::test]
+    async fn repeat_all_wraps() {
         let mut service = service();
-        service.play_playlist(tracks(2)).unwrap();
+        service.play_playlist(tracks(2)).await.unwrap();
         service.set_repeat(RepeatMode::All);
-        service.next_track().unwrap();
-        service.next_track().unwrap();
+        service.next_track().await.unwrap();
+        service.next_track().await.unwrap();
         assert_eq!(service.snapshot().current.unwrap().track_id, "video-0");
     }
 
-    #[test]
-    fn repeat_one_restarts_on_finish() {
+    #[tokio::test]
+    async fn repeat_one_restarts_on_finish() {
         let mut service = service();
-        service.play_playlist(tracks(2)).unwrap();
+        service.play_playlist(tracks(2)).await.unwrap();
         service.set_repeat(RepeatMode::One);
-        service.on_track_finished().unwrap();
+        service.on_track_finished().await.unwrap();
         assert_eq!(service.snapshot().current.unwrap().track_id, "video-0");
         assert_eq!(service.sink.plays.len(), 2);
     }
 
-    #[test]
-    fn finish_advances_without_repeat() {
+    #[tokio::test]
+    async fn finish_advances_without_repeat() {
         let mut service = service();
-        service.play_playlist(tracks(2)).unwrap();
-        service.on_track_finished().unwrap();
+        service.play_playlist(tracks(2)).await.unwrap();
+        service.on_track_finished().await.unwrap();
         assert_eq!(service.snapshot().current.unwrap().track_id, "video-1");
     }
 
-    #[test]
-    fn shuffle_preserves_current_and_restores() {
+    #[tokio::test]
+    async fn shuffle_preserves_current_and_restores() {
         let mut service = service();
-        service.play_playlist(tracks(6)).unwrap();
-        service.play_index(2).unwrap();
+        service.play_playlist(tracks(6)).await.unwrap();
+        service.play_index(2).await.unwrap();
         let current = service.snapshot().current.unwrap().track_id;
         let original: Vec<_> = service
             .queue_snapshot()
@@ -749,12 +897,12 @@ mod tests {
         assert_eq!(original, restored);
     }
 
-    #[test]
-    fn shuffle_survives_save_and_restore() {
+    #[tokio::test]
+    async fn shuffle_survives_save_and_restore() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.toml");
         let mut first = service();
-        first.play_playlist(tracks(6)).unwrap();
+        first.play_playlist(tracks(6)).await.unwrap();
         let original: Vec<_> = first
             .queue_snapshot()
             .items
@@ -790,53 +938,57 @@ mod tests {
         assert_eq!(unshuffled, original);
     }
 
-    #[test]
-    fn download_failure_skips_current() {
+    #[tokio::test]
+    async fn download_failure_skips_current() {
         let mut service = service();
-        service.play_playlist(tracks(2)).unwrap();
-        service.on_download_failed(&TrackKey::youtube("video-0"));
+        service.play_playlist(tracks(2)).await.unwrap();
+        service
+            .on_download_failed(&TrackKey::youtube("video-0"))
+            .await;
         assert_eq!(service.snapshot().current.unwrap().track_id, "video-1");
     }
 
-    #[test]
-    fn remove_current_starts_next_or_stops() {
+    #[tokio::test]
+    async fn remove_current_starts_next_or_stops() {
         let mut service = service();
-        service.play_playlist(tracks(2)).unwrap();
-        service.remove(0).unwrap();
+        service.play_playlist(tracks(2)).await.unwrap();
+        service.remove(0).await.unwrap();
         assert_eq!(service.snapshot().current.unwrap().track_id, "video-1");
-        service.remove(0).unwrap();
+        service.remove(0).await.unwrap();
         assert_eq!(service.snapshot().status, PlaybackStatus::Stopped);
     }
 
-    #[test]
-    fn volume_is_clamped_and_applied() {
+    #[tokio::test]
+    async fn volume_is_clamped_and_applied() {
         let mut service = service();
         service.set_volume(150).unwrap();
         assert_eq!(service.snapshot().volume, 100);
         assert_eq!(service.sink.volume, 100);
     }
 
-    #[test]
-    fn new_uses_initial_volume() {
+    #[tokio::test]
+    async fn new_uses_initial_volume() {
         let service = PlaybackService::new(MockSink::default(), "/tmp/recvrd-test", 75);
         assert_eq!(service.snapshot().volume, 75);
     }
 
-    #[test]
-    fn new_clamps_initial_volume() {
+    #[tokio::test]
+    async fn new_clamps_initial_volume() {
         let service = PlaybackService::new(MockSink::default(), "/tmp/recvrd-test", 150);
         assert_eq!(service.snapshot().volume, 100);
     }
 
-    #[test]
-    fn download_status_is_published() {
+    #[tokio::test]
+    async fn download_status_is_published() {
         let mut service = service();
-        service.play_playlist(tracks(1)).unwrap();
+        service.play_playlist(tracks(1)).await.unwrap();
         let (_, mut events) = service.events().subscribe();
-        service.set_download_status(
-            &TrackKey::youtube("video-0"),
-            MusicDownloadStatus::Downloaded,
-        );
+        service
+            .set_download_status(
+                &TrackKey::youtube("video-0"),
+                MusicDownloadStatus::Downloaded,
+            )
+            .await;
         let event = events.try_recv().unwrap();
         assert!(matches!(event.event, CoreEvent::DownloadStatus { .. }));
         assert_eq!(
@@ -845,80 +997,90 @@ mod tests {
         );
     }
 
-    #[test]
-    fn empty_queue_is_safe() {
+    #[tokio::test]
+    async fn empty_queue_is_safe() {
         let mut service = service();
-        service.next_track().unwrap();
-        service.previous_track().unwrap();
-        service.on_track_finished().unwrap();
+        service.next_track().await.unwrap();
+        service.previous_track().await.unwrap();
+        service.on_track_finished().await.unwrap();
         assert_eq!(service.snapshot().status, PlaybackStatus::Stopped);
         assert!(service.snapshot().current.is_none());
     }
 
-    #[test]
-    fn tick_advances_when_sink_is_finished() {
+    #[tokio::test]
+    async fn tick_advances_when_sink_is_finished() {
         let mut service = service();
-        service.play_playlist(tracks(2)).unwrap();
+        service.play_playlist(tracks(2)).await.unwrap();
         service.sink.finished = true;
-        service.tick().unwrap();
+        service.tick().await.unwrap();
         assert_eq!(service.snapshot().current.unwrap().track_id, "video-1");
     }
 
-    #[test]
-    fn dispatch_command_controls_service() {
+    #[tokio::test]
+    async fn dispatch_command_controls_service() {
         let mut service = service();
         service
             .handle_command(PlaybackCommand::PlayPlaylist(tracks(2)))
+            .await
             .unwrap();
         assert_eq!(service.snapshot().current.unwrap().track_id, "video-0");
-        service.handle_command(PlaybackCommand::Pause).unwrap();
+        service
+            .handle_command(PlaybackCommand::Pause)
+            .await
+            .unwrap();
         assert_eq!(service.snapshot().status, PlaybackStatus::Paused);
         service
             .handle_command(PlaybackCommand::SetVolume(70))
+            .await
             .unwrap();
         assert_eq!(service.snapshot().volume, 70);
-        service.handle_command(PlaybackCommand::Next).unwrap();
+        service.handle_command(PlaybackCommand::Next).await.unwrap();
         assert_eq!(service.snapshot().current.unwrap().track_id, "video-1");
     }
 
-    #[test]
-    fn seek_by_rejects_non_finite_deltas() {
+    #[tokio::test]
+    async fn seek_by_rejects_non_finite_deltas() {
         let mut service = service();
-        service.play_playlist(tracks(1)).unwrap();
+        service.play_playlist(tracks(1)).await.unwrap();
         assert!(matches!(
-            service.handle_command(PlaybackCommand::SeekBy(f64::INFINITY)),
+            service
+                .handle_command(PlaybackCommand::SeekBy(f64::INFINITY))
+                .await,
             Err(PlaybackError::InvalidPosition)
         ));
         assert!(matches!(
-            service.handle_command(PlaybackCommand::SeekBy(f64::NAN)),
+            service
+                .handle_command(PlaybackCommand::SeekBy(f64::NAN))
+                .await,
             Err(PlaybackError::InvalidPosition)
         ));
         assert!(matches!(
-            service.handle_command(PlaybackCommand::SeekBy(1e300)),
+            service.handle_command(PlaybackCommand::SeekBy(1e300)).await,
             Err(PlaybackError::InvalidPosition)
         ));
         service
             .handle_command(PlaybackCommand::SeekBy(5.0))
+            .await
             .unwrap();
     }
 
-    #[test]
-    fn restore_clamps_overflowing_position_to_zero() {
+    #[tokio::test]
+    async fn restore_clamps_overflowing_position_to_zero() {
         let mut service = service();
-        service.play_playlist(tracks(1)).unwrap();
+        service.play_playlist(tracks(1)).await.unwrap();
         let mut state = service.persisted_state();
         state.position_secs = 1e300;
         service.restore_state(&state).unwrap();
         assert_eq!(service.snapshot().position_secs, 0.0);
     }
 
-    #[test]
-    fn persists_and_restores_queue_and_settings() {
+    #[tokio::test]
+    async fn persists_and_restores_queue_and_settings() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.json");
         let mut source = service();
-        source.play_playlist(tracks(3)).unwrap();
-        source.play_index(1).unwrap();
+        source.play_playlist(tracks(3)).await.unwrap();
+        source.play_index(1).await.unwrap();
         source.set_volume(80).unwrap();
         source.set_repeat(RepeatMode::All);
         source.set_shuffle_with_seed(true, 42);
@@ -945,10 +1107,10 @@ mod tests {
         assert_eq!(restored.snapshot().status, PlaybackStatus::Stopped);
     }
 
-    #[test]
-    fn playback_position_advances_and_freezes_on_pause() {
+    #[tokio::test]
+    async fn playback_position_advances_and_freezes_on_pause() {
         let mut service = service();
-        service.play_playlist(tracks(1)).unwrap();
+        service.play_playlist(tracks(1)).await.unwrap();
         std::thread::sleep(Duration::from_millis(30));
         let advanced = service.current_position();
         assert!(advanced >= Duration::from_millis(20), "{advanced:?}");
@@ -963,12 +1125,12 @@ mod tests {
         assert!(service.current_position() > Duration::from_secs_f64(frozen));
     }
 
-    #[test]
-    fn wait_for_downloads_starts_when_file_is_ready() {
+    #[tokio::test]
+    async fn wait_for_downloads_starts_when_file_is_ready() {
         let dir = tempfile::tempdir().unwrap();
         let mut service = PlaybackService::new(MockSink::default(), dir.path(), 50);
         service.set_wait_for_downloads(true);
-        service.play_playlist(tracks(1)).unwrap();
+        service.play_playlist(tracks(1)).await.unwrap();
 
         assert_eq!(service.snapshot().status, PlaybackStatus::Stopped);
         assert_eq!(service.snapshot().current.unwrap().track_id, "video-0");
@@ -976,18 +1138,20 @@ mod tests {
 
         std::fs::create_dir_all(dir.path().join("downloads/youtube")).unwrap();
         std::fs::write(dir.path().join("downloads/youtube/video-0.mp4"), b"audio").unwrap();
-        service.set_download_status(
-            &TrackKey::youtube("video-0"),
-            MusicDownloadStatus::Downloaded,
-        );
+        service
+            .set_download_status(
+                &TrackKey::youtube("video-0"),
+                MusicDownloadStatus::Downloaded,
+            )
+            .await;
 
         assert_eq!(service.snapshot().status, PlaybackStatus::Playing);
         assert_eq!(service.sink.plays.len(), 1);
         assert_eq!(service.sink.plays[0].0, "video-0");
     }
 
-    #[test]
-    fn restore_applies_volume_to_the_sink() {
+    #[tokio::test]
+    async fn restore_applies_volume_to_the_sink() {
         let mut service = service();
         let state = PersistedState {
             version: STATE_VERSION,
@@ -1004,6 +1168,126 @@ mod tests {
         assert_eq!(service.snapshot().volume, 80);
         assert_eq!(service.sink.volume, 80);
         assert_eq!(service.snapshot().position_secs, 7.5);
+        assert_eq!(service.snapshot().status, PlaybackStatus::Stopped);
+    }
+
+    struct MockStreams;
+
+    #[async_trait]
+    impl StreamFactory for MockStreams {
+        async fn open(&self, _source: &TrackSource) -> Result<StreamReader, String> {
+            Ok(StreamReader {
+                reader: Box::new(std::io::Cursor::new(vec![0u8; 16])),
+                mime: Some("audio/mpeg".to_string()),
+                length: Some(16),
+                seekable: true,
+            })
+        }
+    }
+
+    struct FailingStreams;
+
+    #[async_trait]
+    impl StreamFactory for FailingStreams {
+        async fn open(&self, _source: &TrackSource) -> Result<StreamReader, String> {
+            Err("stream failed".to_string())
+        }
+    }
+
+    fn stream_track() -> Track {
+        Track {
+            provider: common_structs::ProviderId::Podverse,
+            track_id: "YvIRJrjZVe".to_string(),
+            title: "Stream".to_string(),
+            author: "Artist".to_string(),
+            album: "Album".to_string(),
+            duration: "3:00".to_string(),
+            source: Some(Box::new(TrackSource {
+                url: "https://example.com/stream.mp3".to_string(),
+                mime: Some("audio/mpeg".to_string()),
+                length: Some(16),
+                seekable: true,
+                kind: common_structs::MediaKind::Audio,
+            })),
+            metadata: None,
+        }
+    }
+
+    fn mode_settings(mode: PlaybackMode) -> Arc<PlaybackSettingsStore> {
+        let dir = tempfile::Builder::new()
+            .prefix("recvrd-settings-")
+            .tempdir()
+            .unwrap()
+            .keep();
+        let store = PlaybackSettingsStore::load(dir.join("settings.toml"));
+        store
+            .set_mode(common_structs::ProviderId::Podverse, mode)
+            .unwrap();
+        Arc::new(store)
+    }
+
+    #[tokio::test]
+    async fn stream_mode_uses_the_stream_reader() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut service = PlaybackService::with_streams(
+            MockSink::default(),
+            dir.path(),
+            50,
+            mode_settings(PlaybackMode::Stream),
+            Arc::new(MockStreams),
+        );
+        service.play_playlist(vec![stream_track()]).await.unwrap();
+
+        assert_eq!(service.sink.sources, vec![PlaybackSourceKind::Stream]);
+        assert_eq!(
+            service.snapshot().source_kind,
+            Some(PlaybackSourceKind::Stream)
+        );
+    }
+
+    #[tokio::test]
+    async fn stream_then_download_falls_back_to_download() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut service = PlaybackService::with_streams(
+            MockSink::default(),
+            dir.path(),
+            50,
+            mode_settings(PlaybackMode::StreamThenDownload),
+            Arc::new(FailingStreams),
+        );
+        service.set_wait_for_downloads(true);
+        service.play_playlist(vec![stream_track()]).await.unwrap();
+        assert_eq!(service.snapshot().status, PlaybackStatus::Stopped);
+
+        std::fs::create_dir_all(dir.path().join("downloads/podverse")).unwrap();
+        std::fs::write(
+            dir.path().join("downloads/podverse/YvIRJrjZVe.mp3"),
+            b"audio",
+        )
+        .unwrap();
+        service
+            .set_download_status(
+                &TrackKey::podverse("YvIRJrjZVe"),
+                MusicDownloadStatus::Downloaded,
+            )
+            .await;
+
+        assert_eq!(service.snapshot().status, PlaybackStatus::Playing);
+        assert_eq!(service.sink.sources, vec![PlaybackSourceKind::File]);
+    }
+
+    #[tokio::test]
+    async fn stream_mode_does_not_fall_back_to_download() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut service = PlaybackService::with_streams(
+            MockSink::default(),
+            dir.path(),
+            50,
+            mode_settings(PlaybackMode::Stream),
+            Arc::new(FailingStreams),
+        );
+        service.set_wait_for_downloads(true);
+        assert!(service.play_playlist(vec![stream_track()]).await.is_err());
         assert_eq!(service.snapshot().status, PlaybackStatus::Stopped);
     }
 }

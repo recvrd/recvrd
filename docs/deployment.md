@@ -143,6 +143,13 @@ To enable the Podverse provider, set `RECVRD_PODVERSE_URL` to the API base and
 an optional `RECVRD_PODVERSE_TOKEN`. Do not put the token in a world-readable
 file.
 
+Playback modes are chosen at runtime with
+`PUT /api/providers/{provider}/playback` and saved in
+`~/.config/recvrd/settings.toml`. The daemon owns that file: it rewrites it
+atomically and quarantines a corrupt file as `settings.toml.bad`. The defaults
+are `download` for YouTube and RSS and `stream_then_download` for Podverse.
+RSS and Podverse can also use `stream` to play without caching.
+
 ### Smoke tests
 
 ```sh

@@ -1,9 +1,9 @@
 use clap::{Parser, Subcommand};
-use common_structs::ProviderId;
+use common_structs::{PlaybackMode, ProviderId};
 use recvrd_api::{CacheCleanRequest, CacheCleanResult, CacheScope, MusicApi};
 use recvrd_core::{
     AuthStatus, DaemonConfig, Downloader as ConfigDownloader, Paths, PersistedState,
-    PlaybackService, is_loopback_bind, resolve_auth,
+    PlaybackService, PlaybackSettingsStore, is_loopback_bind, resolve_auth,
 };
 use std::{
     path::{Path, PathBuf},
@@ -22,6 +22,7 @@ mod mpris;
 mod music;
 mod providers;
 mod server;
+mod streams;
 mod web;
 
 use crate::{
@@ -31,6 +32,7 @@ use crate::{
     downloads::{DownloadControl, DownloadService},
     music::UnavailableMusicApi,
     providers::{CompositeCoverFetcher, CompositeDownloader, CompositeMusicApi},
+    streams::HttpStreamFactory,
 };
 use provider_podverse::PodverseProvider;
 use provider_rss::RssProvider;
@@ -459,11 +461,14 @@ fn run_serve(
             )),
         };
 
+        let settings = Arc::new(PlaybackSettingsStore::load(paths.settings_file()));
         let sink = RodioSink::spawn(config.initial_volume);
-        let playback = Arc::new(AsyncMutex::new(PlaybackService::new(
+        let playback = Arc::new(AsyncMutex::new(PlaybackService::with_streams(
             sink,
             cache_dir.clone(),
             config.initial_volume,
+            settings.clone(),
+            Arc::new(HttpStreamFactory),
         )));
         {
             let mut service = playback.lock().await;
@@ -498,6 +503,7 @@ fn run_serve(
             .items
             .into_iter()
             .map(|item| item.track)
+            .filter(|track| settings.mode(track.provider) != PlaybackMode::Stream)
             .collect();
         if !restored_tracks.is_empty() {
             downloads.queue_playlist(&restored_tracks);
@@ -523,7 +529,7 @@ fn run_serve(
         tokio::spawn(async move {
             while let Some(command) = command_rx.recv().await {
                 let mut service = command_playback.lock().await;
-                if let Err(error) = service.handle_command(command) {
+                if let Err(error) = service.handle_command(command).await {
                     log::warn!("playback command failed: {error:?}");
                 }
                 if let Err(error) = service.save_state(&command_state_path) {
@@ -540,7 +546,7 @@ fn run_serve(
             loop {
                 interval.tick().await;
                 let mut service = tick_playback.lock().await;
-                if let Err(error) = service.tick() {
+                if let Err(error) = service.tick().await {
                     log::warn!("playback tick failed: {error:?}");
                 }
                 ticks = ticks.wrapping_add(1);
@@ -566,6 +572,7 @@ fn run_serve(
             dbus,
             rss,
             providers,
+            settings,
         )
         .await;
         if let Err(error) = playback.lock().await.save_state(&state_path) {
