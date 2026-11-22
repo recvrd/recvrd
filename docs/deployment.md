@@ -139,6 +139,10 @@ Authentication defaults to `~/.config/recvrd/headers.txt` (with a legacy
 `~/.config/ytermusic/headers.txt` fallback). See the README for how to create
 `headers.txt`; never commit it.
 
+To enable the Podverse provider, set `RECVRD_PODVERSE_URL` to the API base and
+an optional `RECVRD_PODVERSE_TOKEN`. Do not put the token in a world-readable
+file.
+
 ### Smoke tests
 
 ```sh

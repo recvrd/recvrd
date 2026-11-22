@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Added
+
+- Add a Podverse provider with channel search, channel items and item detail.
+- Add `TrackSource`, `TrackMetadata` and `MediaKind` to the API and queue
+  state. Populate media sources for RSS.
+- Add `GET /api/tracks/{provider}/{track_id}` for full track detail.
+
 ### Changed
 
 - Rename the project to `recvrd`. The daemon is `recvrd`, the terminal client

@@ -15,8 +15,8 @@
 
 ## What it is
 
-`recvrd` keeps YouTube Music playback, queue and downloads in a long-running
-daemon. Clients are thin:
+`recvrd` keeps playback, queue and downloads in a long-running daemon. It
+serves YouTube Music, RSS feeds and Podverse channels. Clients are thin:
 
 - **Web UI** — library, search, queue, now playing, cover art, vim-style keys
   and playlist editing.
@@ -149,6 +149,18 @@ defaults. CLI flags and environment variables override the config file:
 `config.toml` parse errors, invalid values and malformed headers are reported
 with the file path; they are never silently replaced with defaults.
 
+To enable the Podverse provider, add a `[podverse]` table with the API base
+URL. The provider is hidden from `/api/providers` when the table is absent.
+
+```toml
+[podverse]
+base_url = "https://podverse.example.com/api/v2"
+# token = "optional-bearer-token"
+```
+
+`RECVRD_PODVERSE_URL` and `RECVRD_PODVERSE_TOKEN` override the file values.
+The instance domain is never built into the daemon.
+
 ## Development
 
 ```sh
@@ -184,6 +196,7 @@ just test
 - `crates/ytpapi2` — YouTube Music API client
 - `crates/provider-youtube` — YouTube Music provider: API client, cover fetcher and downloads
 - `crates/provider-rss` — RSS provider: feed parser, store, fetcher and downloader
+- `crates/provider-podverse` — Podverse provider: channel search, item metadata, fetcher and downloader
 - `crates/player` — audio playback
 - `crates/database` — local download database
 - `crates/download-manager` — download queue

@@ -75,7 +75,8 @@ prompt. A session that expires during pagination ends the load with
 | POST | `/api/playlists/{id}/tracks/remove` | Remove tracks (`{indices}`) |
 | POST | `/api/playlists/{id}/tracks/move` | Move a track (`{from,to}`) |
 | GET | `/api/search?provider=...&q=...` | Track and playlist search |
-| GET | `/api/tracks/{provider}/{track_id}/cover` | Cached cover art (JPEG) |
+| GET | `/api/tracks/{provider}/{track_id}` | Full track detail and description |
+| GET | `/api/tracks/{provider}/{track_id}/cover` | Cached cover art |
 | GET | `/api/queue` | Queue snapshot |
 | POST | `/api/queue` | Enqueue a track (alias: `/api/queue/add`) |
 | DELETE | `/api/queue` | Clear the queue |
@@ -173,10 +174,11 @@ curl http://127.0.0.1:8080/api/providers
 ]
 ```
 
-`GET /api/providers` lists every provider the daemon knows. Each entry
-names the provider, marks the default, lists the actions it supports, and
-reports its auth state. Clients hide actions a provider does not support.
-RSS needs no auth, so its auth state is always `ok` with no source.
+`GET /api/providers` lists every configured provider. Each entry names the
+provider, marks the default, lists the actions it supports, and reports its
+auth state. Clients hide actions a provider does not support. RSS needs no
+auth, so its auth state is always `ok` with no source. The Podverse provider
+is omitted until `podverse.base_url` or `RECVRD_PODVERSE_URL` is set.
 
 Library and search requests take an optional `provider` parameter. A missing
 value means the default provider. An unknown name returns 400 with
@@ -220,6 +222,52 @@ An added feed returns 201 with the feed, including its episode count:
 
 A bad feed URL returns 400. A feed that cannot be fetched or parsed
 returns 502. An unknown feed ID returns 404 on refresh and remove.
+
+### Podverse
+
+Set `podverse.base_url` in `config.toml` or `RECVRD_PODVERSE_URL` to enable
+the provider. Search returns music channels as playlists. Open a channel to
+list its items.
+
+```sh
+curl 'http://127.0.0.1:8080/api/search?provider=podverse&q=lofi'
+curl 'http://127.0.0.1:8080/api/playlists/LJ24O9e4mv?provider=podverse'
+curl http://127.0.0.1:8080/api/tracks/podverse/YvIRJrjZVe
+```
+
+A Podverse track carries a media source and provider metadata:
+
+```json
+{
+  "provider": "podverse",
+  "track_id": "YvIRJrjZVe",
+  "title": "New Year",
+  "artist": "Jon Ross",
+  "album": "Rock The Halls",
+  "duration": "4:03",
+  "source": {
+    "url": "https://cdn.example/track.mp3",
+    "mime": "audio/mpeg",
+    "length": 5845483,
+    "seekable": true,
+    "kind": "audio"
+  },
+  "metadata": {
+    "image_url": "https://cdn.example/cover.jpg",
+    "published_at": "2026-11-10T18:49:40.000Z",
+    "channel_id": "2984",
+    "channel_title": "Rock The Halls",
+    "feed_url": "https://wavlake.com/feed/music/1",
+    "website_url": "https://www.wavlake.com/album/1",
+    "season_number": 1,
+    "year": 2026
+  }
+}
+```
+
+The detail route returns the same track in a `track` object and the full item
+description in `description`. Stream and download modes arrive in a later
+change. Podverse channels are read-only.
 
 ### Library and search
 

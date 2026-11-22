@@ -14,6 +14,25 @@ pub enum Downloader {
     RustyYtdl,
 }
 
+/// Podverse provider configuration.
+#[derive(Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct PodverseConfig {
+    /// The Podverse API base URL, including the API version.
+    pub base_url: Option<String>,
+    /// An optional bearer token for the API.
+    pub token: Option<String>,
+}
+
+impl std::fmt::Debug for PodverseConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PodverseConfig")
+            .field("base_url", &self.base_url)
+            .field("token", &self.token.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct DaemonConfig {
@@ -32,6 +51,8 @@ pub struct DaemonConfig {
     pub initial_volume: u8,
     /// Maximum size of the cover cache in MiB. 0 disables the limit.
     pub cover_cache_mb: u64,
+    /// Podverse provider configuration.
+    pub podverse: PodverseConfig,
 }
 
 impl Default for DaemonConfig {
@@ -45,6 +66,7 @@ impl Default for DaemonConfig {
             dbus: true,
             initial_volume: 50,
             cover_cache_mb: 100,
+            podverse: PodverseConfig::default(),
         }
     }
 }
@@ -129,6 +151,14 @@ impl DaemonConfig {
                 message: "initial_volume must be between 0 and 100".to_string(),
             });
         }
+        if let Some(base_url) = &self.podverse.base_url
+            && base_url.trim().is_empty()
+        {
+            return Err(ConfigError::Invalid {
+                path: path.to_path_buf(),
+                message: "podverse.base_url must not be empty".to_string(),
+            });
+        }
         Ok(())
     }
 }
@@ -149,6 +179,7 @@ mod tests {
         assert_eq!(config.bind, None);
         assert_eq!(config.port, None);
         assert_eq!(config.headers, None);
+        assert_eq!(config.podverse, PodverseConfig::default());
     }
 
     #[test]
@@ -166,6 +197,10 @@ downloader = "rusty_ytdl"
 dbus = false
 initial_volume = 75
 cover_cache_mb = 25
+
+[podverse]
+base_url = "https://podverse.example.com/api/v2"
+token = "secret"
 "#,
         )
         .unwrap();
@@ -179,6 +214,12 @@ cover_cache_mb = 25
         assert!(!config.dbus);
         assert_eq!(config.initial_volume, 75);
         assert_eq!(config.cover_cache_mb, 25);
+        assert_eq!(
+            config.podverse.base_url.as_deref(),
+            Some("https://podverse.example.com/api/v2")
+        );
+        assert_eq!(config.podverse.token.as_deref(), Some("secret"));
+        assert!(!format!("{:?}", config.podverse).contains("secret"));
     }
 
     #[test]
@@ -217,6 +258,16 @@ cover_cache_mb = 25
 
         let error = DaemonConfig::load(&path).unwrap_err().to_string();
         assert!(error.contains("initial_volume"), "{error}");
+    }
+
+    #[test]
+    fn rejects_an_empty_podverse_base_url() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(&path, "[podverse]\nbase_url = \"  \"").unwrap();
+
+        let error = DaemonConfig::load(&path).unwrap_err().to_string();
+        assert!(error.contains("podverse.base_url"), "{error}");
     }
 
     #[test]

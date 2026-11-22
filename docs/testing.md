@@ -63,7 +63,8 @@ root `headers.txt` is already gitignored.
 ### Fixtures and mocks
 
 Current offline coverage is in `crates/ytpapi2`, `crates/provider-youtube`,
-`crates/recvrd-core`, `crates/recvrd` and `crates/recvrd-web`:
+`crates/provider-rss`, `crates/provider-podverse`, `crates/recvrd-core`,
+`crates/recvrd` and `crates/recvrd-web`:
 
 - `string_utils` tests cover cookie/header parsing helpers.
 - `json_extractor` tests cover search, playlist, continuation, album and
@@ -73,6 +74,10 @@ Current offline coverage is in `crates/ytpapi2`, `crates/provider-youtube`,
   auth/rate-limit response mapping.
 - `provider-youtube` tests cover the DTO conversions, playlist error mapping,
   cover URLs and the yt-dlp invocation with a fake script.
+- `provider-rss` tests cover feed parsing, the store, downloads and covers.
+- `provider-podverse` tests use JSON fixtures and a local HTTP server for
+  search, channel items, item detail, cover art and downloads. They do not
+  call a live instance.
 - `recvrd-core` tests cover auth/config/paths, queue transitions,
   repeat/shuffle restoration, download-failure handling, playback position and
   event-bus replay using a mock audio sink.

@@ -29,6 +29,7 @@ pub struct Episode {
     pub duration: String,
     pub enclosure_url: String,
     pub enclosure_type: String,
+    pub enclosure_length: Option<u64>,
     pub cover_url: Option<String>,
 }
 
@@ -182,6 +183,7 @@ struct EpisodeBuilder {
     duration: String,
     enclosure_url: String,
     enclosure_type: String,
+    enclosure_length: Option<u64>,
     cover_url: Option<String>,
 }
 
@@ -202,6 +204,7 @@ impl EpisodeBuilder {
             duration: normalize_duration(&self.duration),
             enclosure_url: self.enclosure_url,
             enclosure_type: self.enclosure_type,
+            enclosure_length: self.enclosure_length,
             cover_url: self.cover_url,
         })
     }
@@ -274,6 +277,8 @@ impl Parser {
         {
             episode.enclosure_url = Self::attribute(event, "url").unwrap_or_default();
             episode.enclosure_type = Self::attribute(event, "type").unwrap_or_default();
+            episode.enclosure_length =
+                Self::attribute(event, "length").and_then(|value| value.parse().ok());
             return;
         }
         if name == "link" {
@@ -472,6 +477,7 @@ mod tests {
         // XML entities in text decode to their characters.
         assert_eq!(second.title, "Second Song & More");
         assert_eq!(first.enclosure_url, "https://example.com/ep1.mp3");
+        assert_eq!(first.enclosure_length, Some(12345));
         assert_eq!(first.extension(), Some("mp3"));
         assert_eq!(
             first.cover_url.as_deref(),

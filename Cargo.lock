@@ -4071,6 +4071,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "provider-podverse"
+version = "0.6.3"
+dependencies = [
+ "async-trait",
+ "common-structs",
+ "download-manager",
+ "log",
+ "recvrd-api",
+ "recvrd-core",
+ "reqwest",
+ "serde",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
 name = "provider-rss"
 version = "0.6.3"
 dependencies = [
@@ -4397,6 +4414,7 @@ dependencies = [
  "log",
  "mime_guess",
  "player",
+ "provider-podverse",
  "provider-rss",
  "provider-youtube",
  "recvrd-api",

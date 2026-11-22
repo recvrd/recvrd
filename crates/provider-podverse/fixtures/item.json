@@ -1,0 +1,40 @@
+{
+  "id": 52369,
+  "id_text": "YvIRJrjZVe",
+  "channel_id": 2984,
+  "guid_enclosure_url": "BASE/audio.mp3",
+  "pub_date": "2026-11-10T18:49:40.000Z",
+  "title": "New Year",
+  "item_about": {
+    "duration": "243.00",
+    "website_link_url": "https://www.wavlake.com/album/1",
+    "episode_number": 2,
+    "season_number": 1
+  },
+  "item_description": {
+    "value": "A full description.",
+    "preview": "A full description."
+  },
+  "item_enclosures": [
+    {
+      "type": "audio/mpeg",
+      "length": "5845483",
+      "item_enclosure_sources": [
+        {
+          "uri": "BASE/audio.mp3",
+          "content_type": null
+        }
+      ]
+    }
+  ],
+  "item_images": [
+    {
+      "url": "BASE/image.jpg"
+    }
+  ],
+  "item_season": {
+    "channel_season": {
+      "number": 1
+    }
+  }
+}

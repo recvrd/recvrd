@@ -189,6 +189,7 @@ impl MusicApi for YoutubeMusicApi {
                     id: id.to_string(),
                     name: id.to_string(),
                     subtitle: String::new(),
+                    ..Default::default()
                 },
                 tracks: tracks.into_iter().map(track_dto).collect(),
             });
@@ -198,6 +199,7 @@ impl MusicApi for YoutubeMusicApi {
                 id: id.to_string(),
                 name,
                 subtitle,
+                ..Default::default()
             },
             tracks: tracks.into_iter().map(track_dto).collect(),
         })
@@ -232,6 +234,7 @@ impl MusicApi for YoutubeMusicApi {
             id,
             name: request.title.clone(),
             subtitle: privacy_subtitle(request.privacy),
+            ..Default::default()
         })
     }
 
@@ -248,6 +251,7 @@ impl MusicApi for YoutubeMusicApi {
             id: id.to_string(),
             name: request.title.clone(),
             subtitle: String::new(),
+            ..Default::default()
         })
     }
 
@@ -420,6 +424,7 @@ pub fn playlist_dto(playlist: YoutubeMusicPlaylistRef) -> Playlist {
         id: playlist.browse_id,
         name: playlist.name,
         subtitle: playlist.subtitle,
+        ..Default::default()
     }
 }
 
@@ -431,6 +436,7 @@ pub fn track_dto(track: YoutubeMusicVideoRef) -> Track {
         artist: track.author,
         album: track.album,
         duration: track.duration,
+        ..Default::default()
     }
 }
 
@@ -444,6 +450,7 @@ pub fn track_from_ref(reference: &YoutubeMusicVideoRef) -> recvrd_core::Track {
         author: reference.author.clone(),
         album: reference.album.clone(),
         duration: reference.duration.clone(),
+        ..Default::default()
     }
 }
 

@@ -18,7 +18,7 @@ use recvrd_api::{
     PlaylistEditError, ProviderInfo, Queue as ApiQueue, QueueItem as ApiQueueItem, QueueRequest,
     RemovePlaylistTracksRequest, RemoveQueueRequest, ReorderQueueRequest,
     RepeatMode as ApiRepeatMode, RepeatRequest, RetryDownloadRequest, RssFeed, SearchResults,
-    SeekRequest, ShuffleRequest, Status, Track, UpdatePlaylistRequest, VolumeRequest,
+    SeekRequest, ShuffleRequest, Status, Track, TrackDetail, UpdatePlaylistRequest, VolumeRequest,
 };
 use recvrd_core::{
     AudioSink, AuthState as CoreAuthState, AuthStatus, CoreEvent, EventBus, PlaybackCommand,
@@ -54,6 +54,7 @@ pub struct AppState<S: AudioSink + Send + 'static> {
     artwork: Arc<ArtworkCache>,
     cache: Arc<CacheService>,
     rss: Arc<RssProvider>,
+    providers: Vec<ProviderId>,
 }
 
 impl<S: AudioSink + Send + 'static> Clone for AppState<S> {
@@ -68,6 +69,7 @@ impl<S: AudioSink + Send + 'static> Clone for AppState<S> {
             artwork: self.artwork.clone(),
             cache: self.cache.clone(),
             rss: self.rss.clone(),
+            providers: self.providers.clone(),
         }
     }
 }
@@ -83,6 +85,7 @@ impl<S: AudioSink + Send + 'static> AppState<S> {
         artwork: Arc<ArtworkCache>,
         cache: Arc<CacheService>,
         rss: Arc<RssProvider>,
+        providers: Vec<ProviderId>,
     ) -> Self {
         Self {
             started_at: Instant::now(),
@@ -94,6 +97,7 @@ impl<S: AudioSink + Send + 'static> AppState<S> {
             artwork,
             cache,
             rss,
+            providers,
         }
     }
 }
@@ -180,6 +184,7 @@ pub fn router<S: AudioSink + Send + 'static>(state: AppState<S>) -> Router {
         )
         .route("/api/playlists/{id}/tracks/move", post(move_playlist_track))
         .route("/api/search", get(search))
+        .route("/api/tracks/{provider}/{track_id}", get(track_detail))
         .route("/api/tracks/{provider}/{track_id}/cover", get(cover))
         .route("/api/queue", get(queue).post(queue_add).delete(queue_clear))
         .route("/api/queue/reorder", post(queue_reorder))
@@ -239,6 +244,9 @@ fn provider_failure<S: AudioSink + Send + 'static>(
     provider: ProviderId,
     error: String,
 ) -> ApiFailure {
+    if error.contains("is not synced") {
+        return ApiFailure::not_found(format!("{provider}: {error}"));
+    }
     let live = state.music.auth_status(provider);
     let auth = provider_auth(state, provider);
     // A live provider state needs the matching error message. A
@@ -275,6 +283,11 @@ fn provider_auth<S: AudioSink + Send + 'static>(
             .music
             .auth_status(provider)
             .unwrap_or_else(|| api_auth(&state.auth)),
+        ProviderId::Podverse => state.music.auth_status(provider).unwrap_or(ApiAuthStatus {
+            state: AuthState::Ok,
+            source: None,
+            message: None,
+        }),
     }
 }
 
@@ -285,7 +298,8 @@ async fn providers<S: AudioSink + Send + 'static>(
     State(state): State<AppState<S>>,
 ) -> Json<Vec<ProviderInfo>> {
     Json(
-        ProviderId::all()
+        state
+            .providers
             .iter()
             .map(|provider| {
                 let auth = provider_auth(&state, *provider);
@@ -598,6 +612,8 @@ fn core_track(track: Track) -> recvrd_core::Track {
         author: track.artist,
         album: track.album,
         duration: track.duration,
+        source: track.source,
+        metadata: track.metadata,
     }
 }
 
@@ -679,6 +695,39 @@ async fn search<S: AudioSink + Send + 'static>(
         .await
         .map(Json)
         .map_err(|error| ApiFailure::upstream(format!("{provider}: {error}")))
+}
+
+/// Load the full detail for one track.
+async fn track_detail<S: AudioSink + Send + 'static>(
+    State(state): State<AppState<S>>,
+    AxumPath((provider, track_id)): AxumPath<(String, String)>,
+) -> Result<Json<TrackDetail>, ApiFailure> {
+    let Ok(provider) = provider.parse::<ProviderId>() else {
+        return Err(ApiFailure::not_found(format!(
+            "unknown provider {provider}"
+        )));
+    };
+    if !state.providers.contains(&provider) {
+        return Err(ApiFailure::not_found(format!(
+            "provider {provider} is not configured"
+        )));
+    }
+    state
+        .music
+        .track_detail(provider, &track_id)
+        .await
+        .map(Json)
+        .map_err(|error| {
+            let lower = error.to_ascii_lowercase();
+            if lower.contains("not found")
+                || lower.contains("not supported")
+                || lower.contains("not synced")
+            {
+                ApiFailure::not_found(format!("{provider}: {error}"))
+            } else {
+                ApiFailure::upstream(format!("{provider}: {error}"))
+            }
+        })
 }
 
 /// Serve a cached cover image.
@@ -1164,6 +1213,7 @@ pub async fn serve<S: AudioSink + Send + 'static>(
     commands: UnboundedSender<PlaybackCommand>,
     dbus: bool,
     rss: Arc<RssProvider>,
+    providers: Vec<ProviderId>,
 ) -> io::Result<()> {
     let addr: SocketAddr = format!("{bind}:{port}").parse().map_err(|error| {
         io::Error::new(
@@ -1187,7 +1237,7 @@ pub async fn serve<S: AudioSink + Send + 'static>(
     println!("recvrd listening on http://{local_addr}");
 
     let state = AppState::new(
-        auth, music, playback, events, downloads, artwork, cache, rss,
+        auth, music, playback, events, downloads, artwork, cache, rss, providers,
     );
     axum::serve(listener, router(state))
         .with_graceful_shutdown(shutdown_signal())
@@ -1234,7 +1284,7 @@ fn status_from_parts<S: AudioSink + Send + 'static>(
         playback: api_playback(playback),
         queue_length: queue.items.len(),
         downloads: api_download_summary(state.downloads.summary()),
-        providers: ProviderId::all().to_vec(),
+        providers: state.providers.clone(),
         default_provider: ProviderId::default_provider(),
     }
 }
@@ -1301,6 +1351,8 @@ fn api_track(track: &recvrd_core::Track) -> Track {
         artist: track.author.clone(),
         album: track.album.clone(),
         duration: track.duration.clone(),
+        source: track.source.clone(),
+        metadata: track.metadata.clone(),
     }
 }
 
@@ -1416,6 +1468,7 @@ mod tests {
         fail_playlists: Option<String>,
         fail_playlist: Option<String>,
         playlist_detail: Option<Result<PlaylistDetail, String>>,
+        track_detail: Option<Result<TrackDetail, String>>,
     }
 
     fn track(id: &str) -> Track {
@@ -1426,6 +1479,7 @@ mod tests {
             artist: "Artist".to_string(),
             album: "Album".to_string(),
             duration: "3:00".to_string(),
+            ..Default::default()
         }
     }
 
@@ -1443,6 +1497,7 @@ mod tests {
                 id: "p1".to_string(),
                 name: "Playlist One".to_string(),
                 subtitle: "Artist".to_string(),
+                ..Default::default()
             }])
         }
 
@@ -1482,6 +1537,19 @@ mod tests {
             })
         }
 
+        async fn track_detail(
+            &self,
+            provider: ProviderId,
+            _id: &str,
+        ) -> Result<TrackDetail, String> {
+            if provider != ProviderId::Podverse {
+                return Err("track detail is not supported".to_string());
+            }
+            self.track_detail
+                .clone()
+                .unwrap_or_else(|| Err("track detail is not supported".to_string()))
+        }
+
         async fn create_playlist(
             &self,
             request: &CreatePlaylistRequest,
@@ -1494,6 +1562,7 @@ mod tests {
                 id: "VLnew".to_string(),
                 name: request.title.clone(),
                 subtitle: "Private playlist".to_string(),
+                ..Default::default()
             })
         }
 
@@ -1510,6 +1579,7 @@ mod tests {
                 id: id.to_string(),
                 name: request.title.clone(),
                 subtitle: String::new(),
+                ..Default::default()
             })
         }
 
@@ -1798,7 +1868,15 @@ mod tests {
         ));
         let rss = fresh_rss();
         AppState::new(
-            auth, music, playback, events, downloads, artwork, cache, rss,
+            auth,
+            music,
+            playback,
+            events,
+            downloads,
+            artwork,
+            cache,
+            rss,
+            vec![ProviderId::Youtube, ProviderId::Rss],
         )
     }
 
@@ -1850,6 +1928,7 @@ mod tests {
             artwork,
             cache,
             rss,
+            vec![ProviderId::Youtube, ProviderId::Rss],
         )
     }
 
@@ -1979,6 +2058,112 @@ mod tests {
         assert_eq!(list[1]["capabilities"]["downloads"], true);
         assert_eq!(list[1]["auth"]["state"], "ok");
         assert!(list[1]["auth"]["source"].is_null());
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn providers_endpoint_includes_a_configured_podverse() {
+        let mut state = test_state();
+        state.providers.push(ProviderId::Podverse);
+        let (base, server) = start_server(state).await;
+        let client = reqwest::Client::new();
+
+        let providers: serde_json::Value = client
+            .get(format!("{base}/api/providers"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let list = providers.as_array().unwrap();
+        assert_eq!(list.len(), 3);
+        assert_eq!(list[2]["id"], "podverse");
+        assert_eq!(list[2]["name"], "Podverse");
+        assert_eq!(list[2]["capabilities"]["search"], true);
+        assert_eq!(list[2]["capabilities"]["library"], false);
+        assert_eq!(list[2]["capabilities"]["playlists"], true);
+        assert_eq!(list[2]["capabilities"]["downloads"], true);
+        assert_eq!(list[2]["capabilities"]["playlist_edit"], false);
+        assert_eq!(list[2]["auth"]["state"], "ok");
+
+        let status: serde_json::Value = client
+            .get(format!("{base}/api/status"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(
+            status["providers"],
+            serde_json::json!(["youtube", "rss", "podverse"])
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn track_detail_route_returns_the_description() {
+        let mut track = track("YvIRJrjZVe");
+        track.provider = ProviderId::Podverse;
+        let music = Arc::new(MockMusicApi {
+            track_detail: Some(Ok(TrackDetail {
+                track,
+                description: Some("A full description.".to_string()),
+            })),
+            ..Default::default()
+        });
+        let mut state = test_state_with(music);
+        state.providers.push(ProviderId::Podverse);
+        let (base, server) = start_server(state).await;
+        let client = reqwest::Client::new();
+
+        let detail: serde_json::Value = client
+            .get(format!("{base}/api/tracks/podverse/YvIRJrjZVe"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(detail["track"]["provider"], "podverse");
+        assert_eq!(detail["track"]["track_id"], "YvIRJrjZVe");
+        assert_eq!(detail["description"], "A full description.");
+
+        let unsupported = client
+            .get(format!("{base}/api/tracks/youtube/v1"))
+            .send()
+            .await
+            .unwrap();
+        let status = unsupported.status();
+        let body = unsupported.text().await.unwrap();
+        assert_eq!(status, reqwest::StatusCode::NOT_FOUND, "{body}");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn unconfigured_podverse_is_not_advertised_or_routed() {
+        let (base, server) = start_server(test_state()).await;
+        let client = reqwest::Client::new();
+
+        let providers: serde_json::Value = client
+            .get(format!("{base}/api/providers"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(providers.as_array().unwrap().len(), 2);
+
+        let response = client
+            .get(format!("{base}/api/tracks/podverse/YvIRJrjZVe"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::NOT_FOUND);
+        let body: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(body["error"]["code"], "not_found");
         server.abort();
     }
 
@@ -2832,6 +3017,7 @@ mod tests {
                     id: "p1".to_string(),
                     name: "Playlist One".to_string(),
                     subtitle: "Artist".to_string(),
+                    ..Default::default()
                 },
                 tracks: vec![track("v1"), track("v2")],
             })),

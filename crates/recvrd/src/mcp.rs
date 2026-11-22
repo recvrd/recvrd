@@ -684,6 +684,7 @@ mod tests {
             artist: "Artist".to_string(),
             album: "Album".to_string(),
             duration: "3:00".to_string(),
+            ..Default::default()
         }
     }
 
@@ -829,6 +830,7 @@ mod tests {
             id: "p1".to_string(),
             name: "Playlist One".to_string(),
             subtitle: "Artist".to_string(),
+            ..Default::default()
         }])
     }
 
@@ -855,6 +857,7 @@ mod tests {
                 id: id.clone(),
                 name: "Playlist One".to_string(),
                 subtitle: "Artist".to_string(),
+                ..Default::default()
             },
             tracks: vec![track("v1")],
         })
@@ -876,6 +879,7 @@ mod tests {
                 id: "p9".to_string(),
                 name: request.title,
                 subtitle: "Private playlist".to_string(),
+                ..Default::default()
             }),
         )
     }
@@ -894,6 +898,7 @@ mod tests {
             id,
             name: request.title,
             subtitle: "Artist".to_string(),
+            ..Default::default()
         })
     }
 

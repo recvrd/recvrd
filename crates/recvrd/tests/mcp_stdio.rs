@@ -34,6 +34,7 @@ async fn mock_daemon() -> String {
                 artist: "Artist".to_string(),
                 album: "Album".to_string(),
                 duration: "3:00".to_string(),
+                ..Default::default()
             }),
             position_secs: 12.0,
             volume: 50,

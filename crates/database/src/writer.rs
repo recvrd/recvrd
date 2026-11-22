@@ -253,6 +253,7 @@ mod tests {
             author: "Artist".to_string(),
             album: "Album".to_string(),
             duration: "3:00".to_string(),
+            ..Default::default()
         }
     }
 
@@ -358,6 +359,7 @@ mod tests {
             author: "Artist".to_string(),
             album: "Album".to_string(),
             duration: "3:00".to_string(),
+            ..Default::default()
         };
         std::fs::write(
             downloads.join(format!("{}.json", track.track_id)),

@@ -34,6 +34,7 @@ SIGINT/SIGTERM. State is owned by the daemon, not by an individual client.
 | `crates/ytpapi2` | Current | YouTube Music API client |
 | `crates/provider-youtube` | Current | YouTube Music provider: API client, cover fetcher, downloads |
 | `crates/provider-rss` | Current | RSS provider: feed parser, store, fetcher, downloader |
+| `crates/provider-podverse` | Current | Podverse provider: channel search, item metadata, fetcher, downloader |
 | `crates/player` | Current | Audio decoding/playback |
 | `crates/database` | Current | Local download database |
 | `crates/download-manager` | Current | Download queue |
@@ -119,15 +120,28 @@ the extension from the enclosure MIME type or URL suffix: `mp3`, `m4a`,
 read-only: playlist edits stay on YouTube. The daemon refreshes all
 feeds at startup and exposes feed management at `/api/rss/feeds`.
 
+## Podverse provider
+
+`crates/provider-podverse` follows a configured Podverse API with the
+`podverse` provider ID. A channel is a playlist and its items are tracks.
+Search uses the instance's Podcast Index proxy and keeps only `music` feeds.
+A search result carries a Podcast Index ID, so the provider resolves it to
+the Podverse channel ID before it reads the items. The provider adds a
+`TrackSource` with the enclosure URL, MIME type, byte length and media kind.
+It also adds `TrackMetadata` with the channel, feed, publication and season
+fields. `GET /api/tracks/podverse/{track_id}` returns the full item
+description. The provider is hidden unless `podverse.base_url` is set.
+Podverse channels are read-only.
+
 ## API
 
 The full contract and curl examples live in [docs/api.md](api.md). DTOs come
 from `recvrd-api`, which also generates the TypeScript bindings consumed by
 the web UI and MCP proxy.
 
-- REST: status, playlists, playlist edits, playlist detail, search, cover art,
-  queue CRUD/reorder, play playlist/track, pause/resume, next/previous, volume,
-  seek, shuffle, repeat.
+- REST: status, providers, playlists, playlist edits, playlist detail, search,
+  track detail, cover art, queue CRUD/reorder, play playlist/track,
+  pause/resume, next/previous, volume, seek, shuffle, repeat.
 - Every command returns the updated `Status` or `Queue`, so clients can render
   without waiting for the event stream.
 - SSE: an initial snapshot followed by playback, queue, download, track-ended,

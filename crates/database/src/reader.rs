@@ -97,6 +97,7 @@ fn read_video_v0(buffer: &mut Cursor<Vec<u8>>) -> Result<Track, DatabaseError> {
         track_id: read_str(buffer)?,
         duration: read_str(buffer)?,
         provider: ProviderId::Youtube,
+        ..Default::default()
     })
 }
 
@@ -110,6 +111,7 @@ fn read_video_v1(buffer: &mut Cursor<Vec<u8>>) -> Result<Track, DatabaseError> {
         track_id: read_str(buffer)?,
         duration: read_str(buffer)?,
         provider: ProviderId::Youtube,
+        ..Default::default()
     };
     let provider = read_str(buffer)?;
     let provider = provider.parse().map_err(|_| DatabaseError::InvalidData {

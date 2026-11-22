@@ -27,6 +27,7 @@ futures-util = "0.3"
 log = "0.4"
 mime_guess = "2"
 player.workspace = true
+provider-podverse.workspace = true
 provider-rss.workspace = true
 provider-youtube.workspace = true
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "stream"] }

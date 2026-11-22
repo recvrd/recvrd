@@ -182,6 +182,7 @@ mod tests {
             author: "Artist".to_string(),
             album: "Album".to_string(),
             duration: "3:00".to_string(),
+            ..Default::default()
         }
     }
 
@@ -203,6 +204,35 @@ mod tests {
         let loaded = PersistedState::load(&path).unwrap();
         assert_eq!(state, loaded);
         assert!(!dir.path().join("state.tmp").exists());
+    }
+
+    #[test]
+    fn round_trip_keeps_source_and_metadata() {
+        use common_structs::{MediaKind, TrackMetadata, TrackSource};
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        let mut track = track(0);
+        track.provider = common_structs::ProviderId::Podverse;
+        track.track_id = "YvIRJrjZVe".to_string();
+        track.source = Some(Box::new(TrackSource {
+            url: "https://cdn.example/track.mp3".to_string(),
+            mime: Some("audio/mpeg".to_string()),
+            length: Some(1024),
+            seekable: true,
+            kind: MediaKind::Audio,
+        }));
+        track.metadata = Some(Box::new(TrackMetadata {
+            channel_title: Some("Rock The Halls".to_string()),
+            season_number: Some(1),
+            ..Default::default()
+        }));
+        let state = PersistedState {
+            tracks: vec![track],
+            ..PersistedState::default()
+        };
+
+        state.save(&path).unwrap();
+        assert_eq!(PersistedState::load(&path).unwrap(), state);
     }
 
     #[test]
