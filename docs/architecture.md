@@ -152,6 +152,15 @@ recorded in
 [0006 — Playback modes and the settings file](decisions/0006-playback-modes.md).
 Runtime choices live in `$XDG_CONFIG_HOME/recvrd/settings.toml`.
 
+Offline mode changes queue behavior. While it is on, the service only starts
+cached tracks. It skips an uncached track like a failed download. When the mode
+turns on, it stops an uncached current track and advances to the next cached
+track. When no cached track remains, playback stops. Next and previous land on
+cached tracks only. Explicit play of an uncached track fails. Repeat-one never
+restarts an uncached track. A track counts as cached with a valid key and a
+non-empty audio file. The switch is in-memory only. It does not survive a
+restart.
+
 ## API
 
 The full contract and curl examples live in [docs/api.md](api.md). DTOs come

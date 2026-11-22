@@ -1541,6 +1541,7 @@ fn playback_failure(error: PlaybackError) -> ApiFailure {
         PlaybackError::IndexOutOfBounds => ApiFailure::bad_request("queue index out of bounds"),
         PlaybackError::InvalidPosition => ApiFailure::bad_request("invalid seek position"),
         PlaybackError::UnsupportedMode(message) => ApiFailure::bad_request(message),
+        PlaybackError::NotCached => ApiFailure::bad_request("track is not available offline"),
         PlaybackError::Sink(message) => ApiFailure::internal(message),
     }
 }
