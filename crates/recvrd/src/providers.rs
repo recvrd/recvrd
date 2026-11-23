@@ -580,11 +580,49 @@ mod tests {
         assert_eq!(created.id, "youtube");
     }
 
+    /// Serve a fixed recent-channels list for the routing test.
+    async fn podverse_mock() -> (String, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let handle = tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    break;
+                };
+                tokio::spawn(async move {
+                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                    let mut buffer = vec![0u8; 4096];
+                    let read = stream.read(&mut buffer).await.unwrap_or(0);
+                    let request = String::from_utf8_lossy(&buffer[..read]);
+                    let path = request
+                        .lines()
+                        .next()
+                        .and_then(|line| line.split_whitespace().nth(1))
+                        .unwrap_or("/");
+                    let body = if path.starts_with("/channel/global/recent") {
+                        "{\"data\": [{\"id\": 2984, \"id_text\": \"LJ24O9e4mv\", \"title\": \"Rock The Halls\", \"channel_about\": {\"author\": \"Jon Ross\", \"episode_count\": 3}, \"item_count\": 3}], \"meta\": {\"page\": 1, \"count\": null, \"limit\": 20}}"
+                    } else {
+                        "{\"data\": []}"
+                    };
+                    let header = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                         Content-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = stream.write_all(header.as_bytes()).await;
+                    let _ = stream.write_all(body.as_bytes()).await;
+                });
+            }
+        });
+        (base_url, handle)
+    }
+
     #[tokio::test]
     async fn podverse_routes_to_the_configured_provider() {
+        let (base_url, mock) = podverse_mock().await;
         let podverse = Arc::new(
             PodverseProvider::new(&recvrd_core::PodverseConfig {
-                base_url: Some("http://127.0.0.1".to_string()),
+                base_url: Some(base_url),
                 token: None,
             })
             .unwrap(),
@@ -594,13 +632,11 @@ mod tests {
             rss(),
             Some(podverse),
         );
-        assert!(
-            composite
-                .playlists(ProviderId::Podverse)
-                .await
-                .unwrap()
-                .is_empty()
-        );
+        let lists = composite.playlists(ProviderId::Podverse).await.unwrap();
+        assert_eq!(lists.len(), 1);
+        assert_eq!(lists[0].id, "LJ24O9e4mv");
+        assert_eq!(lists[0].name, "Rock The Halls");
+        mock.abort();
         let unconfigured =
             CompositeMusicApi::new(Arc::new(NamedApi { name: "youtube" }), rss(), None);
         assert!(unconfigured.playlists(ProviderId::Podverse).await.is_err());

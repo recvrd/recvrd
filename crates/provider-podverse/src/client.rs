@@ -72,6 +72,13 @@ pub struct SearchFeed {
     pub channel_about: Option<ChannelAbout>,
 }
 
+/// The recent channels response.
+#[derive(Debug, Default, Deserialize)]
+pub struct ChannelsResponse {
+    #[serde(default)]
+    pub data: Vec<ChannelResponse>,
+}
+
 /// One Podverse channel.
 #[derive(Debug, Default, Deserialize)]
 pub struct ChannelResponse {
@@ -287,6 +294,15 @@ impl PodverseClient {
         id: &str,
     ) -> Result<Option<ChannelResponse>, PodverseError> {
         self.channel_by_podcast_index(id).await
+    }
+
+    /// Fetch the first page of recently updated channels.
+    /// The endpoint reports no total, so the library lists page 1 only.
+    pub async fn recent_channels(&self) -> Result<Vec<ChannelResponse>, PodverseError> {
+        let response: ChannelsResponse = self
+            .get_json("/channel/global/recent?medium=music&page=1")
+            .await?;
+        Ok(response.data)
     }
 
     /// Fetch one channel by ID or ID text.
