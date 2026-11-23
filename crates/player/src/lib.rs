@@ -7,6 +7,11 @@ pub use error::PlayError;
 mod player;
 pub use player::Player;
 
+#[cfg(not(target_os = "linux"))]
+mod cpal_output;
+#[cfg(target_os = "linux")]
+mod pipewire_output;
+
 mod player_options;
 pub use player_options::PlayerOptions;
 

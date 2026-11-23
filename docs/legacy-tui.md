@@ -51,7 +51,7 @@ The documentation below is preserved from the upstream project.
 	### Linux
 	Install the following libraries:
 	```sh
-	sudo apt install alsa-tools libasound2-dev libdbus-1-dev pkg-config
+	sudo apt install pipewire libpipewire-0.3-dev libspa-0.2-dev libclang-dev libdbus-1-dev pkg-config
 	```
 - Use `cargo` to install the latest version
 	```sh

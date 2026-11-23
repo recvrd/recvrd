@@ -264,8 +264,11 @@ impl Screen for PlayerState {
     fn handle_global_message(&mut self, message: ManagerMessage) -> EventResponse {
         match message {
             ManagerMessage::RestartPlayer => {
-                SoundAction::RestartPlayer.apply_sound_action(self);
-                ManagerMessage::ChangeState(Screens::MusicPlayer).event()
+                if SoundAction::restart_player(self) {
+                    ManagerMessage::ChangeState(Screens::MusicPlayer).event()
+                } else {
+                    EventResponse::None
+                }
             }
             _ => EventResponse::None,
         }

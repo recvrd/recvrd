@@ -35,6 +35,8 @@ const STREAM_RETRY_MAX_DELAY: Duration = Duration::from_secs(60);
 pub struct RodioSink {
     tx: mpsc::Sender<AudioCommand>,
     finished: Arc<AtomicBool>,
+    stream_failed: Arc<AtomicBool>,
+    position: Arc<Mutex<Option<Duration>>>,
     duration: Arc<Mutex<Option<Duration>>>,
 }
 
@@ -69,6 +71,10 @@ impl RodioSink {
         let (tx, rx) = mpsc::channel();
         let finished = Arc::new(AtomicBool::new(true));
         let thread_finished = finished.clone();
+        let stream_failed = Arc::new(AtomicBool::new(false));
+        let thread_stream_failed = stream_failed.clone();
+        let position = Arc::new(Mutex::new(None));
+        let thread_position = position.clone();
         let duration = Arc::new(Mutex::new(None));
         let thread_duration = duration.clone();
 
@@ -96,9 +102,12 @@ impl RodioSink {
                     }
                     if stream_failed {
                         log::warn!("audio stream failed; dropping the output stream");
+                        *thread_position.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                            player.as_ref().map(|player| player.elapsed());
                         player = None;
-                        *thread_duration.lock().unwrap() = None;
-                        thread_finished.store(true, Ordering::SeqCst);
+                        *thread_duration.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+                        thread_stream_failed.store(true, Ordering::SeqCst);
+                        thread_finished.store(false, Ordering::SeqCst);
                         playing = false;
                         retry_at = Some(Instant::now() + retry_delay);
                     }
@@ -137,15 +146,16 @@ impl RodioSink {
                             };
                             match result {
                                 Ok(()) => {
-                                    *thread_duration.lock().unwrap() =
+                                    *thread_duration.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) =
                                         player.duration().map(Duration::from_secs_f64);
+                                    *thread_position.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(player.elapsed());
                                     thread_finished.store(false, Ordering::SeqCst);
                                     playing = true;
                                     let _ = reply.send(Ok(()));
                                 }
                                 Err(error) => {
                                     log::error!("failed to start playback: {error:?}");
-                                    *thread_duration.lock().unwrap() = None;
+                                    *thread_duration.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
                                     thread_finished.store(true, Ordering::SeqCst);
                                     playing = false;
                                     let _ = reply.send(Err(format!("{error:?}")));
@@ -166,7 +176,8 @@ impl RodioSink {
                             if let Some(player) = player.as_mut() {
                                 player.stop();
                             }
-                            *thread_duration.lock().unwrap() = None;
+                            *thread_position.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+                            *thread_duration.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
                             thread_finished.store(true, Ordering::SeqCst);
                             playing = false;
                         }
@@ -177,6 +188,7 @@ impl RodioSink {
                             };
                             match player.try_seek_to(position) {
                                 Ok(()) => {
+                                    *thread_position.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(position);
                                     let _ = reply.send(Ok(()));
                                 }
                                 Err(error) => {
@@ -228,6 +240,8 @@ impl RodioSink {
         Self {
             tx,
             finished,
+            stream_failed,
+            position,
             duration,
         }
     }
@@ -291,11 +305,25 @@ impl AudioSink for RodioSink {
     }
 
     fn duration(&self) -> Option<Duration> {
-        *self.duration.lock().unwrap()
+        *self
+            .duration
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     fn is_finished(&self) -> bool {
         self.finished.load(Ordering::SeqCst)
+    }
+
+    fn take_stream_error(&mut self) -> bool {
+        self.stream_failed.swap(false, Ordering::SeqCst)
+    }
+
+    fn position(&self) -> Option<Duration> {
+        *self
+            .position
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 }
 
