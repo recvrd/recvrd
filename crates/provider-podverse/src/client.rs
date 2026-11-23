@@ -5,6 +5,10 @@ use serde::{Deserialize, de::DeserializeOwned};
 use std::time::Duration;
 use thiserror::Error;
 
+/// Maximum pages to fetch for one channel. This guards against
+/// an instance that repeats a non-empty page without end.
+const MAX_CHANNEL_ITEM_PAGES: u32 = 100;
+
 /// An ID that the API may send as a number or a string.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(untagged)]
@@ -154,6 +158,17 @@ pub struct Category {
 pub struct ItemsResponse {
     #[serde(default)]
     pub data: Vec<Item>,
+    #[serde(default)]
+    pub meta: Option<ItemsMeta>,
+}
+
+/// Pagination metadata for a channel items page.
+#[derive(Debug, Default, Deserialize)]
+pub struct ItemsMeta {
+    #[serde(default)]
+    pub count: Option<u32>,
+    #[serde(default)]
+    pub limit: Option<u32>,
 }
 
 /// One Podverse item.
@@ -239,6 +254,7 @@ pub struct ChannelSeason {
 /// The Podverse HTTP client.
 pub struct PodverseClient {
     base_url: String,
+    base: Url,
     token: Option<String>,
     http: reqwest::Client,
 }
@@ -265,6 +281,7 @@ impl PodverseClient {
             .build()?;
         Ok(Self {
             base_url: base_url.to_string(),
+            base: url,
             token,
             http,
         })
@@ -317,12 +334,33 @@ impl PodverseClient {
         self.get_json(&format!("/channel/podcast-index/{id}")).await
     }
 
-    /// Fetch the recent items for a channel.
+    /// Fetch all recent items for a channel. Page through the results
+    /// until a page returns no items, a short page, or the reported total.
     pub async fn channel_items(&self, id: &str) -> Result<Vec<Item>, PodverseError> {
-        let response: ItemsResponse = self
-            .get_json(&format!("/item/channel/recent/{id}?page=1"))
-            .await?;
-        Ok(response.data)
+        let mut items = Vec::new();
+        let mut page = 1;
+        loop {
+            let response: ItemsResponse = self
+                .get_json(&format!("/item/channel/recent/{id}?page={page}"))
+                .await?;
+            let meta = response.meta;
+            let total = meta.as_ref().and_then(|meta| meta.count);
+            let short = meta
+                .as_ref()
+                .and_then(|meta| meta.limit)
+                .is_some_and(|limit| response.data.len() < limit as usize);
+            let empty = response.data.is_empty();
+            items.extend(response.data);
+            if empty
+                || short
+                || total.is_some_and(|total| items.len() >= total as usize)
+                || page >= MAX_CHANNEL_ITEM_PAGES
+            {
+                break;
+            }
+            page += 1;
+        }
+        Ok(items)
     }
 
     /// Fetch one item by ID or ID text.
@@ -330,9 +368,26 @@ impl PodverseClient {
         self.get_json(&format!("/item/{id}")).await
     }
 
-    /// Fetch a media URL without the API base URL.
+    /// Fetch a media URL. Send the token only when the URL shares
+    /// the origin of the configured API base URL.
     pub async fn get_url(&self, url: &str) -> Result<reqwest::Response, PodverseError> {
-        Ok(self.http.get(url).send().await?.error_for_status()?)
+        let mut request = self.http.get(url);
+        if self.same_origin(url)
+            && let Some(token) = &self.token
+        {
+            request = request.bearer_auth(token);
+        }
+        Ok(request.send().await?.error_for_status()?)
+    }
+
+    /// Check whether a URL shares the scheme, host, and port of the base URL.
+    fn same_origin(&self, url: &str) -> bool {
+        let Ok(url) = Url::parse(url) else {
+            return false;
+        };
+        url.scheme() == self.base.scheme()
+            && url.host() == self.base.host()
+            && url.port_or_known_default() == self.base.port_or_known_default()
     }
 
     fn request(&self, path: &str) -> reqwest::RequestBuilder {
