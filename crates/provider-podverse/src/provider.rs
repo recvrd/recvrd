@@ -54,11 +54,8 @@ impl PodverseProvider {
 
     async fn load_playlist(&self, id: &str) -> Result<(ChannelResponse, Vec<Item>), String> {
         let channel = self.load_channel(id).await?;
-        let channel_id = channel
-            .id_text
-            .clone()
-            .or_else(|| channel.id.as_ref().map(IdValue::as_string))
-            .ok_or_else(|| format!("Podverse channel {id} has no ID"))?;
+        let channel_id =
+            channel_id(&channel).ok_or_else(|| format!("Podverse channel {id} has no ID"))?;
         let items = self
             .client
             .channel_items(&channel_id)
@@ -66,6 +63,14 @@ impl PodverseProvider {
             .map_err(|error| error.to_string())?;
         Ok((channel, items))
     }
+}
+
+/// Return the ID text of a channel, or its numeric ID as text.
+fn channel_id(channel: &ChannelResponse) -> Option<String> {
+    channel
+        .id_text
+        .clone()
+        .or_else(|| channel.id.as_ref().map(IdValue::as_string))
 }
 
 #[async_trait]
@@ -76,7 +81,18 @@ impl MusicApi for PodverseProvider {
 
     async fn playlists(&self, provider: ProviderId) -> Result<Vec<Playlist>, String> {
         check_provider(provider)?;
-        Ok(Vec::new())
+        let channels = self
+            .client
+            .recent_channels()
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok(channels
+            .iter()
+            .filter_map(|channel| {
+                let id = channel_id(channel)?;
+                Some(playlist_from_channel(&id, channel))
+            })
+            .collect())
     }
 
     async fn playlist(&self, provider: ProviderId, id: &str) -> Result<Vec<Track>, String> {
@@ -576,6 +592,7 @@ mod tests {
 
     const SEARCH: &str = include_str!("../fixtures/search.json");
     const CHANNEL: &str = include_str!("../fixtures/channel.json");
+    const CHANNELS_RECENT: &str = include_str!("../fixtures/channels-recent.json");
     const CHANNEL_PAGED: &str = include_str!("../fixtures/channel-paged.json");
     const ITEMS: &str = include_str!("../fixtures/items.json");
     const ITEMS_PAGE_1: &str = include_str!("../fixtures/items-page1.json");
@@ -696,6 +713,11 @@ mod tests {
                 "application/json",
                 CHANNEL.replace("BASE", base).into_bytes(),
             ),
+            "/channel/global/recent" => (
+                "200 OK",
+                "application/json",
+                CHANNELS_RECENT.replace("BASE", base).into_bytes(),
+            ),
             "/channel/PAGED123" => (
                 "200 OK",
                 "application/json",
@@ -752,6 +774,21 @@ mod tests {
             source: Some(Box::new(source)),
             metadata: None,
         }
+    }
+
+    #[tokio::test]
+    async fn playlists_lists_recently_updated_channels() {
+        let server = FixtureServer::start().await;
+        let provider = server.provider();
+        let playlists = provider.playlists(ProviderId::Podverse).await.unwrap();
+        assert_eq!(playlists.len(), 2);
+        assert_eq!(playlists[0].id, "LJ24O9e4mv");
+        assert_eq!(playlists[0].name, "Rock The Halls");
+        assert_eq!(playlists[0].author.as_deref(), Some("Jon Ross"));
+        assert_eq!(playlists[0].item_count, Some(3));
+        assert_eq!(playlists[1].id, "6654007");
+        assert_eq!(playlists[1].name, "Lofi Music");
+        assert_eq!(playlists[1].item_count, Some(12));
     }
 
     #[tokio::test]
