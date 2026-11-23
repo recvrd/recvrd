@@ -296,8 +296,8 @@ returns 502. An unknown feed ID returns 404 on refresh and remove.
 ### Podverse
 
 Set `podverse.base_url` in `config.toml` or `RECVRD_PODVERSE_URL` to enable
-the provider. Search returns music channels as playlists. Open a channel to
-list its items.
+the provider. The library lists recently updated music channels. Search
+returns music channels as playlists. Open a channel to list its items.
 
 ```sh
 curl 'http://127.0.0.1:8080/api/search?provider=podverse&q=lofi'
