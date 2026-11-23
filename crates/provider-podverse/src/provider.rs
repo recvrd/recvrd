@@ -567,6 +567,7 @@ fn extension_for_source(source: &TrackSource) -> String {
 mod tests {
     use super::*;
     use recvrd_api::MusicApi;
+    use std::sync::{Arc, Mutex};
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
         net::TcpListener,
@@ -575,11 +576,18 @@ mod tests {
 
     const SEARCH: &str = include_str!("../fixtures/search.json");
     const CHANNEL: &str = include_str!("../fixtures/channel.json");
+    const CHANNEL_PAGED: &str = include_str!("../fixtures/channel-paged.json");
     const ITEMS: &str = include_str!("../fixtures/items.json");
+    const ITEMS_PAGE_1: &str = include_str!("../fixtures/items-page1.json");
+    const ITEMS_PAGE_2: &str = include_str!("../fixtures/items-page2.json");
     const ITEM: &str = include_str!("../fixtures/item.json");
+
+    /// A recorded request: path and authorization header value.
+    type RecordedRequest = (String, Option<String>);
 
     struct FixtureServer {
         base_url: String,
+        requests: Arc<Mutex<Vec<RecordedRequest>>>,
         handle: JoinHandle<()>,
     }
 
@@ -588,12 +596,15 @@ mod tests {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let base_url = format!("http://{}", listener.local_addr().unwrap());
             let server_url = base_url.clone();
+            let requests = Arc::new(Mutex::new(Vec::new()));
+            let recorded = requests.clone();
             let handle = tokio::spawn(async move {
                 loop {
                     let Ok((mut stream, _)) = listener.accept().await else {
                         break;
                     };
                     let base = server_url.clone();
+                    let recorded = recorded.clone();
                     tokio::spawn(async move {
                         let mut buffer = vec![0u8; 4096];
                         let read = stream.read(&mut buffer).await.unwrap_or(0);
@@ -603,6 +614,15 @@ mod tests {
                             .next()
                             .and_then(|line| line.split_whitespace().nth(1))
                             .unwrap_or("/");
+                        let authorization = request.lines().skip(1).find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("authorization")
+                                .then(|| value.trim().to_string())
+                        });
+                        recorded
+                            .lock()
+                            .unwrap()
+                            .push((path.to_string(), authorization));
                         let (status, content_type, body) = response(path, &base);
                         let header = format!(
                             "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\n\
@@ -614,7 +634,11 @@ mod tests {
                     });
                 }
             });
-            Self { base_url, handle }
+            Self {
+                base_url,
+                requests,
+                handle,
+            }
         }
 
         fn provider(&self) -> PodverseProvider {
@@ -623,6 +647,25 @@ mod tests {
                 token: None,
             })
             .unwrap()
+        }
+
+        fn provider_with_token(&self) -> PodverseProvider {
+            PodverseProvider::new(&PodverseConfig {
+                base_url: Some(self.base_url.clone()),
+                token: Some("test-token".to_string()),
+            })
+            .unwrap()
+        }
+
+        /// Return the authorization header the server saw for one path.
+        /// The outer option is None when the server saw no such request.
+        fn authorization_for(&self, path: &str) -> Option<Option<String>> {
+            self.requests
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|(recorded, _)| recorded == path)
+                .map(|(_, authorization)| authorization.clone())
         }
     }
 
@@ -633,7 +676,15 @@ mod tests {
     }
 
     fn response(path: &str, base: &str) -> (&'static str, &'static str, Vec<u8>) {
-        let path = path.split('?').next().unwrap_or(path);
+        let (path, query) = match path.split_once('?') {
+            Some((path, query)) => (path, query),
+            None => (path, ""),
+        };
+        let page = query
+            .split('&')
+            .find_map(|pair| pair.strip_prefix("page="))
+            .and_then(|value| value.parse::<u32>().ok())
+            .unwrap_or(1);
         match path {
             "/external-services/podcast-index/search/podcasts" => (
                 "200 OK",
@@ -645,12 +696,40 @@ mod tests {
                 "application/json",
                 CHANNEL.replace("BASE", base).into_bytes(),
             ),
-            "/channel/podcast-index/999" => ("200 OK", "application/json", b"null".to_vec()),
-            "/item/channel/recent/LJ24O9e4mv" => (
+            "/channel/PAGED123" => (
                 "200 OK",
                 "application/json",
-                ITEMS.replace("BASE", base).into_bytes(),
+                CHANNEL_PAGED.replace("BASE", base).into_bytes(),
             ),
+            "/channel/podcast-index/999" => ("200 OK", "application/json", b"null".to_vec()),
+            "/item/channel/recent/LJ24O9e4mv" => {
+                if page == 1 {
+                    (
+                        "200 OK",
+                        "application/json",
+                        ITEMS.replace("BASE", base).into_bytes(),
+                    )
+                } else {
+                    ("200 OK", "application/json", b"{\"data\": []}".to_vec())
+                }
+            }
+            "/item/channel/recent/PAGED123" => {
+                if page == 1 {
+                    (
+                        "200 OK",
+                        "application/json",
+                        ITEMS_PAGE_1.replace("BASE", base).into_bytes(),
+                    )
+                } else if page == 2 {
+                    (
+                        "200 OK",
+                        "application/json",
+                        ITEMS_PAGE_2.replace("BASE", base).into_bytes(),
+                    )
+                } else {
+                    ("200 OK", "application/json", b"{\"data\": []}".to_vec())
+                }
+            }
             "/item/YvIRJrjZVe" | "/item/52369" => (
                 "200 OK",
                 "application/json",
@@ -725,6 +804,31 @@ mod tests {
             metadata.website_url.as_deref(),
             Some("https://www.wavlake.com/album/1")
         );
+    }
+
+    #[tokio::test]
+    async fn playlist_detail_pages_through_all_channel_items() {
+        let server = FixtureServer::start().await;
+        let provider = server.provider();
+        let detail = provider
+            .playlist_detail(ProviderId::Podverse, "PAGED123")
+            .await
+            .unwrap();
+        assert_eq!(detail.playlist.id, "PAGED123");
+        assert_eq!(detail.playlist.name, "Paged Channel");
+        assert_eq!(detail.tracks.len(), 3);
+        assert_eq!(detail.tracks[0].title, "New Year");
+        assert_eq!(detail.tracks[1].title, "Second Song");
+        assert_eq!(detail.tracks[2].title, "Third Song");
+    }
+
+    #[tokio::test]
+    async fn channel_items_stops_at_an_empty_page() {
+        let server = FixtureServer::start().await;
+        let provider = server.provider();
+        let items = provider.client.channel_items("LJ24O9e4mv").await.unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].title.as_deref(), Some("New Year"));
     }
 
     #[tokio::test]
@@ -812,6 +916,59 @@ mod tests {
                 kind: MediaKind::Audio,
             }),
             "m4a"
+        );
+    }
+
+    #[tokio::test]
+    async fn download_sends_the_token_to_the_api_origin() {
+        let server = FixtureServer::start().await;
+        let provider = server.provider_with_token();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("track.mp3");
+        let track = core_track(TrackSource {
+            url: format!("{}/audio.mp3", server.base_url),
+            mime: Some("audio/mpeg".to_string()),
+            length: Some(10),
+            seekable: true,
+            kind: MediaKind::Audio,
+        });
+        provider.download(&track, &path, &|_| {}).await.unwrap();
+        assert_eq!(
+            server.authorization_for("/audio.mp3"),
+            Some(Some("Bearer test-token".to_string()))
+        );
+    }
+
+    #[tokio::test]
+    async fn download_withholds_the_token_from_another_origin() {
+        let server = FixtureServer::start().await;
+        let peer = FixtureServer::start().await;
+        let provider = server.provider_with_token();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("track.mp3");
+        let track = core_track(TrackSource {
+            url: format!("{}/audio.mp3", peer.base_url),
+            mime: Some("audio/mpeg".to_string()),
+            length: Some(10),
+            seekable: true,
+            kind: MediaKind::Audio,
+        });
+        provider.download(&track, &path, &|_| {}).await.unwrap();
+        assert_eq!(peer.authorization_for("/audio.mp3"), Some(None));
+    }
+
+    #[tokio::test]
+    async fn cover_fetch_sends_the_token_to_the_api_origin() {
+        let server = FixtureServer::start().await;
+        let provider = server.provider_with_token();
+        let bytes = provider
+            .fetch(&TrackKey::podverse("YvIRJrjZVe"))
+            .await
+            .unwrap();
+        assert_eq!(bytes.len(), 2048);
+        assert_eq!(
+            server.authorization_for("/image.jpg"),
+            Some(Some("Bearer test-token".to_string()))
         );
     }
 
