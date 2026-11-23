@@ -7,7 +7,7 @@ use std::{
         mpsc,
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 enum AudioCommand {
@@ -25,6 +25,11 @@ enum AudioCommand {
     Volume(u8),
 }
 
+/// Delay before the audio thread retries a dead output stream.
+const STREAM_RETRY_DELAY: Duration = Duration::from_secs(5);
+/// Longest delay between output stream retries.
+const STREAM_RETRY_MAX_DELAY: Duration = Duration::from_secs(60);
+
 /// A rodio sink that lives on a dedicated thread, so the non-Send audio stream
 /// never enters the async runtime.
 pub struct RodioSink {
@@ -40,6 +45,23 @@ pub struct RodioSink {
 /// the log instead of sitting unread.
 fn drain_player_errors(receiver: &flume::Receiver<PlayError>) -> Vec<PlayError> {
     receiver.try_iter().collect()
+}
+
+/// Split drained player errors into a stream failure flag and the rest.
+///
+/// A stream runtime error means the output stream is dead. The caller
+/// drops the player and rebuilds it, so it needs the flag, not the error.
+fn split_stream_errors(errors: Vec<PlayError>) -> (bool, Vec<PlayError>) {
+    let mut stream_failed = false;
+    let mut rest = Vec::new();
+    for error in errors {
+        if matches!(error, PlayError::StreamRuntimeError(_)) {
+            stream_failed = true;
+        } else {
+            rest.push(error);
+        }
+    }
+    (stream_failed, rest)
 }
 
 impl RodioSink {
@@ -63,10 +85,22 @@ impl RodioSink {
                     }
                 };
                 let mut playing = false;
+                let mut retry_at: Option<Instant> = None;
+                let mut retry_delay = STREAM_RETRY_DELAY;
 
                 loop {
-                    for error in drain_player_errors(&error_rx) {
+                    let (stream_failed, errors) =
+                        split_stream_errors(drain_player_errors(&error_rx));
+                    for error in errors {
                         log::warn!("async player error: {error:?}");
+                    }
+                    if stream_failed {
+                        log::warn!("audio stream failed; dropping the output stream");
+                        player = None;
+                        *thread_duration.lock().unwrap() = None;
+                        thread_finished.store(true, Ordering::SeqCst);
+                        playing = false;
+                        retry_at = Some(Instant::now() + retry_delay);
                     }
                     match rx.recv_timeout(Duration::from_millis(250)) {
                         Ok(AudioCommand::Play { source, reply }) => {
@@ -75,6 +109,8 @@ impl RodioSink {
                                     Ok(new_player) => {
                                         log::info!("audio output available");
                                         player = Some(new_player);
+                                        retry_at = None;
+                                        retry_delay = STREAM_RETRY_DELAY;
                                     }
                                     Err(error) => {
                                         log::error!("audio output unavailable: {error:?}");
@@ -159,6 +195,28 @@ impl RodioSink {
                             if playing && player.as_ref().is_some_and(Player::is_finished) {
                                 thread_finished.store(true, Ordering::SeqCst);
                                 playing = false;
+                            }
+                            if player.is_none()
+                                && let Some(when) = retry_at
+                                && Instant::now() >= when
+                            {
+                                match Player::new(error_tx.clone(), PlayerOptions::new(volume)) {
+                                    Ok(new_player) => {
+                                        log::info!("audio output available");
+                                        player = Some(new_player);
+                                        retry_at = None;
+                                        retry_delay = STREAM_RETRY_DELAY;
+                                    }
+                                    Err(error) => {
+                                        log::warn!(
+                                            "audio output unavailable: {error:?}; retrying in {} seconds",
+                                            retry_delay.as_secs()
+                                        );
+                                        retry_at = Some(Instant::now() + retry_delay);
+                                        retry_delay =
+                                            (retry_delay * 2).min(STREAM_RETRY_MAX_DELAY);
+                                    }
+                                }
                             }
                         }
                         Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -266,5 +324,41 @@ mod tests {
         let (_sender, receiver) = flume::unbounded::<PlayError>();
 
         assert!(drain_player_errors(&receiver).is_empty());
+    }
+
+    #[test]
+    fn split_stream_errors_flags_a_stream_failure() {
+        let errors = vec![PlayError::StreamRuntimeError(
+            "alsa::poll() returned POLLERR".to_string(),
+        )];
+
+        let (stream_failed, rest) = split_stream_errors(errors);
+
+        assert!(stream_failed);
+        assert!(rest.is_empty());
+    }
+
+    #[test]
+    fn split_stream_errors_keeps_other_errors() {
+        let errors = vec![
+            PlayError::Io(std::io::Error::other("seek failed")),
+            PlayError::StreamRuntimeError("alsa::poll() returned POLLERR".to_string()),
+        ];
+
+        let (stream_failed, rest) = split_stream_errors(errors);
+
+        assert!(stream_failed);
+        assert_eq!(rest.len(), 1);
+        assert!(matches!(rest[0], PlayError::Io(_)));
+    }
+
+    #[test]
+    fn split_stream_errors_reports_no_failure_without_a_stream_error() {
+        let errors = vec![PlayError::Io(std::io::Error::other("seek failed"))];
+
+        let (stream_failed, rest) = split_stream_errors(errors);
+
+        assert!(!stream_failed);
+        assert_eq!(rest.len(), 1);
     }
 }

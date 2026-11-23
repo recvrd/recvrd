@@ -1,13 +1,17 @@
 use common_structs::ReadSeek;
 use flume::Sender;
-use rodio::cpal::traits::HostTrait;
+use rodio::cpal::traits::{DeviceTrait, HostTrait};
 use rodio::{Decoder, OutputStream, OutputStreamBuilder, Sink, Source};
 
 use std::fs::File;
 use std::path::Path;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
-use crate::{CurrentSource, PlayError, PlayerData, PlayerOptions, SEEK_STEP};
+use crate::{
+    CurrentSource, PlayError, PlayerData, PlayerOptions, SEEK_STEP, StreamErrorLog,
+    StreamErrorThrottle,
+};
 
 pub struct Player {
     sink: Sink,
@@ -18,37 +22,94 @@ pub struct Player {
 }
 
 impl Player {
-    fn try_from_device(device: rodio::cpal::Device) -> Result<OutputStream, PlayError> {
+    /// Build the error callback for one output stream.
+    ///
+    /// Rodio logs each stream error by default, so one dead ALSA stream
+    /// can flood the log. This callback logs the first error, then it
+    /// suppresses repeats, and it reports the failure to the audio thread.
+    fn stream_error_callback(
+        error_sender: Sender<PlayError>,
+    ) -> impl FnMut(rodio::cpal::StreamError) + Send + 'static {
+        let throttle = Arc::new(Mutex::new(StreamErrorThrottle::new()));
+        move |error| {
+            let message = error.to_string();
+            let decision = throttle.lock().map_or(StreamErrorLog::LogNow, |mut guard| {
+                guard.record(&message, Instant::now())
+            });
+            match decision {
+                StreamErrorLog::LogNow => log::warn!("audio stream error: {message}"),
+                StreamErrorLog::LogSummary { suppressed } => {
+                    log::warn!("audio stream error: {message} ({suppressed} repeats suppressed)")
+                }
+                StreamErrorLog::Suppress => {}
+            }
+            if !matches!(decision, StreamErrorLog::Suppress) {
+                let _ = error_sender.send(PlayError::StreamRuntimeError(message));
+            }
+        }
+    }
+
+    fn try_from_device(
+        device: rodio::cpal::Device,
+        error_sender: &Sender<PlayError>,
+    ) -> Result<OutputStream, PlayError> {
         // In rodio 0.21, try_from_device is available on OutputStream
         OutputStreamBuilder::default()
             .with_device(device)
+            .with_error_callback(Self::stream_error_callback(error_sender.clone()))
             .open_stream()
             .map_err(PlayError::StreamError)
     }
 
-    /// Try to create a stream from the default device, falling back to others
-    fn try_default() -> Result<OutputStream, PlayError> {
+    /// Name one output device for the log, or "unknown" when it has none.
+    fn device_name(device: &rodio::cpal::Device) -> String {
+        device.name().unwrap_or_else(|_| "unknown".to_string())
+    }
+
+    /// Create a stream from the default device or the PipeWire device.
+    ///
+    /// The daemon must not fall back to other devices. A fallback can
+    /// seize a hardware device from PipeWire, as issue #205 shows.
+    fn try_default(error_sender: &Sender<PlayError>) -> Result<OutputStream, PlayError> {
         // Use rodio's internal cpal re-export
         let host = rodio::cpal::default_host();
 
-        let default_device = host
-            .default_output_device()
-            .ok_or(PlayError::StreamError(rodio::StreamError::NoDevice))?;
-
-        Self::try_from_device(default_device).or_else(|original_err| {
-            let devices = host.output_devices().map_err(|_| original_err)?;
-
-            for d in devices {
-                if let Ok(res) = Self::try_from_device(d) {
-                    return Ok(res);
+        let mut candidates = Vec::new();
+        if let Some(device) = host.default_output_device() {
+            candidates.push(device);
+        }
+        if let Ok(devices) = host.output_devices() {
+            for device in devices {
+                if Self::device_name(&device) == "pipewire"
+                    && !candidates
+                        .iter()
+                        .any(|candidate| Self::device_name(candidate) == "pipewire")
+                {
+                    candidates.push(device);
                 }
             }
-            Err(PlayError::StreamError(rodio::StreamError::NoDevice))
-        })
+        }
+        let mut first_error = None;
+        for device in candidates {
+            let name = Self::device_name(&device);
+            match Self::try_from_device(device, error_sender) {
+                Ok(stream) => {
+                    log::info!("audio output device: {name}");
+                    return Ok(stream);
+                }
+                Err(error) => {
+                    log::warn!("audio output device {name} failed: {error:?}");
+                    if first_error.is_none() {
+                        first_error = Some(error);
+                    }
+                }
+            }
+        }
+        Err(first_error.unwrap_or(PlayError::StreamError(rodio::StreamError::NoDevice)))
     }
 
     pub fn new(error_sender: Sender<PlayError>, options: PlayerOptions) -> Result<Self, PlayError> {
-        let stream = Self::try_default()?;
+        let stream = Self::try_default(&error_sender)?;
 
         // sink::try_new requires a reference to the handle
         let sink = Sink::connect_new(stream.mixer());
@@ -65,7 +126,7 @@ impl Player {
     }
 
     pub fn update(&self) -> Result<Self, PlayError> {
-        let stream = Self::try_default()?;
+        let stream = Self::try_default(&self.error_sender)?;
         let sink = Sink::connect_new(stream.mixer());
 
         sink.set_volume(self.data.volume_f32());
