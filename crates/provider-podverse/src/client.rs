@@ -159,8 +159,6 @@ pub struct ItemsResponse {
 #[derive(Debug, Default, Deserialize)]
 pub struct ItemsMeta {
     #[serde(default)]
-    pub page: Option<u32>,
-    #[serde(default)]
     pub count: Option<u32>,
     #[serde(default)]
     pub limit: Option<u32>,
@@ -319,7 +317,7 @@ impl PodverseClient {
     }
 
     /// Fetch all recent items for a channel. Page through the results
-    /// until a page returns no items or the reported total is reached.
+    /// until a page returns no items, a short page, or the reported total.
     pub async fn channel_items(&self, id: &str) -> Result<Vec<Item>, PodverseError> {
         let mut items = Vec::new();
         let mut page = 1;
@@ -327,10 +325,16 @@ impl PodverseClient {
             let response: ItemsResponse = self
                 .get_json(&format!("/item/channel/recent/{id}?page={page}"))
                 .await?;
-            let total = response.meta.as_ref().and_then(|meta| meta.count);
+            let meta = response.meta;
+            let total = meta.as_ref().and_then(|meta| meta.count);
+            let short = meta
+                .as_ref()
+                .and_then(|meta| meta.limit)
+                .is_some_and(|limit| response.data.len() < limit as usize);
             let empty = response.data.is_empty();
             items.extend(response.data);
             if empty
+                || short
                 || total.is_some_and(|total| items.len() >= total as usize)
                 || page >= MAX_CHANNEL_ITEM_PAGES
             {
