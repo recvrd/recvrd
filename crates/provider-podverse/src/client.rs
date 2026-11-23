@@ -247,6 +247,7 @@ pub struct ChannelSeason {
 /// The Podverse HTTP client.
 pub struct PodverseClient {
     base_url: String,
+    base: Url,
     token: Option<String>,
     http: reqwest::Client,
 }
@@ -273,6 +274,7 @@ impl PodverseClient {
             .build()?;
         Ok(Self {
             base_url: base_url.to_string(),
+            base: url,
             token,
             http,
         })
@@ -350,9 +352,26 @@ impl PodverseClient {
         self.get_json(&format!("/item/{id}")).await
     }
 
-    /// Fetch a media URL without the API base URL.
+    /// Fetch a media URL. Send the token only when the URL shares
+    /// the origin of the configured API base URL.
     pub async fn get_url(&self, url: &str) -> Result<reqwest::Response, PodverseError> {
-        Ok(self.http.get(url).send().await?.error_for_status()?)
+        let mut request = self.http.get(url);
+        if self.same_origin(url)
+            && let Some(token) = &self.token
+        {
+            request = request.bearer_auth(token);
+        }
+        Ok(request.send().await?.error_for_status()?)
+    }
+
+    /// Check whether a URL shares the scheme, host, and port of the base URL.
+    fn same_origin(&self, url: &str) -> bool {
+        let Ok(url) = Url::parse(url) else {
+            return false;
+        };
+        url.scheme() == self.base.scheme()
+            && url.host() == self.base.host()
+            && url.port_or_known_default() == self.base.port_or_known_default()
     }
 
     fn request(&self, path: &str) -> reqwest::RequestBuilder {
