@@ -5,6 +5,10 @@ use serde::{Deserialize, de::DeserializeOwned};
 use std::time::Duration;
 use thiserror::Error;
 
+/// Maximum pages to fetch for one channel. This guards against
+/// an instance that repeats a non-empty page without end.
+const MAX_CHANNEL_ITEM_PAGES: u32 = 100;
+
 /// An ID that the API may send as a number or a string.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(untagged)]
@@ -147,6 +151,19 @@ pub struct Category {
 pub struct ItemsResponse {
     #[serde(default)]
     pub data: Vec<Item>,
+    #[serde(default)]
+    pub meta: Option<ItemsMeta>,
+}
+
+/// Pagination metadata for a channel items page.
+#[derive(Debug, Default, Deserialize)]
+pub struct ItemsMeta {
+    #[serde(default)]
+    pub page: Option<u32>,
+    #[serde(default)]
+    pub count: Option<u32>,
+    #[serde(default)]
+    pub limit: Option<u32>,
 }
 
 /// One Podverse item.
@@ -301,12 +318,27 @@ impl PodverseClient {
         self.get_json(&format!("/channel/podcast-index/{id}")).await
     }
 
-    /// Fetch the recent items for a channel.
+    /// Fetch all recent items for a channel. Page through the results
+    /// until a page returns no items or the reported total is reached.
     pub async fn channel_items(&self, id: &str) -> Result<Vec<Item>, PodverseError> {
-        let response: ItemsResponse = self
-            .get_json(&format!("/item/channel/recent/{id}?page=1"))
-            .await?;
-        Ok(response.data)
+        let mut items = Vec::new();
+        let mut page = 1;
+        loop {
+            let response: ItemsResponse = self
+                .get_json(&format!("/item/channel/recent/{id}?page={page}"))
+                .await?;
+            let total = response.meta.as_ref().and_then(|meta| meta.count);
+            let empty = response.data.is_empty();
+            items.extend(response.data);
+            if empty
+                || total.is_some_and(|total| items.len() >= total as usize)
+                || page >= MAX_CHANNEL_ITEM_PAGES
+            {
+                break;
+            }
+            page += 1;
+        }
+        Ok(items)
     }
 
     /// Fetch one item by ID or ID text.

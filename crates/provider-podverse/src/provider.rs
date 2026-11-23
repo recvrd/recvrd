@@ -575,7 +575,10 @@ mod tests {
 
     const SEARCH: &str = include_str!("../fixtures/search.json");
     const CHANNEL: &str = include_str!("../fixtures/channel.json");
+    const CHANNEL_PAGED: &str = include_str!("../fixtures/channel-paged.json");
     const ITEMS: &str = include_str!("../fixtures/items.json");
+    const ITEMS_PAGE_1: &str = include_str!("../fixtures/items-page1.json");
+    const ITEMS_PAGE_2: &str = include_str!("../fixtures/items-page2.json");
     const ITEM: &str = include_str!("../fixtures/item.json");
 
     struct FixtureServer {
@@ -633,7 +636,15 @@ mod tests {
     }
 
     fn response(path: &str, base: &str) -> (&'static str, &'static str, Vec<u8>) {
-        let path = path.split('?').next().unwrap_or(path);
+        let (path, query) = match path.split_once('?') {
+            Some((path, query)) => (path, query),
+            None => (path, ""),
+        };
+        let page = query
+            .split('&')
+            .find_map(|pair| pair.strip_prefix("page="))
+            .and_then(|value| value.parse::<u32>().ok())
+            .unwrap_or(1);
         match path {
             "/external-services/podcast-index/search/podcasts" => (
                 "200 OK",
@@ -645,12 +656,40 @@ mod tests {
                 "application/json",
                 CHANNEL.replace("BASE", base).into_bytes(),
             ),
-            "/channel/podcast-index/999" => ("200 OK", "application/json", b"null".to_vec()),
-            "/item/channel/recent/LJ24O9e4mv" => (
+            "/channel/PAGED123" => (
                 "200 OK",
                 "application/json",
-                ITEMS.replace("BASE", base).into_bytes(),
+                CHANNEL_PAGED.replace("BASE", base).into_bytes(),
             ),
+            "/channel/podcast-index/999" => ("200 OK", "application/json", b"null".to_vec()),
+            "/item/channel/recent/LJ24O9e4mv" => {
+                if page == 1 {
+                    (
+                        "200 OK",
+                        "application/json",
+                        ITEMS.replace("BASE", base).into_bytes(),
+                    )
+                } else {
+                    ("200 OK", "application/json", b"{\"data\": []}".to_vec())
+                }
+            }
+            "/item/channel/recent/PAGED123" => {
+                if page == 1 {
+                    (
+                        "200 OK",
+                        "application/json",
+                        ITEMS_PAGE_1.replace("BASE", base).into_bytes(),
+                    )
+                } else if page == 2 {
+                    (
+                        "200 OK",
+                        "application/json",
+                        ITEMS_PAGE_2.replace("BASE", base).into_bytes(),
+                    )
+                } else {
+                    ("200 OK", "application/json", b"{\"data\": []}".to_vec())
+                }
+            }
             "/item/YvIRJrjZVe" | "/item/52369" => (
                 "200 OK",
                 "application/json",
@@ -725,6 +764,31 @@ mod tests {
             metadata.website_url.as_deref(),
             Some("https://www.wavlake.com/album/1")
         );
+    }
+
+    #[tokio::test]
+    async fn playlist_detail_pages_through_all_channel_items() {
+        let server = FixtureServer::start().await;
+        let provider = server.provider();
+        let detail = provider
+            .playlist_detail(ProviderId::Podverse, "PAGED123")
+            .await
+            .unwrap();
+        assert_eq!(detail.playlist.id, "PAGED123");
+        assert_eq!(detail.playlist.name, "Paged Channel");
+        assert_eq!(detail.tracks.len(), 3);
+        assert_eq!(detail.tracks[0].title, "New Year");
+        assert_eq!(detail.tracks[1].title, "Second Song");
+        assert_eq!(detail.tracks[2].title, "Third Song");
+    }
+
+    #[tokio::test]
+    async fn channel_items_stops_at_an_empty_page() {
+        let server = FixtureServer::start().await;
+        let provider = server.provider();
+        let items = provider.client.channel_items("LJ24O9e4mv").await.unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].title.as_deref(), Some("New Year"));
     }
 
     #[tokio::test]
