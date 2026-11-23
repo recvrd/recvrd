@@ -6,6 +6,9 @@ pub enum PlayError {
     StreamError(rodio::StreamError),
     PlayError(rodio::PlayError),
     SeekError(rodio::source::SeekError),
+    /// A runtime error from the audio stream, for example an ALSA poll
+    /// error after suspend. The stream that reported it is dead.
+    StreamRuntimeError(String),
 }
 
 impl From<rodio::PlayError> for PlayError {
