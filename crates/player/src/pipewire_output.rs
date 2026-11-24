@@ -378,48 +378,48 @@ fn run(
 
     let listener = match stream
         .add_local_listener_with_user_data(stream_data)
-        .state_changed(|_, data, old, new| match new {
-            pw::stream::StreamState::Error(message) => {
-                data.shared.failed.store(true, Ordering::Release);
-                let decision = data
-                    .error_throttle
-                    .lock()
-                    .map_or(StreamErrorLog::LogNow, |mut throttle| {
-                        throttle.record(&message, Instant::now())
-                    });
-                match decision {
-                    StreamErrorLog::LogNow => {
-                        log::error!("the PipeWire stream changed from {old:?} to Error: {message}")
-                    }
-                    StreamErrorLog::LogSummary { suppressed } => log::error!(
-                        "the PipeWire stream changed from {old:?} to Error: {message} \
-                         ({suppressed} repeats suppressed)"
-                    ),
-                    StreamErrorLog::Suppress => {}
-                }
-                if !matches!(decision, StreamErrorLog::Suppress) {
-                    let _ = data
-                        .error_sender
-                        .send(PlayError::StreamRuntimeError(message.clone()));
-                }
+        .state_changed(|_, data, old, new| {
+            if is_connection_lost(
+                &old,
+                &new,
+                data.shared.shutdown.load(Ordering::Acquire),
+                data.shared.failed.load(Ordering::Acquire),
+            ) {
+                let message = "the PipeWire connection was lost";
+                report_stream_failure(
+                    data,
+                    message,
+                    &format!("the PipeWire stream changed from {old:?} to {new:?}: {message}"),
+                );
+                return;
             }
-            pw::stream::StreamState::Paused | pw::stream::StreamState::Streaming => {
-                let sink = data
-                    .shared
-                    .sink_name
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .clone();
-                match sink {
-                    Some(name) => {
-                        log::info!("the PipeWire output is connected to {name}")
-                    }
-                    None => {
-                        log::info!("the PipeWire output is connected to the default sink")
+
+            match new {
+                pw::stream::StreamState::Error(message) => {
+                    report_stream_failure(
+                        data,
+                        &message,
+                        &format!("the PipeWire stream changed from {old:?} to Error: {message}"),
+                    );
+                }
+                pw::stream::StreamState::Paused | pw::stream::StreamState::Streaming => {
+                    let sink = data
+                        .shared
+                        .sink_name
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .clone();
+                    match sink {
+                        Some(name) => {
+                            log::info!("the PipeWire output is connected to {name}")
+                        }
+                        None => {
+                            log::info!("the PipeWire output is connected to the default sink")
+                        }
                     }
                 }
+                _ => log::info!("the PipeWire stream changed from {old:?} to {new:?}"),
             }
-            _ => log::info!("the PipeWire stream changed from {old:?} to {new:?}"),
         })
         .process(fill)
         .register()
@@ -510,6 +510,50 @@ fn run(
     drop(decoder);
     drop(listener);
     drop(stream);
+}
+
+/// True when a stream that had started connecting lost its PipeWire
+/// connection. The initial `Unconnected -> Connecting` transition and the
+/// shutdown/drop path are not failures.
+fn is_connection_lost(
+    old: &pw::stream::StreamState,
+    new: &pw::stream::StreamState,
+    shutdown: bool,
+    failed: bool,
+) -> bool {
+    !shutdown
+        && !failed
+        && matches!(new, pw::stream::StreamState::Unconnected)
+        && matches!(
+            old,
+            pw::stream::StreamState::Connecting
+                | pw::stream::StreamState::Paused
+                | pw::stream::StreamState::Streaming
+        )
+}
+
+/// Mark the output failed and send a runtime error to the audio thread,
+/// throttling repeated log lines and error sends.
+fn report_stream_failure(data: &mut StreamData, message: &str, log_message: &str) {
+    data.shared.failed.store(true, Ordering::Release);
+    let decision = data
+        .error_throttle
+        .lock()
+        .map_or(StreamErrorLog::LogNow, |mut throttle| {
+            throttle.record(message, Instant::now())
+        });
+    match decision {
+        StreamErrorLog::LogNow => log::error!("{log_message}"),
+        StreamErrorLog::LogSummary { suppressed } => {
+            log::error!("{log_message} ({suppressed} repeats suppressed)")
+        }
+        StreamErrorLog::Suppress => {}
+    }
+    if !matches!(decision, StreamErrorLog::Suppress) {
+        let _ = data
+            .error_sender
+            .send(PlayError::StreamRuntimeError(message.to_string()));
+    }
 }
 
 fn fill(stream: &pw::stream::Stream, data: &mut StreamData) {
@@ -859,6 +903,77 @@ mod tests {
     #[test]
     fn sink_name_from_json_rejects_a_value_without_a_name() {
         assert_eq!(sink_name_from_json(r#"{"monitor":false}"#), None);
+    }
+
+    #[test]
+    fn losing_the_connection_after_connecting_is_a_failure() {
+        for old in [
+            pw::stream::StreamState::Connecting,
+            pw::stream::StreamState::Paused,
+            pw::stream::StreamState::Streaming,
+        ] {
+            assert!(is_connection_lost(
+                &old,
+                &pw::stream::StreamState::Unconnected,
+                false,
+                false
+            ));
+        }
+    }
+
+    #[test]
+    fn the_initial_unconnected_state_is_not_a_failure() {
+        assert!(!is_connection_lost(
+            &pw::stream::StreamState::Unconnected,
+            &pw::stream::StreamState::Connecting,
+            false,
+            false
+        ));
+    }
+
+    #[test]
+    fn a_shutdown_or_existing_failure_does_not_report_the_connection_again() {
+        assert!(!is_connection_lost(
+            &pw::stream::StreamState::Streaming,
+            &pw::stream::StreamState::Unconnected,
+            true,
+            false
+        ));
+        assert!(!is_connection_lost(
+            &pw::stream::StreamState::Streaming,
+            &pw::stream::StreamState::Unconnected,
+            false,
+            true
+        ));
+    }
+
+    #[test]
+    fn a_connection_loss_marks_the_output_failed_and_reports_it() {
+        let (_producer, consumer) = RingBuffer::new(16);
+        let (error_sender, error_receiver) = flume::unbounded();
+        let mut data = StreamData {
+            shared: Arc::new(Shared::new()),
+            error_sender,
+            error_throttle: Arc::new(Mutex::new(StreamErrorThrottle::new())),
+            consumer,
+            flush: 0,
+            pending: None,
+            scratch: vec![0.0; 16],
+        };
+
+        report_stream_failure(
+            &mut data,
+            "the PipeWire connection was lost",
+            "the PipeWire stream changed to Unconnected",
+        );
+
+        assert!(data.shared.failed.load(Ordering::Acquire));
+        match error_receiver.try_recv() {
+            Ok(PlayError::StreamRuntimeError(message)) => {
+                assert_eq!(message, "the PipeWire connection was lost");
+            }
+            other => panic!("unexpected stream error: {other:?}"),
+        }
     }
 
     fn sample_at(slice: &[u8], index: usize) -> f32 {
