@@ -17,6 +17,9 @@ use thiserror::Error;
 const STREAM_RESTART_RETRY: Duration = Duration::from_secs(5);
 /// Longest delay between playback restart attempts.
 const STREAM_RESTART_MAX_DELAY: Duration = Duration::from_secs(60);
+/// A restored position within this margin of the end of the track
+/// counts as the end. Resume starts from zero instead.
+const RESUME_END_MARGIN: Duration = Duration::from_secs(5);
 
 /// A stream reader that the daemon opens before it starts playback.
 pub struct StreamReader {
@@ -148,6 +151,10 @@ pub struct PlaybackService<S: AudioSink> {
     streams: Arc<dyn StreamFactory>,
     source_kind: Option<PlaybackSourceKind>,
     restart_pending: Option<Duration>,
+    /// Saved position to resume at on the first start after a
+    /// restore. A tick never consumes this position: the daemon
+    /// stays stopped until the user presses play.
+    resume_pending: Option<Duration>,
     restart_at: Option<Instant>,
     restart_delay: Duration,
 }
@@ -194,6 +201,7 @@ impl<S: AudioSink> PlaybackService<S> {
             streams,
             source_kind: None,
             restart_pending: None,
+            resume_pending: None,
             restart_at: None,
             restart_delay: STREAM_RESTART_RETRY,
         }
@@ -366,6 +374,19 @@ impl<S: AudioSink> PlaybackService<S> {
             .map_or(position, |duration| position.min(duration))
     }
 
+    /// Clamp a restored position to the track duration. Return zero
+    /// when the position is at or near the end of the track, so
+    /// playback does not start at the end of the track.
+    fn resume_position(&self, position: Duration) -> Duration {
+        let position = self.clamp_pending_position(position);
+        let at_end = self
+            .queue
+            .current_track()
+            .and_then(|track| parse_duration(&track.duration))
+            .is_some_and(|duration| position + RESUME_END_MARGIN >= duration);
+        if at_end { Duration::ZERO } else { position }
+    }
+
     fn freeze_position(&mut self) {
         self.position = self.current_position();
         self.started_at = None;
@@ -458,6 +479,7 @@ impl<S: AudioSink> PlaybackService<S> {
         );
         if clears_restart {
             self.restart_pending = None;
+            self.resume_pending = None;
             self.restart_at = None;
             self.restart_delay = STREAM_RESTART_RETRY;
         }
@@ -489,6 +511,9 @@ impl<S: AudioSink> PlaybackService<S> {
                 if self.restart_pending.is_some() {
                     self.restart_pending = Some(self.clamp_pending_position(position));
                     Ok(())
+                } else if self.resume_pending.is_some() {
+                    self.resume_pending = Some(self.clamp_pending_position(position));
+                    Ok(())
                 } else {
                     self.seek(position)
                 }
@@ -499,12 +524,16 @@ impl<S: AudioSink> PlaybackService<S> {
                 }
                 let base = self
                     .restart_pending
+                    .or(self.resume_pending)
                     .unwrap_or_else(|| self.current_position());
                 let position = (base.as_secs_f64() + delta).max(0.0);
                 let position = Duration::try_from_secs_f64(position)
                     .map_err(|_| PlaybackError::InvalidPosition)?;
                 if self.restart_pending.is_some() {
                     self.restart_pending = Some(self.clamp_pending_position(position));
+                    Ok(())
+                } else if self.resume_pending.is_some() {
+                    self.resume_pending = Some(self.clamp_pending_position(position));
                     Ok(())
                 } else {
                     self.seek(position)
@@ -566,6 +595,18 @@ impl<S: AudioSink> PlaybackService<S> {
         // Duration. Fall back to zero instead of panicking.
         self.position =
             Duration::try_from_secs_f64(state.position_secs.max(0.0)).unwrap_or(Duration::ZERO);
+        // Resume at the saved position on the first start after
+        // restore. A tick never consumes this position: the daemon
+        // stays stopped until the user presses play.
+        self.position = self.resume_position(self.position);
+        self.resume_pending = if self.position.is_zero() {
+            None
+        } else {
+            Some(self.position)
+        };
+        self.restart_pending = None;
+        self.restart_at = None;
+        self.restart_delay = STREAM_RESTART_RETRY;
         self.started_at = None;
         self.pending_start = false;
         self.status = PlaybackStatus::Stopped;
@@ -578,6 +619,7 @@ impl<S: AudioSink> PlaybackService<S> {
     }
 
     pub async fn play_playlist(&mut self, tracks: Vec<Track>) -> Result<(), PlaybackError> {
+        self.resume_pending = None;
         self.queue.replace(tracks);
         self.start_current().await
     }
@@ -586,6 +628,7 @@ impl<S: AudioSink> PlaybackService<S> {
         if self.offline && !self.is_cached(&track) {
             return Err(PlaybackError::NotCached);
         }
+        self.resume_pending = None;
         self.queue.play_now(track);
         self.start_current().await
     }
@@ -600,6 +643,7 @@ impl<S: AudioSink> PlaybackService<S> {
         self.queue.remove(index);
         if was_current {
             self.restart_pending = None;
+            self.resume_pending = None;
             self.restart_at = None;
             self.restart_delay = STREAM_RESTART_RETRY;
             self.start_current().await
@@ -624,6 +668,7 @@ impl<S: AudioSink> PlaybackService<S> {
         self.position = Duration::ZERO;
         self.source_kind = None;
         self.restart_pending = None;
+        self.resume_pending = None;
         self.restart_at = None;
         self.restart_delay = STREAM_RESTART_RETRY;
         self.publish_all();
@@ -646,6 +691,7 @@ impl<S: AudioSink> PlaybackService<S> {
         if !self.queue.play_index(index) {
             return Err(PlaybackError::IndexOutOfBounds);
         }
+        self.resume_pending = None;
         self.start_current().await
     }
 
@@ -682,6 +728,7 @@ impl<S: AudioSink> PlaybackService<S> {
     }
 
     pub async fn next_track(&mut self) -> Result<(), PlaybackError> {
+        self.resume_pending = None;
         if self.offline {
             return self.start_next_cached().await;
         }
@@ -698,6 +745,7 @@ impl<S: AudioSink> PlaybackService<S> {
     }
 
     pub async fn previous_track(&mut self) -> Result<(), PlaybackError> {
+        self.resume_pending = None;
         if self.offline {
             return match self.previous_cached_index() {
                 Some(index) => {
@@ -785,6 +833,7 @@ impl<S: AudioSink> PlaybackService<S> {
         {
             self.pending_start = false;
             self.restart_pending = None;
+            self.resume_pending = None;
             self.restart_at = None;
             self.restart_delay = STREAM_RESTART_RETRY;
             let _ = self.next_track().await;
@@ -935,10 +984,16 @@ impl<S: AudioSink> PlaybackService<S> {
         }
         self.publish_all();
 
-        if let Some(position) = self.restart_pending.take() {
+        if let Some(position) = self
+            .restart_pending
+            .take()
+            .or_else(|| self.resume_pending.take())
+        {
             self.restart_at = None;
             self.restart_delay = STREAM_RESTART_RETRY;
             if !position.is_zero() {
+                // A failed seek must not fail the start. A
+                // non-seekable stream starts from zero instead.
                 let _ = self.seek(position);
             }
         }
@@ -965,6 +1020,7 @@ impl<S: AudioSink> PlaybackService<S> {
         self.pending_start = false;
         self.source_kind = None;
         self.restart_pending = None;
+        self.resume_pending = None;
         self.restart_at = None;
         self.restart_delay = STREAM_RESTART_RETRY;
         self.publish_all();
@@ -1027,6 +1083,7 @@ mod tests {
         stream_error: bool,
         position: Option<Duration>,
         play_failures: usize,
+        seek_fails: bool,
         duration: Option<Duration>,
     }
 
@@ -1066,6 +1123,9 @@ mod tests {
 
         fn seek(&mut self, _position: Duration) -> Result<(), Self::Error> {
             self.actions.push("seek");
+            if self.seek_fails {
+                return Err(std::io::Error::other("seek failed"));
+            }
             Ok(())
         }
 
@@ -1852,6 +1912,89 @@ mod tests {
             "position was {restored_position}"
         );
         assert_eq!(restored.snapshot().status, PlaybackStatus::Stopped);
+    }
+
+    #[tokio::test]
+    async fn restore_resumes_at_the_saved_position() {
+        let mut service = service();
+        let state = PersistedState {
+            version: STATE_VERSION,
+            tracks: tracks(1),
+            original_tracks: Vec::new(),
+            current: Some(0),
+            repeat: RepeatMode::Off,
+            shuffle: false,
+            volume: 50,
+            position_secs: 12.0,
+        };
+        service.restore_state(&state).unwrap();
+        assert_eq!(service.snapshot().status, PlaybackStatus::Stopped);
+
+        // A tick must not start playback on its own. Resume is manual.
+        service.tick().await.unwrap();
+        assert_eq!(service.snapshot().status, PlaybackStatus::Stopped);
+        assert!(service.sink.plays.is_empty());
+
+        service.toggle().await.unwrap();
+
+        assert_eq!(service.snapshot().status, PlaybackStatus::Playing);
+        assert_eq!(service.sink.plays.len(), 1);
+        assert!(service.sink.actions.contains(&"seek"));
+        assert!(service.resume_pending.is_none());
+        let position = service.current_position().as_secs_f64();
+        assert!((position - 12.0).abs() < 0.5, "position was {position}");
+    }
+
+    #[tokio::test]
+    async fn restore_near_the_end_of_the_track_starts_from_zero() {
+        // The track lasts 3:00. A position of 179 seconds is within
+        // the end margin, and 999 seconds is past the end.
+        for position_secs in [179.0, 999.0] {
+            let mut service = service();
+            let state = PersistedState {
+                version: STATE_VERSION,
+                tracks: tracks(1),
+                original_tracks: Vec::new(),
+                current: Some(0),
+                repeat: RepeatMode::Off,
+                shuffle: false,
+                volume: 50,
+                position_secs,
+            };
+            service.restore_state(&state).unwrap();
+            assert_eq!(service.snapshot().status, PlaybackStatus::Stopped);
+
+            service.toggle().await.unwrap();
+
+            assert_eq!(service.snapshot().status, PlaybackStatus::Playing);
+            assert!(!service.sink.actions.contains(&"seek"));
+            let position = service.current_position().as_secs_f64();
+            assert!(position < 0.5, "position was {position}");
+        }
+    }
+
+    #[tokio::test]
+    async fn restore_with_a_failed_seek_starts_from_zero() {
+        let mut service = service();
+        service.sink.seek_fails = true;
+        let state = PersistedState {
+            version: STATE_VERSION,
+            tracks: tracks(1),
+            original_tracks: Vec::new(),
+            current: Some(0),
+            repeat: RepeatMode::Off,
+            shuffle: false,
+            volume: 50,
+            position_secs: 12.0,
+        };
+        service.restore_state(&state).unwrap();
+
+        service.toggle().await.unwrap();
+
+        assert_eq!(service.snapshot().status, PlaybackStatus::Playing);
+        assert!(service.sink.actions.contains(&"seek"));
+        let position = service.current_position().as_secs_f64();
+        assert!(position < 0.5, "position was {position}");
     }
 
     #[tokio::test]
