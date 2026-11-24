@@ -72,10 +72,10 @@ routing fallback. See [docs/web.md](web.md).
   reports: `mp4` for YouTube, `mp3`, `m4a`, `ogg` or `flac` for RSS.
 - **RSS feeds**: `rss-feeds.json` in the data directory. It holds feed URLs,
   ETags, Last-Modified values and the episode index.
-- Runtime state: queue, current index, position, volume, shuffle/repeat,
-  written atomically after commands, periodically while the daemon runs and on
-  shutdown, then restored on startup (invalid state is quarantined as
-  `state.json.bad`).
+- Runtime state: queue, current index, current position, per-track positions,
+  volume, shuffle/repeat, written atomically after commands, periodically while
+  the daemon runs and on shutdown, then restored on startup (invalid state is
+  quarantined as `state.json.bad`).
 
 The daemon uses the `com/suorcd/recvrd` directories. On the first start it
 moves the `com/suorcd/ytermusicd` directories to the new paths. It falls back
