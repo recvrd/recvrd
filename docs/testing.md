@@ -14,6 +14,7 @@ nix develop
 | `just check` | `cargo fmt --check`, clippy with `-D warnings`, and `cargo check` |
 | `just test` | Unit tests that need no credentials, network, audio device or DBus |
 | `just test-all` | Includes ignored tests that need real YouTube Music credentials/network |
+| `just ci` | Full CI matrix: Rust, audio, web, Nix, and bindings checks |
 | `just fmt` | Format the workspace |
 | `just clippy` | Clippy only |
 | `just dev` | Run the daemon with the default bind/port |
@@ -132,7 +133,9 @@ Never commit the test account's `headers.txt` or `account_id.txt`.
 ## CI
 
 Each pull request to `main` runs `.github/workflows/ci.yml`. You can also run
-it with `workflow_dispatch`. The `rust` job runs:
+it with `workflow_dispatch`. Draft pull requests run no jobs. Mark the pull
+request ready for review to run the full matrix. Run `just ci` before the push;
+it needs `just web-install` on a new checkout. The `rust` job runs:
 
 - `cargo fmt --all -- --check`
 - `cargo clippy --workspace --all-targets -- -D warnings`
