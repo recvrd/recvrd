@@ -477,11 +477,18 @@ impl<S: AudioSink> PlaybackService<S> {
                 | PlaybackCommand::Clear
                 | PlaybackCommand::SetOffline(_)
         );
+        // Pause never clears the resume position. Pause does nothing
+        // while stopped, and the position is already consumed while
+        // playing. MPRIS Pause reaches this path, so it must keep
+        // the position for the next play.
+        let clears_resume = clears_restart && !matches!(&command, PlaybackCommand::Pause);
         if clears_restart {
             self.restart_pending = None;
-            self.resume_pending = None;
             self.restart_at = None;
             self.restart_delay = STREAM_RESTART_RETRY;
+        }
+        if clears_resume {
+            self.resume_pending = None;
         }
 
         match command {
@@ -1977,6 +1984,121 @@ mod tests {
         assert!(service.sink.actions.contains(&"seek"));
         let position = service.current_position().as_secs_f64();
         assert!((position - 30.0).abs() < 0.5, "position was {position}");
+    }
+
+    #[tokio::test]
+    async fn pause_while_stopped_keeps_the_resume_position() {
+        let mut service = service();
+        let state = PersistedState {
+            version: STATE_VERSION,
+            tracks: tracks(1),
+            original_tracks: Vec::new(),
+            current: Some(0),
+            repeat: RepeatMode::Off,
+            shuffle: false,
+            volume: 50,
+            position_secs: 12.0,
+        };
+        service.restore_state(&state).unwrap();
+
+        // MPRIS Pause reaches handle_command, unlike the REST pause
+        // route, which calls pause directly.
+        service
+            .handle_command(PlaybackCommand::Pause)
+            .await
+            .unwrap();
+        assert_eq!(service.resume_pending, Some(Duration::from_secs(12)));
+
+        service.play().await.unwrap();
+
+        assert!(service.sink.actions.contains(&"seek"));
+        let position = service.current_position().as_secs_f64();
+        assert!((position - 12.0).abs() < 0.5, "position was {position}");
+    }
+
+    #[tokio::test]
+    async fn a_seek_by_before_the_first_start_moves_the_resume_position() {
+        // The track lasts 3:00. A delta of 18 seconds moves the
+        // resume position from 12 to 30 seconds. A large delta
+        // clamps it to the track duration, and a large negative
+        // delta clamps it to zero.
+        for (delta, expected, seeks) in [
+            (18.0, 30.0, true),
+            (999.0, 180.0, true),
+            (-30.0, 0.0, false),
+        ] {
+            let mut service = service();
+            let state = PersistedState {
+                version: STATE_VERSION,
+                tracks: tracks(1),
+                original_tracks: Vec::new(),
+                current: Some(0),
+                repeat: RepeatMode::Off,
+                shuffle: false,
+                volume: 50,
+                position_secs: 12.0,
+            };
+            service.restore_state(&state).unwrap();
+
+            service
+                .handle_command(PlaybackCommand::SeekBy(delta))
+                .await
+                .unwrap();
+            assert_eq!(
+                service.resume_pending,
+                Some(Duration::from_secs_f64(expected))
+            );
+
+            service.play().await.unwrap();
+
+            assert_eq!(service.sink.actions.contains(&"seek"), seeks);
+            let position = service.current_position().as_secs_f64();
+            assert!((position - expected).abs() < 0.5, "position was {position}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_pending_resume_position_waits_for_a_download() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut service = PlaybackService::new(MockSink::default(), dir.path(), 50);
+        service.set_wait_for_downloads(true);
+        let state = PersistedState {
+            version: STATE_VERSION,
+            tracks: tracks(1),
+            original_tracks: Vec::new(),
+            current: Some(0),
+            repeat: RepeatMode::Off,
+            shuffle: false,
+            volume: 50,
+            position_secs: 12.0,
+        };
+        service.restore_state(&state).unwrap();
+        assert_eq!(service.snapshot().status, PlaybackStatus::Stopped);
+
+        service.play().await.unwrap();
+
+        // The track is not cached yet, so playback waits for the
+        // download instead of starting.
+        assert_eq!(service.snapshot().status, PlaybackStatus::Stopped);
+        assert!(service.pending_start);
+        assert!(service.sink.plays.is_empty());
+        assert_eq!(service.resume_pending, Some(Duration::from_secs(12)));
+
+        std::fs::create_dir_all(dir.path().join("downloads/youtube")).unwrap();
+        std::fs::write(dir.path().join("downloads/youtube/video-0.mp4"), b"audio").unwrap();
+        service
+            .set_download_status(
+                &TrackKey::youtube("video-0"),
+                MusicDownloadStatus::Downloaded,
+            )
+            .await;
+
+        assert_eq!(service.snapshot().status, PlaybackStatus::Playing);
+        assert_eq!(service.sink.plays.len(), 1);
+        assert!(service.sink.actions.contains(&"seek"));
+        assert!(service.resume_pending.is_none());
+        let position = service.current_position().as_secs_f64();
+        assert!((position - 12.0).abs() < 0.5, "position was {position}");
     }
 
     #[tokio::test]
