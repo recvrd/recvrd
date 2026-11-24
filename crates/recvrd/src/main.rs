@@ -475,6 +475,7 @@ fn run_serve(
                     let _ = std::fs::rename(&state_path, backup);
                 }
             }
+            service.set_history_path(&paths.history_file());
             service.set_wait_for_downloads(true);
         }
 

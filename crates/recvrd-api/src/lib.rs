@@ -166,6 +166,27 @@ impl Track {
     }
 }
 
+/// One finished or abandoned play from the listen history,
+/// newest first. `played_secs` counts the seconds of the track
+/// played, from the start position to the position reached.
+/// `completed` is true only when the track ended on its own.
+/// `started_at` holds seconds since the Unix epoch.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct HistoryEntry {
+    pub provider: ProviderId,
+    pub track_id: String,
+    pub title: String,
+    pub artist: String,
+    pub album: String,
+    pub duration: String,
+    #[ts(type = "number")]
+    pub started_at: u64,
+    pub played_secs: f64,
+    pub completed: bool,
+}
+
 /// True when the value is false. Serde uses this helper to omit a
 /// false boolean from JSON.
 fn is_false(value: &bool) -> bool {

@@ -1,6 +1,7 @@
 import { vi } from 'vitest';
 import type { CacheScope } from '@api/CacheScope';
 import type { DownloadStatus } from '@api/DownloadStatus';
+import type { HistoryEntry } from '@api/HistoryEntry';
 import type { Playlist } from '@api/Playlist';
 import type { PlaylistDetail } from '@api/PlaylistDetail';
 import type { ProviderInfo } from '@api/ProviderInfo';
@@ -117,6 +118,21 @@ export function makeSearchResults(
   return { tracks, playlists };
 }
 
+export function makeHistoryEntry(overrides: Partial<HistoryEntry> = {}): HistoryEntry {
+  return {
+    provider: 'youtube',
+    track_id: 'v1',
+    title: 'Track v1',
+    artist: 'Artist',
+    album: 'Album',
+    duration: '3:00',
+    started_at: Math.floor(Date.now() / 1000) - 3600,
+    played_secs: 180,
+    completed: true,
+    ...overrides,
+  };
+}
+
 export function makeRssFeed(overrides: Partial<RssFeed> = {}): RssFeed {
   return {
     id: '0123456789abcdef',
@@ -210,6 +226,7 @@ export function makeApi(
       return tracks;
     }),
     queue: vi.fn(async () => queue),
+    history: vi.fn(async () => []),
     playPlaylist: vi.fn(async () => {
       status = makeStatus({
         playback: {

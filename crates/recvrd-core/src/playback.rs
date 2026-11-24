@@ -1,5 +1,6 @@
 use crate::{
     events::{CoreEvent, EventBus, Snapshot},
+    history::{HISTORY_MIN_PLAY_SECS, History, HistoryEntry, now_unix},
     model::{PlaybackSnapshot, PlaybackStatus, Queue, RepeatMode, Track},
     settings::PlaybackSettingsStore,
     state::{PersistedState, STATE_VERSION, StateError},
@@ -20,6 +21,15 @@ const STREAM_RESTART_MAX_DELAY: Duration = Duration::from_secs(60);
 /// A restored position within this margin of the end of the track
 /// counts as the end. Resume starts from zero instead.
 const RESUME_END_MARGIN: Duration = Duration::from_secs(5);
+
+/// A play in progress: the track, when it started, and the
+/// position it started from. The history records the play when it
+/// ends.
+struct CurrentPlay {
+    track: Track,
+    started_at: u64,
+    start_position: Duration,
+}
 
 /// A stream reader that the daemon opens before it starts playback.
 pub struct StreamReader {
@@ -157,6 +167,13 @@ pub struct PlaybackService<S: AudioSink> {
     resume_pending: Option<Duration>,
     restart_at: Option<Instant>,
     restart_delay: Duration,
+    /// Listen history, newest first.
+    history: History,
+    /// History file. The daemon sets this at startup; without it
+    /// the history stays in memory.
+    history_path: Option<PathBuf>,
+    /// The play in progress, if any.
+    current_play: Option<CurrentPlay>,
 }
 
 impl<S: AudioSink> PlaybackService<S> {
@@ -204,6 +221,9 @@ impl<S: AudioSink> PlaybackService<S> {
             resume_pending: None,
             restart_at: None,
             restart_delay: STREAM_RESTART_RETRY,
+            history: History::new(),
+            history_path: None,
+            current_play: None,
         }
     }
 
@@ -355,6 +375,70 @@ impl<S: AudioSink> PlaybackService<S> {
             shuffle: self.queue.shuffle(),
             source_kind: self.source_kind,
         }
+    }
+
+    /// Load the listen history from the state directory. The daemon
+    /// calls this at startup; without it the history stays in memory.
+    pub fn set_history_path(&mut self, path: &Path) {
+        self.history_path = Some(path.to_path_buf());
+        self.history = History::load(path);
+    }
+
+    /// Listen history, newest first.
+    pub fn history(&self) -> Vec<HistoryEntry> {
+        self.history.entries()
+    }
+
+    /// Record the in-progress play when it ends. A play below the
+    /// threshold leaves no record.
+    fn record_current_play(&mut self, completed: bool) {
+        let Some(play) = self.current_play.take() else {
+            return;
+        };
+        let played = self.current_position().saturating_sub(play.start_position);
+        if played.as_secs_f64() < HISTORY_MIN_PLAY_SECS {
+            return;
+        }
+        let entry = HistoryEntry {
+            provider: play.track.provider,
+            track_id: play.track.track_id.clone(),
+            title: play.track.title.clone(),
+            author: play.track.author.clone(),
+            album: play.track.album.clone(),
+            duration: play.track.duration.clone(),
+            started_at: play.started_at,
+            played_secs: played.as_secs_f64(),
+            completed,
+        };
+        let rewrote = self.history.push(entry.clone(), now_unix());
+        if let Some(path) = self.history_path.clone() {
+            let result = if rewrote {
+                self.history.save(&path)
+            } else {
+                History::append_entry(&path, &entry)
+            };
+            if let Err(error) = result {
+                log::warn!("could not write listen history {}: {error}", path.display());
+            }
+        }
+    }
+
+    /// Start the history record for a track that starts to play. A
+    /// stream-error restart keeps the record of the play in progress.
+    fn begin_play(&mut self, track: &Track, was_restart: bool) {
+        if was_restart
+            && self
+                .current_play
+                .as_ref()
+                .is_some_and(|play| play.track.key() == track.key())
+        {
+            return;
+        }
+        self.current_play = Some(CurrentPlay {
+            track: track.clone(),
+            started_at: now_unix(),
+            start_position: self.current_position(),
+        });
     }
 
     /// Current position, including the time elapsed since the last play,
@@ -618,6 +702,7 @@ impl<S: AudioSink> PlaybackService<S> {
         self.pending_start = false;
         self.status = PlaybackStatus::Stopped;
         self.source_kind = None;
+        self.current_play = None;
         self.sink
             .set_volume(self.volume)
             .map_err(|error| PlaybackError::Sink(error.to_string()))?;
@@ -669,6 +754,7 @@ impl<S: AudioSink> PlaybackService<S> {
     }
 
     pub fn clear(&mut self) -> Result<(), PlaybackError> {
+        self.record_current_play(false);
         let _ = self.sink.stop();
         self.queue.clear();
         self.status = PlaybackStatus::Stopped;
@@ -828,6 +914,7 @@ impl<S: AudioSink> PlaybackService<S> {
     }
 
     pub async fn on_track_finished(&mut self) -> Result<(), PlaybackError> {
+        self.record_current_play(true);
         if let Some(track) = self.queue.current_track() {
             self.events.publish(CoreEvent::TrackEnded {
                 track_id: track.key(),
@@ -917,6 +1004,11 @@ impl<S: AudioSink> PlaybackService<S> {
     }
 
     async fn start_current_inner(&mut self, track: Track) -> Result<(), PlaybackError> {
+        // A new track ends the in-progress play. A stream-error
+        // restart keeps the same play: the restart flag is still set.
+        if self.restart_pending.is_none() {
+            self.record_current_play(false);
+        }
         if let Some(path) = track
             .key()
             .existing_audio_file(&self.cache_dir.join("downloads"))
@@ -988,6 +1080,7 @@ impl<S: AudioSink> PlaybackService<S> {
         track: &Track,
         source_kind: PlaybackSourceKind,
     ) -> Result<(), PlaybackError> {
+        let was_restart = self.restart_pending.is_some();
         self.status = PlaybackStatus::Playing;
         self.position = Duration::ZERO;
         self.started_at = Some(Instant::now());
@@ -1012,6 +1105,7 @@ impl<S: AudioSink> PlaybackService<S> {
                 let _ = self.seek(position);
             }
         }
+        self.begin_play(track, was_restart);
         Ok(())
     }
 
@@ -1028,6 +1122,7 @@ impl<S: AudioSink> PlaybackService<S> {
     }
 
     fn stop_playback(&mut self) {
+        self.record_current_play(false);
         let _ = self.sink.stop();
         self.status = PlaybackStatus::Stopped;
         self.position = Duration::ZERO;
@@ -1270,6 +1365,122 @@ mod tests {
         service.play_playlist(tracks(2)).await.unwrap();
         service.on_track_finished().await.unwrap();
         assert_eq!(service.snapshot().current.unwrap().track_id, "video-1");
+    }
+
+    #[tokio::test]
+    async fn finished_track_is_recorded() {
+        let mut service = service();
+        service.play_playlist(tracks(2)).await.unwrap();
+        service.seek(Duration::from_secs(45)).unwrap();
+        service.on_track_finished().await.unwrap();
+
+        let history = service.history();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].track_id, "video-0");
+        assert_eq!(history[0].title, "Track 0");
+        assert_eq!(history[0].author, "Artist");
+        assert!(history[0].completed);
+        assert!(history[0].started_at > 0);
+        assert!((history[0].played_secs - 45.0).abs() < 1.0);
+    }
+
+    #[tokio::test]
+    async fn short_play_is_not_recorded() {
+        let mut service = service();
+        service.play_playlist(tracks(2)).await.unwrap();
+        service.seek(Duration::from_secs(10)).unwrap();
+        service.on_track_finished().await.unwrap();
+
+        assert!(service.history().is_empty());
+    }
+
+    #[tokio::test]
+    async fn skipped_track_is_recorded_when_past_threshold() {
+        let mut service = service();
+        service.play_playlist(tracks(2)).await.unwrap();
+        service.seek(Duration::from_secs(45)).unwrap();
+        service.next_track().await.unwrap();
+
+        let history = service.history();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].track_id, "video-0");
+        assert!(!history[0].completed);
+        assert!((history[0].played_secs - 45.0).abs() < 1.0);
+    }
+
+    #[tokio::test]
+    async fn skipped_track_below_threshold_is_not_recorded() {
+        let mut service = service();
+        service.play_playlist(tracks(2)).await.unwrap();
+        service.seek(Duration::from_secs(10)).unwrap();
+        service.next_track().await.unwrap();
+
+        assert!(service.history().is_empty());
+    }
+
+    #[tokio::test]
+    async fn stop_records_an_abandoned_play() {
+        let mut service = service();
+        service.play_playlist(tracks(2)).await.unwrap();
+        service.seek(Duration::from_secs(45)).unwrap();
+        service.stop();
+
+        let history = service.history();
+        assert_eq!(history.len(), 1);
+        assert!(!history[0].completed);
+    }
+
+    #[tokio::test]
+    async fn stream_error_restart_keeps_one_play() {
+        let mut service = service();
+        service.play_playlist(tracks(2)).await.unwrap();
+        service.sink.position = Some(Duration::from_secs(30));
+        service.sink.stream_error = true;
+        service.tick().await.unwrap();
+        assert_eq!(service.sink.plays.len(), 2);
+
+        service.seek(Duration::from_secs(45)).unwrap();
+        service.on_track_finished().await.unwrap();
+
+        let history = service.history();
+        assert_eq!(history.len(), 1);
+        assert!(history[0].completed);
+        assert!((history[0].played_secs - 45.0).abs() < 1.0);
+    }
+
+    #[tokio::test]
+    async fn repeat_one_records_each_completed_play() {
+        let mut service = service();
+        service.play_playlist(tracks(2)).await.unwrap();
+        service.set_repeat(RepeatMode::One);
+        service.seek(Duration::from_secs(45)).unwrap();
+        service.on_track_finished().await.unwrap();
+        service.seek(Duration::from_secs(45)).unwrap();
+        service.on_track_finished().await.unwrap();
+
+        let history = service.history();
+        assert_eq!(history.len(), 2);
+        assert!(history.iter().all(|entry| entry.completed));
+        assert!(history.iter().all(|entry| entry.track_id == "video-0"));
+    }
+
+    #[tokio::test]
+    async fn history_survives_a_new_service() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("history.jsonl");
+        let mut first = service();
+        first.set_history_path(&path);
+        first.play_playlist(tracks(2)).await.unwrap();
+        first.seek(Duration::from_secs(45)).unwrap();
+        first.on_track_finished().await.unwrap();
+        assert!(path.exists());
+
+        let mut restarted = service();
+        restarted.set_history_path(&path);
+        let history = restarted.history();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].track_id, "video-0");
+        assert!(history[0].completed);
     }
 
     #[tokio::test]

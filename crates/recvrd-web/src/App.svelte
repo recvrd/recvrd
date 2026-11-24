@@ -9,6 +9,7 @@
   import ConnectionBanner from './lib/components/ConnectionBanner.svelte';
   import FullPlayer from './lib/components/FullPlayer.svelte';
   import HelpOverlay from './lib/components/HelpOverlay.svelte';
+  import HistoryView from './lib/components/HistoryView.svelte';
   import LibraryView from './lib/components/LibraryView.svelte';
   import NowPlaying from './lib/components/NowPlaying.svelte';
   import OfflineHelp from './lib/components/OfflineHelp.svelte';
@@ -25,7 +26,9 @@
       ? 'Library'
       : store.view.kind === 'queue'
         ? 'Queue'
-        : (store.playlist?.playlist.name ?? store.view.name ?? 'Playlist'),
+        : store.view.kind === 'history'
+          ? 'Recently played'
+          : (store.playlist?.playlist.name ?? store.view.name ?? 'Playlist'),
   );
 
   const auth = $derived(store.activeProviderInfo?.auth ?? store.status?.auth ?? null);
@@ -174,6 +177,8 @@
       >
         {#if store.view.kind === 'queue'}
           <QueueView {store} />
+        {:else if store.view.kind === 'history'}
+          <HistoryView {store} />
         {:else}
           <LibraryView {store} />
         {/if}

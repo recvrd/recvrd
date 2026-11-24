@@ -5,6 +5,7 @@ pub mod auth;
 pub mod config;
 pub mod cover;
 pub mod events;
+pub mod history;
 pub mod model;
 pub mod paths;
 pub mod playback;
@@ -15,6 +16,9 @@ pub use auth::{Auth, AuthError, AuthState, AuthStatus, LoadedAuth, resolve_auth}
 pub use config::{ConfigError, DaemonConfig, Downloader, PodverseConfig, is_loopback_bind};
 pub use cover::CoverFetcher;
 pub use events::{CoreEvent, EventBus, EventEnvelope, Snapshot};
+pub use history::{
+    HISTORY_MAX_ENTRIES, HISTORY_MIN_PLAY_SECS, HISTORY_RETENTION_SECS, History, HistoryEntry,
+};
 pub use model::{
     PlaybackSnapshot, PlaybackStatus, Queue, QueueItem, QueueSnapshot, RepeatMode, Track,
 };

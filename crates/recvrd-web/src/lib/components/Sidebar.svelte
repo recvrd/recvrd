@@ -6,6 +6,7 @@
 
   const libraryActive = $derived(store.view.kind === 'library');
   const queueActive = $derived(store.view.kind === 'queue');
+  const historyActive = $derived(store.view.kind === 'history');
 
   function openLiked(): void {
     store.openLibrary();
@@ -42,6 +43,14 @@
     >
       <span aria-hidden="true">☰</span> Queue
       <span class="count">{store.queue?.items.length ?? 0}</span>
+    </button>
+    <button
+      class="nav-item"
+      class:active={historyActive}
+      aria-current={historyActive ? 'page' : undefined}
+      onclick={() => void store.openHistory()}
+    >
+      <span aria-hidden="true">◷</span> Recently played
     </button>
   </nav>
 
