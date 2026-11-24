@@ -1,5 +1,5 @@
 //! YouTube Music provider for recvrd: API client, cover fetcher,
-//! downloader and the legacy TUI conversion helpers.
+//! downloader and track conversion helpers.
 
 mod api;
 mod cover;

@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Removed
+
+- Remove the legacy `ytermusic` TUI. `recvc` is the terminal client.
+
 ## 0.7.0 — 2026-11-22
 
 ### Added

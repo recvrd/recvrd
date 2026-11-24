@@ -34,7 +34,7 @@ pub struct Paths {
 
 impl Paths {
     /// Discover the platform directories for `recvrd`, the previous
-    /// `ytermusicd` install and the legacy TUI.
+    /// `ytermusicd` install and the upstream TUI.
     pub fn discover() -> Result<Self, PathsError> {
         let current =
             ProjectDirs::from(QUALIFIER, ORGANIZATION, APPLICATION).ok_or(PathsError::NoHome)?;
@@ -206,7 +206,7 @@ impl Paths {
         self.state_dir.join("recvrd.log")
     }
 
-    /// Project directories used by the legacy TUI, kept for migrations.
+    /// Project directories used by the upstream TUI, kept for migrations.
     pub fn legacy_project_dirs() -> Option<ProjectDirs> {
         ProjectDirs::from(QUALIFIER, LEGACY_ORGANIZATION, LEGACY_APPLICATION)
     }

@@ -39,7 +39,6 @@ SIGINT/SIGTERM. State is owned by the daemon, not by an individual client.
 | `crates/database` | Current | Local download database |
 | `crates/download-manager` | Current | Download queue |
 | `crates/common-structs` | Current | Shared status types |
-| `crates/ytermusic` | Current | Legacy TUI client |
 
 ## Data flow
 
@@ -77,12 +76,10 @@ routing fallback. See [docs/web.md](web.md).
   written atomically after commands, periodically while the daemon runs and on
   shutdown, then restored on startup (invalid state is quarantined as
   `state.json.bad`).
-- **Legacy**: `last-playlist.json` from the TUI.
 
 The daemon uses the `com/suorcd/recvrd` directories. On the first start it
 moves the `com/suorcd/ytermusicd` directories to the new paths. It falls back
-to the upstream `com/ccgauche/ytermusic` headers file with a warning. The
-legacy TUI keeps its existing cache/config directories.
+to the upstream `com/ccgauche/ytermusic` headers file with a warning.
 
 ## Downloads
 

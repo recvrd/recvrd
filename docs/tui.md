@@ -4,9 +4,6 @@
 daemon owns playback, queue, downloads and auth. The client uses the REST and
 SSE API, so it shows the same state as the web UI, MPRIS and the MCP proxy.
 
-The legacy `ytermusic` TUI is a separate standalone client. It does not share
-state with the daemon. See [legacy-tui.md](legacy-tui.md) for that client.
-
 ## Requirements
 
 - A running `recvrd` daemon.
@@ -123,7 +120,6 @@ half-block renderer.
 
 - The client has no lyrics view.
 - The client never downloads audio files. The daemon owns the download queue.
-- The legacy TUI and this client have separate state.
 - The client asks the daemon for a cover when the current track changes. A
   missing cover shows a placeholder.
 

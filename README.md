@@ -26,7 +26,6 @@ serves cached content without provider calls. Clients are thin:
 - **MCP** — a stdio proxy exposing search/playback tools to assistants.
 - **MPRIS** — desktop media controls with cover art (`playerctl`, shell media
   widgets).
-- **Legacy TUI** — the existing `ytermusic` client remains available.
 
 The API is the contract. State and DTOs live in the daemon/API crates; the web
 UI, terminal client and MCP proxy are clients.
@@ -124,8 +123,7 @@ It validates the cookie and `SAPISID` at startup. It also reads the YouTube
 Music login state. An expired session leaves search and playback available.
 The library and playlist actions fail with an `auth_expired` error until you
 refresh `headers.txt` and restart the daemon. The daemon never prompts on
-stdin. The legacy TUI shares the validation and still checks `./headers.txt`
-first.
+stdin.
 
 Brand accounts: copy the account ID from `myaccount.google.com` (the number
 after `/b/`) into `account_id.txt` next to `headers.txt`.
@@ -199,7 +197,6 @@ just test
 - `crates/recvrd-web` — Svelte 5 web UI (embedded in the daemon)
 - `crates/recvrd-client` — shared HTTP/SSE client for the daemon
 - `crates/recvc` — terminal client (`recvc`)
-- `crates/ytermusic` — legacy TUI client
 - `crates/ytpapi2` — YouTube Music API client
 - `crates/provider-youtube` — YouTube Music provider: API client, cover fetcher and downloads
 - `crates/provider-rss` — RSS provider: feed parser, store, fetcher and downloader
@@ -293,9 +290,10 @@ release.
 
 ## Migrating from upstream ytermusic
 
-The legacy TUI and the daemon use different XDG directories. The daemon reads a
-legacy `com/ccgauche/ytermusic/headers.txt` with a warning. It does not import
-the TUI playlist file or the TUI queue. Downloaded files are not moved.
+The upstream `ytermusic` TUI and the daemon use different XDG directories. The
+daemon reads a legacy `com/ccgauche/ytermusic/headers.txt` with a warning. It
+does not import the upstream playlist file or queue. Downloaded files are not
+moved.
 
 To migrate:
 
@@ -303,8 +301,7 @@ To migrate:
 2. Copy downloaded files to `$XDG_CACHE_HOME/recvrd/downloads/`.
 3. Start the daemon and select a playlist in the web UI.
 
-The legacy `ytermusic` binary still works. The `recvc` client uses the
-daemon, so it does not need migration.
+The `recvc` client uses the daemon, so it does not need migration.
 
 ## Terminal client
 
@@ -312,12 +309,6 @@ daemon, so it does not need migration.
 queue and playback state as the web UI. It supports vim keys, mouse actions,
 cover art and playlist edits. See [docs/tui.md](docs/tui.md) for keys, mouse
 actions and limits.
-
-## Legacy TUI
-
-The upstream TUI is still built as `ytermusic`. It is a standalone client and
-does not share state with the daemon. See [docs/legacy-tui.md](docs/legacy-tui.md)
-for its features, installation and keybindings.
 
 ## License and attribution
 
