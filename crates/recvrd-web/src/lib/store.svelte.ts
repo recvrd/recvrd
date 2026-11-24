@@ -808,11 +808,7 @@ export class AppStore {
   async togglePlayback(): Promise<void> {
     const playback = this.status?.playback;
     if (!playback) return;
-    if (playback.state === 'stopped') {
-      const track = playback.current;
-      if (track) await this.playTrack(track);
-      return;
-    }
+    if (playback.state === 'stopped' && !playback.current) return;
     const wasPlaying = playback.state === 'playing';
     this.patchPlayback({ state: wasPlaying ? 'paused' : 'playing' });
     try {

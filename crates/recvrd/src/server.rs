@@ -1177,7 +1177,7 @@ async fn resume<S: AudioSink + Send + 'static>(
     State(state): State<AppState<S>>,
 ) -> Result<Json<Status>, ApiFailure> {
     let mut playback = state.playback.lock().await;
-    playback.resume().map_err(playback_failure)?;
+    playback.play().await.map_err(playback_failure)?;
     Ok(Json(status_from_parts(
         &state,
         &playback.snapshot(),
@@ -1237,7 +1237,10 @@ async fn seek<S: AudioSink + Send + 'static>(
         }
     };
     let mut playback = state.playback.lock().await;
-    playback.seek(position).map_err(playback_failure)?;
+    playback
+        .handle_command(PlaybackCommand::Seek(position))
+        .await
+        .map_err(playback_failure)?;
     Ok(Json(status_from_parts(
         &state,
         &playback.snapshot(),

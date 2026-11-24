@@ -90,7 +90,7 @@ prompt. A session that expires during pagination ends the load with
 | POST | `/api/play/playlist` | Replace the queue with a playlist and play (`{playlist_id, provider}`) |
 | POST | `/api/play/track` | Play a track immediately |
 | POST | `/api/pause` | Pause (idempotent) |
-| POST | `/api/resume` | Resume (idempotent) |
+| POST | `/api/resume` | Resume or start the current track (idempotent) |
 | POST | `/api/next` | Next track, respecting repeat/shuffle |
 | POST | `/api/previous` | Previous track, respecting repeat/shuffle |
 | POST | `/api/volume` | Set volume 0–100 (clamped) |

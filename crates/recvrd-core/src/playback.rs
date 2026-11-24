@@ -503,7 +503,7 @@ impl<S: AudioSink> PlaybackService<S> {
             }
             PlaybackCommand::PlayIndex(index) => self.play_index(index).await,
             PlaybackCommand::Pause => self.pause(),
-            PlaybackCommand::Resume => self.resume(),
+            PlaybackCommand::Resume => self.play().await,
             PlaybackCommand::Toggle => self.toggle().await,
             PlaybackCommand::Next => self.next_track().await,
             PlaybackCommand::Previous => self.previous_track().await,
@@ -717,6 +717,17 @@ impl<S: AudioSink> PlaybackService<S> {
             self.publish_playback();
         }
         Ok(())
+    }
+
+    /// Play: no-op while playing, resume while paused, and start the
+    /// current track while stopped. This is the client "play" action;
+    /// it keeps a restored `resume_pending` position for the first start.
+    pub async fn play(&mut self) -> Result<(), PlaybackError> {
+        match self.status {
+            PlaybackStatus::Playing => Ok(()),
+            PlaybackStatus::Paused => self.resume(),
+            PlaybackStatus::Stopped => self.start_current().await,
+        }
     }
 
     pub async fn toggle(&mut self) -> Result<(), PlaybackError> {
@@ -984,11 +995,8 @@ impl<S: AudioSink> PlaybackService<S> {
         }
         self.publish_all();
 
-        if let Some(position) = self
-            .restart_pending
-            .take()
-            .or_else(|| self.resume_pending.take())
-        {
+        let resume_position = self.resume_pending.take();
+        if let Some(position) = self.restart_pending.take().or(resume_position) {
             self.restart_at = None;
             self.restart_delay = STREAM_RESTART_RETRY;
             if !position.is_zero() {
@@ -1915,7 +1923,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn restore_resumes_at_the_saved_position() {
+    async fn restore_resumes_at_the_saved_position_when_play_is_pressed() {
         let mut service = service();
         let state = PersistedState {
             version: STATE_VERSION,
@@ -1935,7 +1943,7 @@ mod tests {
         assert_eq!(service.snapshot().status, PlaybackStatus::Stopped);
         assert!(service.sink.plays.is_empty());
 
-        service.toggle().await.unwrap();
+        service.play().await.unwrap();
 
         assert_eq!(service.snapshot().status, PlaybackStatus::Playing);
         assert_eq!(service.sink.plays.len(), 1);
@@ -1943,6 +1951,32 @@ mod tests {
         assert!(service.resume_pending.is_none());
         let position = service.current_position().as_secs_f64();
         assert!((position - 12.0).abs() < 0.5, "position was {position}");
+    }
+
+    #[tokio::test]
+    async fn a_seek_before_the_first_start_moves_the_resume_position() {
+        let mut service = service();
+        let state = PersistedState {
+            version: STATE_VERSION,
+            tracks: tracks(1),
+            original_tracks: Vec::new(),
+            current: Some(0),
+            repeat: RepeatMode::Off,
+            shuffle: false,
+            volume: 50,
+            position_secs: 12.0,
+        };
+        service.restore_state(&state).unwrap();
+
+        service
+            .handle_command(PlaybackCommand::Seek(Duration::from_secs(30)))
+            .await
+            .unwrap();
+        service.play().await.unwrap();
+
+        assert!(service.sink.actions.contains(&"seek"));
+        let position = service.current_position().as_secs_f64();
+        assert!((position - 30.0).abs() < 0.5, "position was {position}");
     }
 
     #[tokio::test]

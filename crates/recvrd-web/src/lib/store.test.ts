@@ -91,6 +91,22 @@ describe('AppStore', () => {
     store.dispose();
   });
 
+  it('starts a stopped track through resume so the saved position is kept', async () => {
+    const { api, store } = setup();
+    const current = makeTrack('v1');
+    const stopped = makeStatus({
+      playback: { ...makeStatus().playback, state: 'stopped', current },
+    });
+    vi.mocked(api.status).mockResolvedValue(stopped);
+    await store.init();
+
+    await store.togglePlayback();
+
+    expect(api.resume).toHaveBeenCalledOnce();
+    expect(api.playTrack).not.toHaveBeenCalled();
+    store.dispose();
+  });
+
   it('refreshes status and queue after the event stream reconnects', async () => {
     const { api, store, sources } = setup();
     await store.init();
