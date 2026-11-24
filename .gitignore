@@ -1,6 +1,5 @@
 /target
 /data 
-ytermusic.exe
 headers.txt
 account_id.txt
 /player/target
@@ -9,7 +8,6 @@ account_id.txt
 /rustube/target
 /log.txt
 /music_renamer
-last-playlist.json
 muex
 cssparser
 

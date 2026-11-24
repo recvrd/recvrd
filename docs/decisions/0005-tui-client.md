@@ -1,6 +1,6 @@
 # 0005 — Terminal client is a daemon client
 
-**Status:** Accepted
+**Status:** Superseded by #209
 
 **Date:** 2026-11-15
 

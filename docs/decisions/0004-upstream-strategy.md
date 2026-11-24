@@ -85,7 +85,7 @@ gh pr list -R ccgauche/ytermusic --state open
 - The fork can move quickly without waiting on upstream review.
 - Divergence grows; generic fixes must be kept isolated and documented so they
   are easy to upstream later.
-- Upstream merges may conflict with the legacy TUI; CI and the test workflow
+- Upstream merges may conflict with the fork; CI and the test workflow
   guard the merge.
 - Attribution and license obligations remain in [NOTICE](../../NOTICE) and
   [LICENCE](../../LICENCE).
