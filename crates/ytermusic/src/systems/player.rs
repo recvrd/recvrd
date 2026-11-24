@@ -1,11 +1,12 @@
 use std::{
     collections::{HashMap, VecDeque},
     sync::atomic::Ordering,
+    time::Duration,
 };
 
 use common_structs::{MusicDownloadStatus, TrackKey};
 use flume::{Receiver, Sender, unbounded};
-use log::error;
+use log::{error, warn};
 use player::{PlayError, Player, PlayerOptions};
 
 use ytpapi2::YoutubeMusicVideoRef;
@@ -18,6 +19,36 @@ use crate::{
     systems::DOWNLOAD_MANAGER,
     term::{ManagerMessage, Screens, list_selector::ListSelector, playlist::PLAYER_RUNNING},
 };
+
+/// Apply a saved position after a rebuilt player starts.
+fn apply_restore_position(
+    restore: &mut Option<Duration>,
+    seek: impl FnOnce(Duration) -> Result<(), PlayError>,
+) {
+    if let Some(position) = restore.take()
+        && let Err(error) = seek(position)
+    {
+        warn!("could not restore the playback position: {error:?}");
+    }
+}
+
+/// Apply the saved position only after playback starts. A failed play clears it.
+fn apply_after_play(
+    restore: &mut Option<Duration>,
+    play_result: Result<(), PlayError>,
+    seek: impl FnOnce(Duration) -> Result<(), PlayError>,
+) -> Result<(), PlayError> {
+    match play_result {
+        Ok(()) => {
+            apply_restore_position(restore, seek);
+            Ok(())
+        }
+        Err(error) => {
+            *restore = None;
+            Err(error)
+        }
+    }
+}
 
 pub struct PlayerState {
     pub goto: Screens,
@@ -32,6 +63,8 @@ pub struct PlayerState {
     pub soundaction_sender: Sender<SoundAction>,
     pub soundaction_receiver: Receiver<SoundAction>,
     pub stream_error_receiver: Receiver<PlayError>,
+    /// Position to restore after the next track starts.
+    pub restore_position: Option<Duration>,
     last_download_list: Vec<String>,
 }
 
@@ -64,6 +97,7 @@ impl PlayerState {
             list: Vec::new(),
             current: 0,
             rtcurrent: None,
+            restore_position: None,
             last_download_list: Vec::new(),
         }
     }
@@ -97,7 +131,9 @@ impl PlayerState {
     pub fn update(&mut self) {
         PLAYER_RUNNING.store(self.current().is_some(), Ordering::SeqCst);
         self.update_controls();
-        self.handle_stream_errors();
+        if self.handle_stream_errors() {
+            return;
+        }
         if self.current > self.list.len() {
             self.current = self.list.len();
         }
@@ -111,7 +147,9 @@ impl PlayerState {
             if self.is_current_downloaded() && self.rtcurrent.as_ref() == self.current() {
                 self.set_relative_current(1);
             }
-            self.handle_stream_errors();
+            if self.handle_stream_errors() {
+                return;
+            }
             self.update_controls();
             // If the current song is finished, we play the next one but if the next one has failed to download, we skip it
             // TODO(optimize this)
@@ -131,38 +169,48 @@ impl PlayerState {
                 let k = video
                     .key()
                     .download_file(&CACHE_DIR.join("downloads"), "mp4");
-                if let Err(e) = self.sink.play(k.as_path()) {
-                    if matches!(e, PlayError::DecoderError(_)) {
-                        // Cleaning the file
+                let play_result = self.sink.play(k.as_path());
+                let restore = &mut self.restore_position;
+                let sink = &mut self.sink;
+                match apply_after_play(restore, play_result, |position| sink.try_seek_to(position))
+                {
+                    Ok(()) => {}
+                    Err(e) => {
+                        if matches!(e, PlayError::DecoderError(_)) {
+                            // Cleaning the file
 
-                        if let Err(error) = DATABASE.remove_video(&video.key()) {
-                            error!("could not remove video from database: {error}");
+                            if let Err(error) = DATABASE.remove_video(&video.key()) {
+                                error!("could not remove video from database: {error}");
+                            }
+                            handle_error(
+                                &self.updater,
+                                "invalid cleaning MP4",
+                                std::fs::remove_file(k),
+                            );
+                            handle_error(
+                                &self.updater,
+                                "invalid cleaning JSON",
+                                std::fs::remove_file(
+                                    video
+                                        .key()
+                                        .download_file(&CACHE_DIR.join("downloads"), "json"),
+                                ),
+                            );
+                            self.current = 0;
+                            if let Err(error) = DATABASE.write() {
+                                error!("could not save database: {error}");
+                            }
+                        } else {
+                            self.updater
+                                .send(ManagerMessage::PassTo(
+                                    Screens::DeviceLost,
+                                    Box::new(ManagerMessage::Error(
+                                        format!("{e:?}"),
+                                        Box::new(None),
+                                    )),
+                                ))
+                                .unwrap();
                         }
-                        handle_error(
-                            &self.updater,
-                            "invalid cleaning MP4",
-                            std::fs::remove_file(k),
-                        );
-                        handle_error(
-                            &self.updater,
-                            "invalid cleaning JSON",
-                            std::fs::remove_file(
-                                video
-                                    .key()
-                                    .download_file(&CACHE_DIR.join("downloads"), "json"),
-                            ),
-                        );
-                        self.current = 0;
-                        if let Err(error) = DATABASE.write() {
-                            error!("could not save database: {error}");
-                        }
-                    } else {
-                        self.updater
-                            .send(ManagerMessage::PassTo(
-                                Screens::DeviceLost,
-                                Box::new(ManagerMessage::Error(format!("{e:?}"), Box::new(None))),
-                            ))
-                            .unwrap();
                     }
                 }
             }
@@ -188,11 +236,20 @@ impl PlayerState {
         }
     }
 
-    fn handle_stream_errors(&self) {
+    fn handle_stream_errors(&mut self) -> bool {
+        let mut failed = false;
+
         while let Ok(e) = self.stream_error_receiver.try_recv() {
-            error!("Stream error: {:?}", e);
-            handle_error(&self.updater, "audio device stream error", Err(e));
+            if matches!(e, PlayError::StreamRuntimeError(_)) {
+                error!("Stream error: {:?}", e);
+                failed = true;
+                handle_error(&self.updater, "audio device stream error", Err(e));
+            } else {
+                warn!("audio error: {:?}", e);
+            }
         }
+
+        failed
     }
     fn update_controls(&mut self) {
         let current = self.current().cloned();
@@ -207,4 +264,83 @@ impl PlayerState {
 pub fn player_system(updater: Sender<ManagerMessage>) -> (Sender<SoundAction>, PlayerState) {
     let (tx, rx) = flume::unbounded::<SoundAction>();
     (tx.clone(), PlayerState::new(tx, rx, updater))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+
+    #[test]
+    fn restore_position_seeks_once() {
+        let mut restore = Some(Duration::from_secs(30));
+        let seen = Cell::new(None);
+
+        apply_restore_position(&mut restore, |position| {
+            seen.set(Some(position));
+            Ok(())
+        });
+
+        assert_eq!(seen.get(), Some(Duration::from_secs(30)));
+        assert_eq!(restore, None);
+    }
+
+    #[test]
+    fn restore_position_skips_an_empty_value() {
+        let mut restore = None;
+        let called = Cell::new(false);
+
+        apply_restore_position(&mut restore, |_| {
+            called.set(true);
+            Ok(())
+        });
+
+        assert!(!called.get());
+        assert_eq!(restore, None);
+    }
+
+    #[test]
+    fn restore_position_clears_after_a_failure() {
+        let mut restore = Some(Duration::from_secs(5));
+
+        apply_restore_position(&mut restore, |_| {
+            Err(PlayError::Io(std::io::Error::other("seek failed")))
+        });
+
+        assert_eq!(restore, None);
+    }
+
+    #[test]
+    fn a_successful_play_applies_the_restore_position() {
+        let mut restore = Some(Duration::from_secs(30));
+        let seen = Cell::new(None);
+
+        let result = apply_after_play(&mut restore, Ok(()), |position| {
+            seen.set(Some(position));
+            Ok(())
+        });
+
+        assert!(result.is_ok());
+        assert_eq!(seen.get(), Some(Duration::from_secs(30)));
+        assert_eq!(restore, None);
+    }
+
+    #[test]
+    fn a_failed_play_clears_the_restore_position_without_seeking() {
+        let mut restore = Some(Duration::from_secs(30));
+        let called = Cell::new(false);
+
+        let result = apply_after_play(
+            &mut restore,
+            Err(PlayError::Io(std::io::Error::other("play failed"))),
+            |_| {
+                called.set(true);
+                Ok(())
+            },
+        );
+
+        assert!(result.is_err());
+        assert!(!called.get());
+        assert_eq!(restore, None);
+    }
 }

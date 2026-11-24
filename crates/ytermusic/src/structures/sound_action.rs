@@ -19,7 +19,6 @@ pub enum SoundAction {
     SetVolume(f32),
     Cleanup,
     PlayPause,
-    RestartPlayer,
     Plus,
     Minus,
     /// Seek to a specific time in the current song in seconds
@@ -41,6 +40,30 @@ pub enum SoundAction {
 }
 
 impl SoundAction {
+    /// Rebuild the player and replay the current track.
+    ///
+    /// Return true when the player is rebuilt. On failure the error handler
+    /// switches to the DeviceLost screen and this function returns false.
+    pub fn restart_player(player: &mut PlayerState) -> bool {
+        let position = player.sink.elapsed();
+        let Some(sink) =
+            handle_error_option(&player.updater, "update player", player.sink.update())
+        else {
+            return false;
+        };
+        player.sink = sink;
+        if let Some(e) = player.current().cloned() {
+            player.restore_position = if position.is_zero() {
+                None
+            } else {
+                Some(position)
+            };
+            Self::AddVideoUnary(e).apply_sound_action(player);
+        } else {
+            player.restore_position = None;
+        }
+        true
+    }
     fn insert(player: &mut PlayerState, video: TrackKey, status: MusicDownloadStatus) {
         if matches!(
             player.music_status.get(&video),
@@ -73,11 +96,13 @@ impl SoundAction {
                 player.list.clear();
                 player.current = 0;
                 player.music_status.clear();
+                player.restore_position = None;
                 player.sink.stop();
             }
             Self::Plus => player.sink.volume_up(),
             Self::Minus => player.sink.volume_down(),
             Self::Next(a) => {
+                player.restore_position = None;
                 player.sink.stop();
 
                 player.set_relative_current(a as _);
@@ -101,16 +126,9 @@ impl SoundAction {
                 }
             }
             Self::Previous(a) => {
+                player.restore_position = None;
                 player.set_relative_current(-(a as isize));
                 player.sink.stop();
-            }
-            Self::RestartPlayer => {
-                player.sink =
-                    handle_error_option(&player.updater, "update player", player.sink.update())
-                        .unwrap();
-                if let Some(e) = player.current().cloned() {
-                    Self::AddVideoUnary(e).apply_sound_action(player);
-                }
             }
             Self::AddVideoUnary(video) => {
                 Self::insert(

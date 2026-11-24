@@ -265,7 +265,7 @@ the daemon log. The web UI shows the message in a toast.
 **The web UI shows "not built".** Run `just web-install && just web-check`.
 Then restart the daemon.
 
-**There is no audio.** Check the ALSA or PipeWire device. Run `aplay -l` and
+**There is no audio.** Check the PipeWire device. Run `wpctl status` and
 check the daemon log. The first start can wait for a download.
 
 **MPRIS does not appear in `playerctl -l`.** Check the D-Bus session and set

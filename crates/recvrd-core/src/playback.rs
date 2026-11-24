@@ -13,6 +13,11 @@ use std::{
 };
 use thiserror::Error;
 
+/// Delay before the playback service retries a track after a failed restart.
+const STREAM_RESTART_RETRY: Duration = Duration::from_secs(5);
+/// Longest delay between playback restart attempts.
+const STREAM_RESTART_MAX_DELAY: Duration = Duration::from_secs(60);
+
 /// A stream reader that the daemon opens before it starts playback.
 pub struct StreamReader {
     /// The blocking reader for the audio decoder.
@@ -70,6 +75,19 @@ pub trait AudioSink {
     /// this; test sinks can leave the default.
     fn is_finished(&self) -> bool {
         false
+    }
+
+    /// Return and clear the flag that reports a failed output stream.
+    ///
+    /// The playback service uses this flag to restart the current track
+    /// after the sink rebuilds its output.
+    fn take_stream_error(&mut self) -> bool {
+        false
+    }
+
+    /// The last known playback position of the sink, when it knows it.
+    fn position(&self) -> Option<Duration> {
+        None
     }
 }
 
@@ -129,6 +147,9 @@ pub struct PlaybackService<S: AudioSink> {
     settings: Arc<PlaybackSettingsStore>,
     streams: Arc<dyn StreamFactory>,
     source_kind: Option<PlaybackSourceKind>,
+    restart_pending: Option<Duration>,
+    restart_at: Option<Instant>,
+    restart_delay: Duration,
 }
 
 impl<S: AudioSink> PlaybackService<S> {
@@ -172,6 +193,9 @@ impl<S: AudioSink> PlaybackService<S> {
             settings,
             streams,
             source_kind: None,
+            restart_pending: None,
+            restart_at: None,
+            restart_delay: STREAM_RESTART_RETRY,
         }
     }
 
@@ -334,6 +358,14 @@ impl<S: AudioSink> PlaybackService<S> {
         }
     }
 
+    /// Clamp a pending restart position to the current track duration.
+    fn clamp_pending_position(&self, position: Duration) -> Duration {
+        self.queue
+            .current_track()
+            .and_then(|track| parse_duration(&track.duration))
+            .map_or(position, |duration| position.min(duration))
+    }
+
     fn freeze_position(&mut self) {
         self.position = self.current_position();
         self.started_at = None;
@@ -346,7 +378,28 @@ impl<S: AudioSink> PlaybackService<S> {
     /// Poll the audio sink, publish progress and advance automatically when a
     /// track ends.
     pub async fn tick(&mut self) -> Result<(), PlaybackError> {
+        if self.restart_pending.is_some() {
+            self.try_pending_restart().await;
+            if self.restart_pending.is_some() {
+                return Ok(());
+            }
+        }
+
         if self.status == PlaybackStatus::Playing {
+            if self.sink.take_stream_error() {
+                let position = self
+                    .sink
+                    .position()
+                    .unwrap_or_else(|| self.current_position());
+                self.events.publish(CoreEvent::Error {
+                    message: "the audio stream failed; restarting the track".to_string(),
+                });
+                self.restart_pending = Some(position);
+                self.restart_at = Some(Instant::now());
+                self.restart_delay = STREAM_RESTART_RETRY;
+                self.try_pending_restart().await;
+                return Ok(());
+            }
             if self.sink.is_finished() {
                 self.on_track_finished().await?;
             } else {
@@ -356,8 +409,59 @@ impl<S: AudioSink> PlaybackService<S> {
         Ok(())
     }
 
+    /// Retry a pending restart after a failed output stream.
+    async fn try_pending_restart(&mut self) {
+        if self.restart_pending.is_none() {
+            return;
+        }
+        if self.restart_at.is_some_and(|at| Instant::now() < at) {
+            return;
+        }
+
+        match self.start_current().await {
+            Ok(()) => {
+                if self.restart_pending.is_some() {
+                    if self.pending_start {
+                        // The track waits for a download. The download
+                        // completion applies the pending position.
+                        self.restart_at = Some(Instant::now() + self.restart_delay);
+                    } else {
+                        self.restart_pending = None;
+                        self.restart_at = None;
+                        self.restart_delay = STREAM_RESTART_RETRY;
+                    }
+                } else {
+                    self.restart_at = None;
+                    self.restart_delay = STREAM_RESTART_RETRY;
+                }
+            }
+            Err(_) => {
+                self.restart_at = Some(Instant::now() + self.restart_delay);
+                self.restart_delay = (self.restart_delay * 2).min(STREAM_RESTART_MAX_DELAY);
+            }
+        }
+    }
+
     /// Apply a command from an API/MPRIS/MCP client.
     pub async fn handle_command(&mut self, command: PlaybackCommand) -> Result<(), PlaybackError> {
+        let clears_restart = matches!(
+            &command,
+            PlaybackCommand::PlayPlaylist(_)
+                | PlaybackCommand::PlayTrack(_)
+                | PlaybackCommand::Stop
+                | PlaybackCommand::PlayIndex(_)
+                | PlaybackCommand::Next
+                | PlaybackCommand::Previous
+                | PlaybackCommand::Pause
+                | PlaybackCommand::Clear
+                | PlaybackCommand::SetOffline(_)
+        );
+        if clears_restart {
+            self.restart_pending = None;
+            self.restart_at = None;
+            self.restart_delay = STREAM_RESTART_RETRY;
+        }
+
         match command {
             PlaybackCommand::PlayPlaylist(tracks) => self.play_playlist(tracks).await,
             PlaybackCommand::PlayTrack(track) => self.play_track(track).await,
@@ -381,15 +485,30 @@ impl<S: AudioSink> PlaybackService<S> {
             PlaybackCommand::Toggle => self.toggle().await,
             PlaybackCommand::Next => self.next_track().await,
             PlaybackCommand::Previous => self.previous_track().await,
-            PlaybackCommand::Seek(position) => self.seek(position),
+            PlaybackCommand::Seek(position) => {
+                if self.restart_pending.is_some() {
+                    self.restart_pending = Some(self.clamp_pending_position(position));
+                    Ok(())
+                } else {
+                    self.seek(position)
+                }
+            }
             PlaybackCommand::SeekBy(delta) => {
                 if !delta.is_finite() {
                     return Err(PlaybackError::InvalidPosition);
                 }
-                let position = (self.current_position().as_secs_f64() + delta).max(0.0);
+                let base = self
+                    .restart_pending
+                    .unwrap_or_else(|| self.current_position());
+                let position = (base.as_secs_f64() + delta).max(0.0);
                 let position = Duration::try_from_secs_f64(position)
                     .map_err(|_| PlaybackError::InvalidPosition)?;
-                self.seek(position)
+                if self.restart_pending.is_some() {
+                    self.restart_pending = Some(self.clamp_pending_position(position));
+                    Ok(())
+                } else {
+                    self.seek(position)
+                }
             }
             PlaybackCommand::SetVolume(volume) => self.set_volume(volume),
             PlaybackCommand::SetShuffle(enabled) => {
@@ -480,6 +599,9 @@ impl<S: AudioSink> PlaybackService<S> {
         let was_current = self.queue.current_index() == Some(index);
         self.queue.remove(index);
         if was_current {
+            self.restart_pending = None;
+            self.restart_at = None;
+            self.restart_delay = STREAM_RESTART_RETRY;
             self.start_current().await
         } else {
             self.publish_all();
@@ -501,6 +623,9 @@ impl<S: AudioSink> PlaybackService<S> {
         self.status = PlaybackStatus::Stopped;
         self.position = Duration::ZERO;
         self.source_kind = None;
+        self.restart_pending = None;
+        self.restart_at = None;
+        self.restart_delay = STREAM_RESTART_RETRY;
         self.publish_all();
         Ok(())
     }
@@ -659,6 +784,9 @@ impl<S: AudioSink> PlaybackService<S> {
             .is_some_and(|track| track.key() == *key)
         {
             self.pending_start = false;
+            self.restart_pending = None;
+            self.restart_at = None;
+            self.restart_delay = STREAM_RESTART_RETRY;
             let _ = self.next_track().await;
         }
     }
@@ -806,6 +934,14 @@ impl<S: AudioSink> PlaybackService<S> {
             self.queue.set_current_duration(format_duration(duration));
         }
         self.publish_all();
+
+        if let Some(position) = self.restart_pending.take() {
+            self.restart_at = None;
+            self.restart_delay = STREAM_RESTART_RETRY;
+            if !position.is_zero() {
+                let _ = self.seek(position);
+            }
+        }
         Ok(())
     }
 
@@ -828,6 +964,9 @@ impl<S: AudioSink> PlaybackService<S> {
         self.started_at = None;
         self.pending_start = false;
         self.source_kind = None;
+        self.restart_pending = None;
+        self.restart_at = None;
+        self.restart_delay = STREAM_RESTART_RETRY;
         self.publish_all();
     }
 
@@ -857,6 +996,19 @@ fn format_duration(duration: Duration) -> String {
     }
 }
 
+/// Parse a `H:MM:SS` or `M:SS` duration string.
+fn parse_duration(value: &str) -> Option<Duration> {
+    if value.is_empty() {
+        return None;
+    }
+    let mut seconds = 0u64;
+    for part in value.split(':') {
+        let part: u64 = part.trim().parse().ok()?;
+        seconds = seconds.checked_mul(60)?.checked_add(part)?;
+    }
+    Some(Duration::from_secs(seconds))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -872,6 +1024,9 @@ mod tests {
         actions: Vec<&'static str>,
         volume: u8,
         finished: bool,
+        stream_error: bool,
+        position: Option<Duration>,
+        play_failures: usize,
         duration: Option<Duration>,
     }
 
@@ -879,6 +1034,11 @@ mod tests {
         type Error = std::io::Error;
 
         fn play(&mut self, track: &Track, source: PlaybackSource) -> Result<(), Self::Error> {
+            if self.play_failures > 0 {
+                self.play_failures -= 1;
+                self.actions.push("play-failed");
+                return Err(std::io::Error::other("play failed"));
+            }
             let (kind, path) = match source {
                 PlaybackSource::File(path) => (PlaybackSourceKind::File, path),
                 PlaybackSource::Stream(_) => (PlaybackSourceKind::Stream, PathBuf::new()),
@@ -917,6 +1077,14 @@ mod tests {
 
         fn is_finished(&self) -> bool {
             self.finished
+        }
+
+        fn take_stream_error(&mut self) -> bool {
+            std::mem::take(&mut self.stream_error)
+        }
+
+        fn position(&self) -> Option<Duration> {
+            self.position
         }
 
         fn duration(&self) -> Option<Duration> {
@@ -1027,6 +1195,158 @@ mod tests {
         service.play_playlist(tracks(2)).await.unwrap();
         service.on_track_finished().await.unwrap();
         assert_eq!(service.snapshot().current.unwrap().track_id, "video-1");
+    }
+
+    #[tokio::test]
+    async fn stream_error_restarts_the_current_track() {
+        let mut service = service();
+        service.play_playlist(tracks(2)).await.unwrap();
+        service.sink.position = Some(Duration::from_secs(30));
+        service.sink.stream_error = true;
+
+        service.tick().await.unwrap();
+
+        assert_eq!(service.snapshot().status, PlaybackStatus::Playing);
+        assert_eq!(service.snapshot().current.unwrap().track_id, "video-0");
+        assert_eq!(service.sink.plays.len(), 2);
+        assert!(service.sink.actions.contains(&"seek"));
+        let position = service.current_position().as_secs_f64();
+        assert!((position - 30.0).abs() < 0.1);
+    }
+
+    #[tokio::test]
+    async fn stream_error_retries_the_restart_on_a_later_tick() {
+        let mut service = service();
+        service.play_playlist(tracks(2)).await.unwrap();
+        service.sink.position = Some(Duration::from_secs(12));
+        service.sink.stream_error = true;
+        service.sink.play_failures = 1;
+
+        service.tick().await.unwrap();
+
+        assert_eq!(service.snapshot().status, PlaybackStatus::Stopped);
+        assert!(service.restart_pending.is_some());
+
+        service.restart_at = Some(Instant::now() - Duration::from_secs(1));
+        service.tick().await.unwrap();
+
+        assert_eq!(service.snapshot().status, PlaybackStatus::Playing);
+        assert_eq!(service.snapshot().current.unwrap().track_id, "video-0");
+        assert!(service.restart_pending.is_none());
+        assert_eq!(service.sink.plays.len(), 2);
+        assert!(service.sink.actions.contains(&"seek"));
+        let position = service.current_position().as_secs_f64();
+        assert!((position - 12.0).abs() < 0.1);
+        assert_eq!(service.restart_delay, STREAM_RESTART_RETRY);
+    }
+
+    #[tokio::test]
+    async fn restart_retry_backs_off() {
+        let mut service = service();
+        service.play_playlist(tracks(1)).await.unwrap();
+        service.sink.stream_error = true;
+        service.sink.play_failures = 2;
+
+        service.tick().await.unwrap();
+        assert_eq!(service.restart_delay, Duration::from_secs(10));
+
+        service.restart_at = Some(Instant::now() - Duration::from_secs(1));
+        service.tick().await.unwrap();
+        assert_eq!(service.restart_delay, Duration::from_secs(20));
+    }
+
+    #[tokio::test]
+    async fn pause_clears_a_pending_restart() {
+        let mut service = service();
+        service.play_playlist(tracks(2)).await.unwrap();
+        service.sink.position = Some(Duration::from_secs(12));
+        service.sink.stream_error = true;
+        service.sink.play_failures = 1;
+        service.tick().await.unwrap();
+        assert!(service.restart_pending.is_some());
+
+        service
+            .handle_command(PlaybackCommand::Pause)
+            .await
+            .unwrap();
+        assert!(service.restart_pending.is_none());
+
+        service.restart_at = Some(Instant::now() - Duration::from_secs(1));
+        service.tick().await.unwrap();
+        assert_eq!(service.snapshot().status, PlaybackStatus::Stopped);
+    }
+
+    #[tokio::test]
+    async fn seek_updates_a_pending_restart() {
+        let mut service = service();
+        service.play_playlist(tracks(2)).await.unwrap();
+        service.sink.position = Some(Duration::from_secs(12));
+        service.sink.stream_error = true;
+        service.sink.play_failures = 1;
+        service.tick().await.unwrap();
+        assert_eq!(service.restart_pending, Some(Duration::from_secs(12)));
+
+        service
+            .handle_command(PlaybackCommand::Seek(Duration::from_secs(20)))
+            .await
+            .unwrap();
+        assert_eq!(service.restart_pending, Some(Duration::from_secs(20)));
+
+        service.restart_at = Some(Instant::now() - Duration::from_secs(1));
+        service.tick().await.unwrap();
+
+        assert_eq!(service.snapshot().status, PlaybackStatus::Playing);
+        let position = service.current_position().as_secs_f64();
+        assert!((position - 20.0).abs() < 0.1);
+    }
+
+    #[tokio::test]
+    async fn seek_past_the_end_clamps_a_pending_restart() {
+        let mut service = service();
+        service.play_playlist(tracks(1)).await.unwrap();
+        service.sink.position = Some(Duration::from_secs(12));
+        service.sink.stream_error = true;
+        service.sink.play_failures = 1;
+        service.tick().await.unwrap();
+
+        service
+            .handle_command(PlaybackCommand::Seek(Duration::from_secs(999)))
+            .await
+            .unwrap();
+        assert_eq!(service.restart_pending, Some(Duration::from_secs(180)));
+
+        service
+            .handle_command(PlaybackCommand::SeekBy(999.0))
+            .await
+            .unwrap();
+        assert_eq!(service.restart_pending, Some(Duration::from_secs(180)));
+    }
+
+    #[tokio::test]
+    async fn a_wait_for_download_keeps_a_pending_restart() {
+        let mut service = service();
+        service.play_playlist(tracks(1)).await.unwrap();
+        service.sink.position = Some(Duration::from_secs(8));
+        service.sink.stream_error = true;
+        service.wait_for_downloads = true;
+
+        service.tick().await.unwrap();
+
+        assert!(service.pending_start);
+        assert_eq!(service.restart_pending, Some(Duration::from_secs(8)));
+
+        service.wait_for_downloads = false;
+        service
+            .set_download_status(
+                &TrackKey::youtube("video-0"),
+                MusicDownloadStatus::Downloaded,
+            )
+            .await;
+
+        assert_eq!(service.snapshot().status, PlaybackStatus::Playing);
+        assert!(service.restart_pending.is_none());
+        let position = service.current_position().as_secs_f64();
+        assert!((position - 8.0).abs() < 0.1);
     }
 
     #[tokio::test]

@@ -49,11 +49,19 @@
           doCheck = false;
 
           preBuild = ''
+            ${
+              lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
+                export LIBCLANG_PATH="${pkgs.llvmPackages.libclang.lib}/lib"
+                export BINDGEN_EXTRA_CLANG_ARGS="-I${pkgs.glibc.dev}/include"
+              ''
+            }
             mkdir -p crates/recvrd-web/dist
             cp -r ${webFor system}/. crates/recvrd-web/dist/
           '';
 
-          nativeBuildInputs = [ pkgs.makeWrapper pkgs.pkg-config ];
+          nativeBuildInputs =
+            [ pkgs.makeWrapper pkgs.pkg-config ]
+            ++ lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.llvmPackages.libclang ];
 
           buildInputs =
             with pkgs;
@@ -62,7 +70,7 @@
               sqlite
             ]
             ++ lib.optionals pkgs.stdenv.hostPlatform.isLinux [
-              alsa-lib
+              pipewire
               dbus
             ];
 
@@ -322,7 +330,7 @@
               "${pkgs.sqlite.dev}/lib/pkgconfig"
             ]
             ++ lib.optionals pkgs.stdenv.hostPlatform.isLinux [
-              "${pkgs.alsa-lib.dev}/lib/pkgconfig"
+              "${pkgs.pipewire.dev}/lib/pkgconfig"
               "${pkgs.dbus.dev}/lib/pkgconfig"
             ];
         in
@@ -349,14 +357,23 @@
                 sqlite
               ]
               ++ lib.optionals pkgs.stdenv.hostPlatform.isLinux [
-                alsa-lib
+                pipewire
                 dbus
               ];
 
-            nativeBuildInputs = with pkgs; [ pkg-config ];
+            nativeBuildInputs =
+              with pkgs;
+              [ pkg-config ]
+              ++ lib.optionals pkgs.stdenv.hostPlatform.isLinux [ llvmPackages.libclang ];
 
             shellHook = ''
               export PKG_CONFIG_PATH="${lib.concatStringsSep ":" pkgConfigPaths}''${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+              ${
+                lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
+                  export LIBCLANG_PATH="${pkgs.llvmPackages.libclang.lib}/lib"
+                  export BINDGEN_EXTRA_CLANG_ARGS="-I${pkgs.glibc.dev}/include"
+                ''
+              }
               export RUST_BACKTRACE=1
             '';
           };

@@ -23,7 +23,11 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libasound2-dev libdbus-1-dev pkg-config
+          sudo apt-get install -y libpipewire-0.3-dev libspa-0.2-dev libclang-dev libdbus-1-dev pkg-config
+          libclang=$(find /usr/lib/llvm-*/lib -maxdepth 1 -name 'libclang*.so*' -print -quit 2>/dev/null || true)
+          if [ -n "$libclang" ]; then
+            echo "LIBCLANG_PATH=$(dirname "$libclang")" >> "$GITHUB_ENV"
+          fi
 
       - name: Install stable toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -44,6 +48,18 @@ jobs:
 
       - name: Run tests
         run: cargo test --workspace
+
+      - name: Check the Linux audio backend
+        run: |
+          cargo build -p recvrd
+          if cargo tree -i alsa-sys --target x86_64-unknown-linux-gnu 2>/dev/null | grep -q 'alsa-sys'; then
+            echo "alsa-sys is still in the Linux dependency graph"
+            exit 1
+          fi
+          if ldd target/debug/recvrd | grep -q libasound; then
+            echo "the Linux binary links libasound"
+            exit 1
+          fi
 
       - name: Check generated API bindings
         run: git diff --exit-code -- crates/recvrd-api/bindings

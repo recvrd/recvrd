@@ -167,8 +167,11 @@ current queue. `.part` files and active downloads are never removed.
 ### Troubleshooting
 
 - **No audio**: the service runs in the user session. Make sure the user has
-  access to the session audio server (PipeWire/PulseAudio), or add the user to
-  the `audio` group on systems that use direct ALSA access.
+  access to the PipeWire session. recvrd links to PipeWire on Linux and does
+  not use direct ALSA access. Install the `libpipewire-0.3-0` package on
+  Debian and Ubuntu. On NixOS, use the Home Manager module or another user
+  unit for audio. The system-level `services.recvrd` unit runs as a different
+  user and cannot connect to the desktop PipeWire session.
 - **DBus/MPRIS**: the user manager must have `DBUS_SESSION_BUS_ADDRESS` set;
   this is normal for `systemctl --user` sessions.
 - **Service exits at startup**: run `recvrd serve` in a terminal with the

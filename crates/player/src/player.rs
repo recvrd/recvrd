@@ -1,165 +1,111 @@
 use common_structs::ReadSeek;
 use flume::Sender;
-use rodio::cpal::traits::{DeviceTrait, HostTrait};
-use rodio::{Decoder, OutputStream, OutputStreamBuilder, Sink, Source};
+use rodio::{Decoder, Sink, Source};
 
 use std::fs::File;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use crate::{
-    CurrentSource, PlayError, PlayerData, PlayerOptions, SEEK_STEP, StreamErrorLog,
-    StreamErrorThrottle,
-};
+use crate::{CurrentSource, PlayError, PlayerData, PlayerOptions, SEEK_STEP};
+
+#[cfg(not(target_os = "linux"))]
+use crate::cpal_output::CpalOutput as Output;
+#[cfg(target_os = "linux")]
+use crate::pipewire_output::PipeWireOutput as Output;
 
 pub struct Player {
     sink: Sink,
-    stream: OutputStream,
+    mixer: rodio::mixer::Mixer,
+    output: Output,
     data: PlayerData,
     error_sender: Sender<PlayError>,
     options: PlayerOptions,
 }
 
 impl Player {
-    /// Build the error callback for one output stream.
-    ///
-    /// Rodio logs each stream error by default, so one dead ALSA stream
-    /// can flood the log. This callback logs the first error, then it
-    /// suppresses repeats, and it reports the failure to the audio thread.
-    fn stream_error_callback(
-        error_sender: Sender<PlayError>,
-    ) -> impl FnMut(rodio::cpal::StreamError) + Send + 'static {
-        let throttle = Arc::new(Mutex::new(StreamErrorThrottle::new()));
-        move |error| {
-            let message = error.to_string();
-            let decision = throttle.lock().map_or(StreamErrorLog::LogNow, |mut guard| {
-                guard.record(&message, Instant::now())
-            });
-            match decision {
-                StreamErrorLog::LogNow => log::warn!("audio stream error: {message}"),
-                StreamErrorLog::LogSummary { suppressed } => {
-                    log::warn!("audio stream error: {message} ({suppressed} repeats suppressed)")
-                }
-                StreamErrorLog::Suppress => {}
-            }
-            if !matches!(decision, StreamErrorLog::Suppress) {
-                let _ = error_sender.send(PlayError::StreamRuntimeError(message));
-            }
-        }
-    }
-
-    fn try_from_device(
-        device: rodio::cpal::Device,
-        error_sender: &Sender<PlayError>,
-    ) -> Result<OutputStream, PlayError> {
-        // In rodio 0.21, try_from_device is available on OutputStream
-        OutputStreamBuilder::default()
-            .with_device(device)
-            .with_error_callback(Self::stream_error_callback(error_sender.clone()))
-            .open_stream()
-            .map_err(PlayError::StreamError)
-    }
-
-    /// Name one output device for the log, or "unknown" when it has none.
-    fn device_name(device: &rodio::cpal::Device) -> String {
-        device.name().unwrap_or_else(|_| "unknown".to_string())
-    }
-
-    /// Create a stream from the default device or the PipeWire device.
-    ///
-    /// The daemon must not fall back to other devices. A fallback can
-    /// seize a hardware device from PipeWire, as issue #205 shows.
-    fn try_default(error_sender: &Sender<PlayError>) -> Result<OutputStream, PlayError> {
-        // Use rodio's internal cpal re-export
-        let host = rodio::cpal::default_host();
-
-        let mut candidates = Vec::new();
-        if let Some(device) = host.default_output_device() {
-            candidates.push(device);
-        }
-        if let Ok(devices) = host.output_devices() {
-            for device in devices {
-                if Self::device_name(&device) == "pipewire"
-                    && !candidates
-                        .iter()
-                        .any(|candidate| Self::device_name(candidate) == "pipewire")
-                {
-                    candidates.push(device);
-                }
-            }
-        }
-        let mut first_error = None;
-        for device in candidates {
-            let name = Self::device_name(&device);
-            match Self::try_from_device(device, error_sender) {
-                Ok(stream) => {
-                    log::info!("audio output device: {name}");
-                    return Ok(stream);
-                }
-                Err(error) => {
-                    log::warn!("audio output device {name} failed: {error:?}");
-                    if first_error.is_none() {
-                        first_error = Some(error);
-                    }
-                }
-            }
-        }
-        Err(first_error.unwrap_or(PlayError::StreamError(rodio::StreamError::NoDevice)))
-    }
-
     pub fn new(error_sender: Sender<PlayError>, options: PlayerOptions) -> Result<Self, PlayError> {
-        let stream = Self::try_default(&error_sender)?;
-
-        // sink::try_new requires a reference to the handle
-        let sink = Sink::connect_new(stream.mixer());
+        let (output, mixer, sink) = Output::create(error_sender.clone())?;
 
         sink.set_volume(options.initial_volume_f32());
 
         Ok(Self {
             sink,
-            stream,
-            error_sender,
+            mixer,
+            output,
             data: PlayerData::new(options.initial_volume()),
+            error_sender,
             options,
         })
     }
 
     pub fn update(&self) -> Result<Self, PlayError> {
-        let stream = Self::try_default(&self.error_sender)?;
-        let sink = Sink::connect_new(stream.mixer());
+        let (output, mixer, sink) = Output::create(self.error_sender.clone())?;
 
         sink.set_volume(self.data.volume_f32());
 
         Ok(Self {
             sink,
-            stream,
+            mixer,
+            output,
             error_sender: self.error_sender.clone(),
             data: self.data.clone(),
             options: self.options.clone(),
         })
     }
+
+    fn prepare_new_source(&mut self) {
+        #[cfg(target_os = "linux")]
+        {
+            self.output.set_paused(false);
+            self.output.flush();
+            self.output.reset_position();
+        }
+    }
+
     pub fn change_volume(&mut self, positive: bool) {
         self.data.change_volume(positive);
         self.sink.set_volume(self.data.volume_f32());
     }
 
     pub fn is_finished(&self) -> bool {
-        self.sink.empty()
+        #[cfg(target_os = "linux")]
+        {
+            self.output.is_finished(self.sink.empty())
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            self.sink.empty()
+        }
     }
 
     pub fn play_at(&mut self, path: &Path, time: Duration) -> Result<(), PlayError> {
         log::info!("Playing file: {:?} at time: {:?}", path, time);
         self.play(path)?;
-        if let Err(e) = self.sink.try_seek(time) {
-            log::error!("Seek error: {}", e);
-            let _ = self.error_sender.send(PlayError::SeekError(e));
+        match self.sink.try_seek(time) {
+            Ok(()) => {
+                #[cfg(target_os = "linux")]
+                {
+                    self.output.flush();
+                    self.output.set_position(time);
+                }
+            }
+            Err(e) => {
+                log::error!("Seek error: {}", e);
+                let _ = self.error_sender.send(PlayError::SeekError(e));
+            }
         }
 
         Ok(())
     }
 
     pub fn play(&mut self, path: &Path) -> Result<(), PlayError> {
+        #[cfg(target_os = "linux")]
+        if self.output.is_failed() {
+            return Err(PlayError::StreamRuntimeError(
+                "the PipeWire output failed".to_string(),
+            ));
+        }
+
         log::info!("Playing file: {:?}", path);
         self.data
             .set_current_source(Some(CurrentSource::File(path.to_path_buf())));
@@ -178,11 +124,12 @@ impl Player {
         let decoder = Decoder::new(file).map_err(PlayError::DecoderError)?;
 
         self.data.set_total_duration(decoder.total_duration());
+        self.prepare_new_source();
 
-        // Check if sink is detached or empty and recreate if necessary
+        // A Sink that ran out of sources is removed from the mixer. Connect a
+        // new Sink so the mixer receives the next source.
         if self.sink.empty() {
-            // Using try_new with the stored handle
-            self.sink = Sink::connect_new(self.stream.mixer());
+            self.sink = Sink::connect_new(&self.mixer);
         }
 
         self.sink.set_volume(self.data.volume_f32());
@@ -199,6 +146,13 @@ impl Player {
         mime: Option<&str>,
         seekable: bool,
     ) -> Result<(), PlayError> {
+        #[cfg(target_os = "linux")]
+        if self.output.is_failed() {
+            return Err(PlayError::StreamRuntimeError(
+                "the PipeWire output failed".to_string(),
+            ));
+        }
+
         // A stream replaces any file. Clear the file so a later seek
         // cannot replay the previous track.
         self.data.set_current_source(Some(CurrentSource::Stream));
@@ -213,23 +167,57 @@ impl Player {
         builder = builder.with_seekable(seekable);
         let decoder = builder.build().map_err(PlayError::DecoderError)?;
         self.data.set_total_duration(decoder.total_duration());
+        self.prepare_new_source();
+
         if self.sink.empty() {
-            self.sink = Sink::connect_new(self.stream.mixer());
+            self.sink = Sink::connect_new(&self.mixer);
         }
+
         self.sink.set_volume(self.data.volume_f32());
         self.sink.append(decoder);
+
         Ok(())
     }
 
     pub fn stop(&mut self) {
-        // rodio 0.21: To stop, you can clear the sink.
+        let failed = {
+            #[cfg(target_os = "linux")]
+            {
+                self.output.is_failed()
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                false
+            }
+        };
+
         if !self.sink.empty() {
-            self.sink.clear();
+            if failed {
+                self.sink.stop();
+            } else {
+                self.sink.clear();
+            }
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            self.output.set_paused(true);
+            self.output.flush();
+            self.output.reset_position();
         }
     }
 
     pub fn elapsed(&self) -> Duration {
-        self.sink.get_pos()
+        #[cfg(target_os = "linux")]
+        {
+            self.output
+                .position()
+                .unwrap_or_else(|| self.sink.get_pos())
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            self.sink.get_pos()
+        }
     }
 
     pub fn duration(&self) -> Option<f64> {
@@ -240,9 +228,9 @@ impl Player {
 
     pub fn toggle_playback(&mut self) {
         if self.sink.is_paused() {
-            self.sink.play();
+            self.resume();
         } else {
-            self.sink.pause();
+            self.pause();
         }
     }
 
@@ -273,7 +261,26 @@ impl Player {
             return Ok(());
         }
 
-        self.sink.try_seek(time).map_err(PlayError::SeekError)?;
+        #[cfg(target_os = "linux")]
+        if self.output.is_failed() {
+            return Err(PlayError::StreamRuntimeError(
+                "the PipeWire output failed".to_string(),
+            ));
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            self.output.flush();
+        }
+
+        let result = self.sink.try_seek(time).map_err(PlayError::SeekError);
+        result?;
+
+        #[cfg(target_os = "linux")]
+        {
+            self.output.flush();
+            self.output.set_position(time);
+        }
 
         // If the sink is finished, we need to reset the music
         // This happens when the user seeks to the start of the song before the buffer.
@@ -320,13 +327,25 @@ impl Player {
 
     pub fn pause(&mut self) {
         if !self.sink.is_paused() {
-            self.toggle_playback();
+            self.sink.pause();
+
+            #[cfg(target_os = "linux")]
+            {
+                self.output.set_paused(true);
+                self.output.flush();
+            }
         }
     }
 
     pub fn resume(&mut self) {
         if self.sink.is_paused() {
-            self.toggle_playback();
+            #[cfg(target_os = "linux")]
+            self.output.flush();
+
+            self.sink.play();
+
+            #[cfg(target_os = "linux")]
+            self.output.set_paused(false);
         }
     }
 

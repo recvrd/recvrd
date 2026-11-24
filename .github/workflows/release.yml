@@ -37,7 +37,11 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libasound2-dev libdbus-1-dev pkg-config
+          sudo apt-get install -y libpipewire-0.3-dev libspa-0.2-dev libclang-dev libdbus-1-dev pkg-config
+          libclang=$(find /usr/lib/llvm-*/lib -maxdepth 1 -name 'libclang*.so*' -print -quit 2>/dev/null || true)
+          if [ -n "$libclang" ]; then
+            echo "LIBCLANG_PATH=$(dirname "$libclang")" >> "$GITHUB_ENV"
+          fi
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -67,6 +71,18 @@ jobs:
       - name: Build recvrd and recvc
         run: |
           cargo build --release --locked --target ${{ matrix.target }} -p recvrd -p recvc
+
+      - name: Check the Linux audio backend
+        if: runner.os == 'Linux'
+        run: |
+          if cargo tree -i alsa-sys --target ${{ matrix.target }} 2>/dev/null | grep -q 'alsa-sys'; then
+            echo "alsa-sys is still in the Linux dependency graph"
+            exit 1
+          fi
+          if ldd "target/${{ matrix.target }}/release/recvrd" | grep -q libasound; then
+            echo "the Linux binary links libasound"
+            exit 1
+          fi
 
       - name: Package (Unix)
         if: runner.os != 'Windows'
