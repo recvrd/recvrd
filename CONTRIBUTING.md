@@ -13,10 +13,16 @@ testing guide.
 
 ## Before opening a pull request
 
-```sh
-just check
-just test
-```
+1. Create a worktree on a branch for the issue. See [AGENTS.md](AGENTS.md).
+2. Run `just web-install` one time on a new checkout.
+3. Run `just ci` until it passes.
+4. Squash and fixup the commits into one clean commit.
+5. Push the branch one time.
+6. Open the pull request, or mark the draft ready for review.
+
+A draft pull request runs no CI jobs. Mark the pull request ready for review
+to run the full matrix. CI confirms the local result. It must not find new
+failures. `just check` and `just test` are faster subsets for the inner loop.
 
 For bug fixes and behavior changes, add a test that fails before the fix and
 passes after it. If the failure cannot be tested deterministically (audio

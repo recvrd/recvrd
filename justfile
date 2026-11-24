@@ -16,6 +16,21 @@ test:
 test-all:
     cargo test --workspace -- --include-ignored
 
+# Reproduce the CI matrix. Run 'just web-install' first on a new checkout.
+ci:
+    cargo fmt --all -- --check
+    cargo clippy --workspace --all-targets -- -D warnings
+    cargo check --workspace --all-targets
+    cargo test --workspace
+    cargo build -p recvrd
+    @if cargo tree -i alsa-sys --target x86_64-unknown-linux-gnu 2>/dev/null | grep -q 'alsa-sys'; then echo "alsa-sys is still in the Linux dependency graph"; exit 1; fi
+    @if ldd target/debug/recvrd | grep -q libasound; then echo "the Linux binary links libasound"; exit 1; fi
+    @test -d crates/recvrd-web/node_modules || { echo "web dependencies are missing; run 'just web-install'"; exit 1; }
+    cd crates/recvrd-web && npm run check && npm test && npm run build
+    nix flake check --no-build
+    nix build .#recvrd .#recvc
+    git diff --exit-code -- crates/recvrd-api/bindings
+
 fmt:
     cargo fmt --all
 

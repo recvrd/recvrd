@@ -4,6 +4,7 @@
 
 ## Test plan
 
+- [ ] `just ci` (needs `just web-install` on a new checkout)
 - [ ] `just check`
 - [ ] `just test`
 - [ ] Bug fix/behavior change: added a test that fails before the fix and passes after
