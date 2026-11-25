@@ -25,6 +25,13 @@ dbus = true
 # Initial player volume, 0-100.
 initial_volume = 50
 
+# Audio output for the PipeWire backend on Linux. The default is 48000 Hz
+# f32. The sample rate accepts 8000 to 384000. The format accepts "f32",
+# "s32", and "s24". See docs/audio.md for the system device format.
+# [audio]
+# sample_rate = 48000
+# format = "f32"
+
 # Maximum size of the cover cache in MiB. 0 disables the limit.
 cover_cache_mb = 100
 

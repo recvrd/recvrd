@@ -18,4 +18,12 @@ providers: Array<ProviderId>,
  * The default provider for a fresh install. Old payloads
  * without the field read as YouTube.
  */
-default_provider: ProviderId, };
+default_provider: ProviderId, 
+/**
+ * The output sample rate in Hz, when the sink reports it.
+ */
+audio_sample_rate?: number | null, 
+/**
+ * The output sample format name, when the sink reports it.
+ */
+audio_format?: string | null, };

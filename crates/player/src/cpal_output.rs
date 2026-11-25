@@ -14,6 +14,8 @@ pub(crate) struct CpalOutput {
 impl CpalOutput {
     pub(crate) fn create(
         error_sender: flume::Sender<PlayError>,
+        _sample_rate: u32,
+        _format: common_structs::SampleFormat,
     ) -> Result<(Self, rodio::mixer::Mixer, Sink), PlayError> {
         let stream = Self::open(&error_sender)?;
         let mixer = stream.mixer().clone();

@@ -20,16 +20,49 @@ use rodio::mixer::{Mixer, MixerSource};
 use rtrb::{Consumer, Producer, PushError, RingBuffer};
 
 use crate::{PlayError, StreamErrorLog, StreamErrorThrottle};
+use common_structs::SampleFormat;
 
-/// The output format is fixed. The mixer converts every source to this
-/// format, and PipeWire negotiates it with the device.
-const SAMPLE_RATE: u32 = 48_000;
+/// The output channels. The mixer converts every source to stereo.
 const CHANNELS: usize = 2;
-const BYTES_PER_SAMPLE: usize = std::mem::size_of::<f32>();
-const FRAME_BYTES: usize = CHANNELS * BYTES_PER_SAMPLE;
 const RING_SECONDS: usize = 1;
-const RING_SAMPLES: usize = SAMPLE_RATE as usize * CHANNELS * RING_SECONDS;
 const FLUSH_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// The bytes in one sample of the output format.
+fn bytes_per_sample(format: SampleFormat) -> usize {
+    match format {
+        SampleFormat::F32 | SampleFormat::S32 => 4,
+        SampleFormat::S24 => 3,
+    }
+}
+
+/// The bytes in one frame of the output format.
+fn frame_bytes(format: SampleFormat) -> usize {
+    CHANNELS * bytes_per_sample(format)
+}
+
+/// Map a sample format to the PipeWire format.
+fn spa_format(format: SampleFormat) -> spa::param::audio::AudioFormat {
+    match format {
+        SampleFormat::F32 => spa::param::audio::AudioFormat::F32LE,
+        SampleFormat::S32 => spa::param::audio::AudioFormat::S32LE,
+        SampleFormat::S24 => spa::param::audio::AudioFormat::S24LE,
+    }
+}
+
+/// Write one clamped float sample in the output format.
+fn write_sample(format: SampleFormat, sample: f32, out: &mut [u8]) {
+    match format {
+        SampleFormat::F32 => out.copy_from_slice(&sample.to_le_bytes()),
+        SampleFormat::S32 => {
+            let value = (sample * i32::MAX as f32).round() as i32;
+            out.copy_from_slice(&value.to_le_bytes());
+        }
+        SampleFormat::S24 => {
+            let value = (sample * 8_388_607.0).round() as i32;
+            out.copy_from_slice(&value.to_le_bytes()[..3]);
+        }
+    }
+}
 
 /// The last default sink name. A rebuilt output reuses it and skips the
 /// metadata wait at startup.
@@ -47,6 +80,10 @@ struct Shared {
     /// the ring buffer with mixer silence after this flag is set.
     source_finished: AtomicBool,
     sink_name: Mutex<Option<String>>,
+    /// The output sample rate in Hz.
+    sample_rate: u32,
+    /// The output sample format.
+    format: SampleFormat,
     produced: AtomicU64,
     consumed: AtomicU64,
     played_frames: AtomicU64,
@@ -56,7 +93,7 @@ struct Shared {
 }
 
 impl Shared {
-    fn new() -> Self {
+    fn new(sample_rate: u32, format: SampleFormat) -> Self {
         Self {
             paused: AtomicBool::new(false),
             failed: AtomicBool::new(false),
@@ -68,6 +105,8 @@ impl Shared {
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
                     .clone(),
             ),
+            sample_rate,
+            format,
             produced: AtomicU64::new(0),
             consumed: AtomicU64::new(0),
             played_frames: AtomicU64::new(0),
@@ -94,16 +133,23 @@ pub(crate) struct PipeWireOutput {
 impl PipeWireOutput {
     pub(crate) fn create(
         error_sender: flume::Sender<PlayError>,
+        sample_rate: u32,
+        format: SampleFormat,
     ) -> Result<(Self, Mixer, Sink), PlayError> {
-        let (mixer, source) = rodio::mixer::mixer(CHANNELS as u16, SAMPLE_RATE);
+        let (mixer, source) = rodio::mixer::mixer(CHANNELS as u16, sample_rate);
         let sink = Sink::connect_new(&mixer);
-        let output = Self::new(source, error_sender)?;
+        let output = Self::new(source, error_sender, sample_rate, format)?;
 
         Ok((output, mixer, sink))
     }
 
-    fn new(source: MixerSource, error_sender: flume::Sender<PlayError>) -> Result<Self, PlayError> {
-        let shared = Arc::new(Shared::new());
+    fn new(
+        source: MixerSource,
+        error_sender: flume::Sender<PlayError>,
+        sample_rate: u32,
+        format: SampleFormat,
+    ) -> Result<Self, PlayError> {
+        let shared = Arc::new(Shared::new(sample_rate, format));
         let (quit, quit_rx) = pw::channel::channel();
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
 
@@ -168,7 +214,7 @@ impl PipeWireOutput {
     pub(crate) fn set_position(&self, position: Duration) {
         self.shared
             .base_frames
-            .store(frames(position), Ordering::Release);
+            .store(frames(position, self.shared.sample_rate), Ordering::Release);
         self.shared.played_frames.store(0, Ordering::Release);
     }
 
@@ -187,7 +233,7 @@ impl PipeWireOutput {
         let played = self.shared.played_frames.load(Ordering::Acquire);
 
         Some(Duration::from_secs_f64(
-            (base + played) as f64 / f64::from(SAMPLE_RATE),
+            (base + played) as f64 / f64::from(self.shared.sample_rate),
         ))
     }
 
@@ -366,7 +412,8 @@ fn run(
             .iterate(pw::loop_::Timeout::Finite(Duration::from_millis(10)));
     }
 
-    let (producer, consumer) = RingBuffer::new(RING_SAMPLES);
+    let ring_samples = shared.sample_rate as usize * CHANNELS * RING_SECONDS;
+    let (producer, consumer) = RingBuffer::new(ring_samples);
     let error_throttle = Arc::new(Mutex::new(StreamErrorThrottle::new()));
     let stream_data = StreamData {
         shared: shared.clone(),
@@ -375,7 +422,7 @@ fn run(
         consumer,
         flush: 0,
         pending: None,
-        scratch: vec![0.0; RING_SAMPLES],
+        scratch: vec![0.0; ring_samples],
     };
 
     let stream = match pw::stream::StreamBox::new(
@@ -461,8 +508,8 @@ fn run(
     });
 
     let mut audio_info = spa::param::audio::AudioInfoRaw::new();
-    audio_info.set_format(spa::param::audio::AudioFormat::F32LE);
-    audio_info.set_rate(SAMPLE_RATE);
+    audio_info.set_format(spa_format(shared.format));
+    audio_info.set_rate(shared.sample_rate);
     audio_info.set_channels(CHANNELS as u32);
 
     let mut position = [0; spa::param::audio::MAX_CHANNELS];
@@ -520,7 +567,11 @@ fn run(
         }
     };
 
-    log::info!("the PipeWire audio output is connected: {SAMPLE_RATE} Hz, {CHANNELS} channels");
+    log::info!(
+        "the PipeWire audio output is connected: {} Hz, {CHANNELS} channels, {}",
+        shared.sample_rate,
+        shared.format.as_str()
+    );
 
     if ready.send(Ok(())).is_err() {
         shared.shutdown.store(true, Ordering::Release);
@@ -591,12 +642,13 @@ fn fill(stream: &pw::stream::Stream, data: &mut StreamData) {
     let Some(slice) = out.data() else {
         return;
     };
-    if slice.len() < FRAME_BYTES {
+    let frame_bytes = frame_bytes(data.shared.format);
+    if slice.len() < frame_bytes {
         return;
     }
 
     let (paused, flushed, written_samples) = write_samples(data, slice);
-    let size = (slice.len() / FRAME_BYTES) * FRAME_BYTES;
+    let size = (slice.len() / frame_bytes) * frame_bytes;
 
     if !paused && !flushed {
         let written_frames = written_samples / CHANNELS;
@@ -607,14 +659,17 @@ fn fill(stream: &pw::stream::Stream, data: &mut StreamData) {
 
     let chunk = out.chunk_mut();
     *chunk.offset_mut() = 0;
-    *chunk.stride_mut() = FRAME_BYTES as i32;
+    *chunk.stride_mut() = frame_bytes as i32;
     *chunk.size_mut() = size as u32;
 }
 
 /// Write one PipeWire buffer. Return whether the output is paused, whether
 /// this buffer followed a flush, and the number of samples written.
 fn write_samples(data: &mut StreamData, slice: &mut [u8]) -> (bool, bool, usize) {
-    let max_frames = slice.len() / FRAME_BYTES;
+    let format = data.shared.format;
+    let sample_bytes = bytes_per_sample(format);
+    let frame_bytes = frame_bytes(format);
+    let max_frames = slice.len() / frame_bytes;
     let max_samples = (max_frames * CHANNELS).min(data.scratch.len());
     let paused = data.shared.paused.load(Ordering::Acquire);
     let epoch = data.shared.flush_epoch.load(Ordering::Acquire);
@@ -659,16 +714,16 @@ fn write_samples(data: &mut StreamData, slice: &mut [u8]) -> (bool, bool, usize)
     let frames_to_write = written_samples / CHANNELS;
 
     for frame in 0..max_frames {
-        let offset = frame * FRAME_BYTES;
+        let offset = frame * frame_bytes;
 
         if frame < frames_to_write {
             for channel in 0..CHANNELS {
                 let sample = data.scratch[frame * CHANNELS + channel].clamp(-1.0, 1.0);
-                let start = offset + channel * BYTES_PER_SAMPLE;
-                slice[start..start + BYTES_PER_SAMPLE].copy_from_slice(&sample.to_le_bytes());
+                let start = offset + channel * sample_bytes;
+                write_sample(format, sample, &mut slice[start..start + sample_bytes]);
             }
         } else {
-            slice[offset..offset + FRAME_BYTES].fill(0);
+            slice[offset..offset + frame_bytes].fill(0);
         }
     }
 
@@ -742,8 +797,8 @@ fn spawn_decoder(
         })
 }
 
-fn frames(position: Duration) -> u64 {
-    (position.as_secs_f64() * f64::from(SAMPLE_RATE)).round() as u64
+fn frames(position: Duration, sample_rate: u32) -> u64 {
+    (position.as_secs_f64() * f64::from(sample_rate)).round() as u64
 }
 
 /// Read the sink name from the PipeWire default sink metadata value.
@@ -756,6 +811,41 @@ fn sink_name_from_json(value: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn write_samples_converts_to_s32() {
+        let (mut producer, mut data) = stream_data_with(SampleFormat::S32);
+        producer.push(0.5).unwrap();
+        producer.push(-0.5).unwrap();
+        let mut slice = vec![0; frame_bytes(SampleFormat::S32)];
+
+        assert_eq!(write_samples(&mut data, &mut slice), (false, false, 2));
+
+        assert_eq!(sample_s32(&slice, 0), 1_073_741_824);
+        assert_eq!(sample_s32(&slice, 1), -1_073_741_824);
+    }
+
+    #[test]
+    fn write_samples_converts_to_s24() {
+        let (mut producer, mut data) = stream_data_with(SampleFormat::S24);
+        producer.push(0.5).unwrap();
+        producer.push(-0.5).unwrap();
+        let mut slice = vec![0; frame_bytes(SampleFormat::S24)];
+
+        assert_eq!(write_samples(&mut data, &mut slice), (false, false, 2));
+
+        assert_eq!(sample_s24(&slice, 0), 4_194_304);
+        assert_eq!(sample_s24(&slice, 1), -4_194_304);
+    }
+
+    #[test]
+    fn position_uses_the_configured_sample_rate() {
+        let output = shared_output_with(96_000);
+        output.set_position(Duration::from_secs(1));
+        output.shared.played_frames.store(96_000, Ordering::Release);
+
+        assert_eq!(output.position(), Some(Duration::from_secs(2)));
+    }
 
     #[test]
     fn position_uses_the_base_and_the_played_frames() {
@@ -812,7 +902,7 @@ mod tests {
         for sample in [0.25, -0.5, 0.75] {
             producer.push(sample).unwrap();
         }
-        let mut slice = vec![0; 2 * FRAME_BYTES];
+        let mut slice = vec![0; 2 * frame_bytes(SampleFormat::F32)];
         write_samples(&mut data, &mut slice);
 
         assert_eq!(data.shared.buffered_samples(), 1);
@@ -866,7 +956,7 @@ mod tests {
 
     #[test]
     fn a_full_frame_has_one_frame_of_samples() {
-        assert_eq!(FRAME_BYTES, CHANNELS * BYTES_PER_SAMPLE);
+        assert_eq!(frame_bytes(SampleFormat::F32), CHANNELS * 4);
     }
 
     #[test]
@@ -875,7 +965,7 @@ mod tests {
         for sample in [0.25, -0.5, 0.75, 1.5] {
             producer.push(sample).unwrap();
         }
-        let mut slice = vec![0; 2 * FRAME_BYTES];
+        let mut slice = vec![0; 2 * frame_bytes(SampleFormat::F32)];
 
         assert_eq!(write_samples(&mut data, &mut slice), (false, false, 4));
 
@@ -889,7 +979,7 @@ mod tests {
     #[test]
     fn write_samples_fills_silence_when_the_buffer_is_empty() {
         let (_producer, mut data) = stream_data();
-        let mut slice = vec![1; 2 * FRAME_BYTES];
+        let mut slice = vec![1; 2 * frame_bytes(SampleFormat::F32)];
 
         assert_eq!(write_samples(&mut data, &mut slice), (false, false, 0));
 
@@ -902,7 +992,7 @@ mod tests {
         producer.push(0.5).unwrap();
         producer.push(-0.5).unwrap();
         data.shared.paused.store(true, Ordering::Release);
-        let mut slice = vec![1; FRAME_BYTES];
+        let mut slice = vec![1; frame_bytes(SampleFormat::F32)];
 
         let (paused, _, written) = write_samples(&mut data, &mut slice);
 
@@ -919,7 +1009,7 @@ mod tests {
         producer.push(0.5).unwrap();
         producer.push(-0.5).unwrap();
         data.shared.flush_epoch.store(1, Ordering::Release);
-        let mut slice = vec![0; FRAME_BYTES];
+        let mut slice = vec![0; frame_bytes(SampleFormat::F32)];
 
         let (_, flushed, written) = write_samples(&mut data, &mut slice);
 
@@ -937,7 +1027,7 @@ mod tests {
         for sample in [0.25, -0.5, 0.75] {
             producer.push(sample).unwrap();
         }
-        let mut slice = vec![0; 2 * FRAME_BYTES];
+        let mut slice = vec![0; 2 * frame_bytes(SampleFormat::F32)];
 
         let (_, _, written) = write_samples(&mut data, &mut slice);
 
@@ -954,7 +1044,7 @@ mod tests {
         let (mut producer, mut data) = stream_data();
         producer.push(0.25).unwrap();
         producer.push(-0.5).unwrap();
-        let mut slice = vec![0; 4 * FRAME_BYTES];
+        let mut slice = vec![0; 4 * frame_bytes(SampleFormat::F32)];
 
         let (_, _, written) = write_samples(&mut data, &mut slice);
 
@@ -1040,7 +1130,7 @@ mod tests {
         let (_producer, consumer) = RingBuffer::new(16);
         let (error_sender, error_receiver) = flume::unbounded();
         let mut data = StreamData {
-            shared: Arc::new(Shared::new()),
+            shared: Arc::new(Shared::new(48_000, SampleFormat::F32)),
             error_sender,
             error_throttle: Arc::new(Mutex::new(StreamErrorThrottle::new())),
             consumer,
@@ -1065,14 +1155,34 @@ mod tests {
     }
 
     fn sample_at(slice: &[u8], index: usize) -> f32 {
-        let start = index * BYTES_PER_SAMPLE;
-        f32::from_le_bytes(slice[start..start + BYTES_PER_SAMPLE].try_into().unwrap())
+        let start = index * 4;
+        f32::from_le_bytes(slice[start..start + 4].try_into().unwrap())
+    }
+
+    fn sample_s32(slice: &[u8], index: usize) -> i32 {
+        let start = index * 4;
+        i32::from_le_bytes(slice[start..start + 4].try_into().unwrap())
+    }
+
+    fn sample_s24(slice: &[u8], index: usize) -> i32 {
+        let start = index * 3;
+        let bytes = &slice[start..start + 3];
+        let value = i32::from_le_bytes([bytes[0], bytes[1], bytes[2], 0]);
+        if value & 0x80_0000 != 0 {
+            value | !0xFF_FFFF
+        } else {
+            value
+        }
     }
 
     fn stream_data() -> (Producer<f32>, StreamData) {
+        stream_data_with(SampleFormat::F32)
+    }
+
+    fn stream_data_with(format: SampleFormat) -> (Producer<f32>, StreamData) {
         let (producer, consumer) = RingBuffer::new(16);
         let data = StreamData {
-            shared: Arc::new(Shared::new()),
+            shared: Arc::new(Shared::new(48_000, format)),
             error_sender: flume::unbounded().0,
             error_throttle: Arc::new(Mutex::new(StreamErrorThrottle::new())),
             consumer,
@@ -1085,8 +1195,12 @@ mod tests {
     }
 
     fn shared_output() -> PipeWireOutput {
+        shared_output_with(48_000)
+    }
+
+    fn shared_output_with(sample_rate: u32) -> PipeWireOutput {
         PipeWireOutput {
-            shared: Arc::new(Shared::new()),
+            shared: Arc::new(Shared::new(sample_rate, SampleFormat::F32)),
             quit: None,
         }
     }

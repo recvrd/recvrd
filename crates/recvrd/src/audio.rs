@@ -1,5 +1,6 @@
+use common_structs::SampleFormat;
 use player::{PlayError, Player, PlayerOptions};
-use recvrd_core::{AudioSink, PlaybackSource, Track};
+use recvrd_core::{AudioOutput, AudioSink, PlaybackSource, Track};
 use std::{
     sync::{
         Arc, Mutex,
@@ -38,6 +39,7 @@ pub struct RodioSink {
     stream_failed: Arc<AtomicBool>,
     position: Arc<Mutex<Option<Duration>>>,
     duration: Arc<Mutex<Option<Duration>>>,
+    audio: AudioOutput,
 }
 
 /// Drain queued player errors from the channel.
@@ -67,7 +69,7 @@ fn split_stream_errors(errors: Vec<PlayError>) -> (bool, Vec<PlayError>) {
 }
 
 impl RodioSink {
-    pub fn spawn(initial_volume: u8) -> Self {
+    pub fn spawn(initial_volume: u8, sample_rate: u32, format: SampleFormat) -> Self {
         let (tx, rx) = mpsc::channel();
         let finished = Arc::new(AtomicBool::new(true));
         let thread_finished = finished.clone();
@@ -77,13 +79,17 @@ impl RodioSink {
         let thread_position = position.clone();
         let duration = Arc::new(Mutex::new(None));
         let thread_duration = duration.clone();
+        let audio = AudioOutput {
+            sample_rate,
+            format,
+        };
 
         thread::Builder::new()
             .name("recvrd-audio".to_string())
             .spawn(move || {
                 let (error_tx, error_rx) = flume::unbounded();
                 let mut volume = initial_volume.min(100);
-                let mut player = match Player::new(error_tx.clone(), PlayerOptions::new(volume)) {
+                let mut player = match Player::new(error_tx.clone(), PlayerOptions::new(volume).with_audio(sample_rate, format)) {
                     Ok(player) => Some(player),
                     Err(error) => {
                         log::error!("audio output unavailable: {error:?}; retrying on play");
@@ -114,7 +120,7 @@ impl RodioSink {
                     match rx.recv_timeout(Duration::from_millis(250)) {
                         Ok(AudioCommand::Play { source, reply }) => {
                             if player.is_none() {
-                                match Player::new(error_tx.clone(), PlayerOptions::new(volume)) {
+                                match Player::new(error_tx.clone(), PlayerOptions::new(volume).with_audio(sample_rate, format)) {
                                     Ok(new_player) => {
                                         log::info!("audio output available");
                                         player = Some(new_player);
@@ -212,7 +218,7 @@ impl RodioSink {
                                 && let Some(when) = retry_at
                                 && Instant::now() >= when
                             {
-                                match Player::new(error_tx.clone(), PlayerOptions::new(volume)) {
+                                match Player::new(error_tx.clone(), PlayerOptions::new(volume).with_audio(sample_rate, format)) {
                                     Ok(new_player) => {
                                         log::info!("audio output available");
                                         player = Some(new_player);
@@ -243,6 +249,7 @@ impl RodioSink {
             stream_failed,
             position,
             duration,
+            audio,
         }
     }
 
@@ -324,6 +331,10 @@ impl AudioSink for RodioSink {
             .position
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn output_format(&self) -> Option<AudioOutput> {
+        Some(self.audio)
     }
 }
 

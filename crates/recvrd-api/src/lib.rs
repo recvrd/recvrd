@@ -528,6 +528,12 @@ pub struct Status {
     /// without the field read as YouTube.
     #[serde(default)]
     pub default_provider: ProviderId,
+    /// The output sample rate in Hz, when the sink reports it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_sample_rate: Option<u32>,
+    /// The output sample format name, when the sink reports it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_format: Option<String>,
 }
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -791,6 +797,8 @@ mod tests {
             offline: false,
             providers: vec![ProviderId::Youtube],
             default_provider: ProviderId::Youtube,
+            audio_sample_rate: None,
+            audio_format: None,
         };
         let json = serde_json::to_string(&status).unwrap();
         assert_eq!(serde_json::from_str::<Status>(&json).unwrap(), status);

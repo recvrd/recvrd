@@ -6,6 +6,8 @@ use std::{
 };
 use thiserror::Error;
 
+use common_structs::SampleFormat;
+
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Downloader {
@@ -87,6 +89,25 @@ impl std::fmt::Debug for ListenBrainzConfig {
     }
 }
 
+/// Audio output configuration.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct AudioConfig {
+    /// The output sample rate in Hz. The default is 48000.
+    pub sample_rate: u32,
+    /// The output sample format. The default is f32.
+    pub format: SampleFormat,
+}
+
+impl Default for AudioConfig {
+    fn default() -> Self {
+        Self {
+            sample_rate: 48_000,
+            format: SampleFormat::F32,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct DaemonConfig {
@@ -113,6 +134,8 @@ pub struct DaemonConfig {
     pub lastfm: LastfmConfig,
     /// ListenBrainz scrobbling configuration.
     pub listenbrainz: ListenBrainzConfig,
+    /// Audio output configuration.
+    pub audio: AudioConfig,
 }
 
 impl Default for DaemonConfig {
@@ -130,6 +153,7 @@ impl Default for DaemonConfig {
             podverse: PodverseConfig::default(),
             lastfm: LastfmConfig::default(),
             listenbrainz: ListenBrainzConfig::default(),
+            audio: AudioConfig::default(),
         }
     }
 }
@@ -214,6 +238,15 @@ impl DaemonConfig {
                 message: "initial_volume must be between 0 and 100".to_string(),
             });
         }
+        if !(8_000..=384_000).contains(&self.audio.sample_rate) {
+            return Err(ConfigError::Invalid {
+                path: path.to_path_buf(),
+                message: format!(
+                    "audio.sample_rate must be between 8000 and 384000, got {}",
+                    self.audio.sample_rate
+                ),
+            });
+        }
         if let Some(base_url) = &self.podverse.base_url
             && base_url.trim().is_empty()
         {
@@ -246,6 +279,7 @@ mod tests {
         assert_eq!(config.podverse, PodverseConfig::default());
         assert_eq!(config.lastfm, LastfmConfig::default());
         assert_eq!(config.listenbrainz, ListenBrainzConfig::default());
+        assert_eq!(config.audio, AudioConfig::default());
     }
 
     #[test]
@@ -338,6 +372,27 @@ token = "secret"
         assert!(config.listenbrainz.enabled);
         assert_eq!(config.listenbrainz.token.as_deref(), Some("token-value"));
         assert!(!format!("{:?}", config.listenbrainz).contains("token-value"));
+    }
+
+    #[test]
+    fn audio_accepts_a_rate_and_format() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(&path, "[audio]\nsample_rate = 96000\nformat = \"s24\"\n").unwrap();
+
+        let config = DaemonConfig::load(&path).unwrap();
+        assert_eq!(config.audio.sample_rate, 96_000);
+        assert_eq!(config.audio.format, SampleFormat::S24);
+    }
+
+    #[test]
+    fn rejects_an_audio_rate_out_of_range() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(&path, "[audio]\nsample_rate = 1000\n").unwrap();
+
+        let error = DaemonConfig::load(&path).unwrap_err();
+        assert!(error.to_string().contains("audio.sample_rate"));
     }
 
     #[test]

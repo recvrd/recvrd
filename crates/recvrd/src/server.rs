@@ -23,9 +23,9 @@ use recvrd_api::{
     UpdatePlaylistRequest, VolumeRequest,
 };
 use recvrd_core::{
-    AudioSink, AuthState as CoreAuthState, AuthStatus, CoreEvent, EventBus, PlaybackCommand,
-    PlaybackError, PlaybackService, PlaybackSettingsStore, PlaybackSnapshot, PlaybackStatus,
-    QueueSnapshot, RepeatMode as CoreRepeatMode,
+    AudioOutput, AudioSink, AuthState as CoreAuthState, AuthStatus, CoreEvent, EventBus,
+    PlaybackCommand, PlaybackError, PlaybackService, PlaybackSettingsStore, PlaybackSnapshot,
+    PlaybackStatus, QueueSnapshot, RepeatMode as CoreRepeatMode,
 };
 use serde::Deserialize;
 use std::{
@@ -63,6 +63,8 @@ pub struct AppState<S: AudioSink + Send + 'static> {
     settings: Arc<PlaybackSettingsStore>,
     /// Fires when the daemon starts to stop. SSE streams end on it.
     shutdown: Option<tokio::sync::watch::Receiver<bool>>,
+    /// The output sample rate and format, when the sink reports them.
+    audio: Option<AudioOutput>,
 }
 
 impl<S: AudioSink + Send + 'static> Clone for AppState<S> {
@@ -80,6 +82,7 @@ impl<S: AudioSink + Send + 'static> Clone for AppState<S> {
             providers: self.providers.clone(),
             settings: self.settings.clone(),
             shutdown: self.shutdown.clone(),
+            audio: self.audio,
         }
     }
 }
@@ -98,6 +101,7 @@ impl<S: AudioSink + Send + 'static> AppState<S> {
         providers: Vec<ProviderId>,
         settings: Arc<PlaybackSettingsStore>,
         shutdown: Option<tokio::sync::watch::Receiver<bool>>,
+        audio: Option<AudioOutput>,
     ) -> Self {
         Self {
             started_at: Instant::now(),
@@ -112,6 +116,7 @@ impl<S: AudioSink + Send + 'static> AppState<S> {
             providers,
             settings,
             shutdown,
+            audio,
         }
     }
 }
@@ -1685,7 +1690,10 @@ pub async fn serve<S: AudioSink + Send + 'static>(
         )
     })?;
 
-    let events = playback.lock().await.events();
+    let (events, audio) = {
+        let service = playback.lock().await;
+        (service.events(), service.audio_output())
+    };
     if dbus {
         match crate::mpris::spawn(commands, events.clone(), artwork.clone()) {
             Ok(_) => log::info!("MPRIS media controls enabled"),
@@ -1712,6 +1720,7 @@ pub async fn serve<S: AudioSink + Send + 'static>(
         providers,
         settings,
         Some(shutdown_rx),
+        audio,
     );
     let serve =
         axum::serve(listener, router(state)).with_graceful_shutdown(shutdown_signal(shutdown_tx));
@@ -1771,6 +1780,8 @@ fn status_from_parts<S: AudioSink + Send + 'static>(
         offline: state.settings.offline(),
         providers: state.providers.clone(),
         default_provider: ProviderId::default_provider(),
+        audio_sample_rate: state.audio.map(|audio| audio.sample_rate),
+        audio_format: state.audio.map(|audio| audio.format.as_str().to_string()),
     }
 }
 
@@ -2397,6 +2408,7 @@ mod tests {
             vec![ProviderId::Youtube, ProviderId::Rss],
             settings,
             None,
+            None,
         )
     }
 
@@ -2487,6 +2499,7 @@ mod tests {
             providers,
             settings,
             None,
+            None,
         )
     }
 
@@ -2531,6 +2544,28 @@ mod tests {
             axum::serve(listener, router(state)).await.unwrap();
         });
         (format!("http://{addr}"), server)
+    }
+
+    #[tokio::test]
+    async fn status_reports_the_audio_output_format() {
+        let mut state = test_state();
+        state.audio = Some(AudioOutput {
+            sample_rate: 96_000,
+            format: common_structs::SampleFormat::S24,
+        });
+        let (base, server) = start_server(state).await;
+
+        let status: serde_json::Value = reqwest::Client::new()
+            .get(format!("{base}/api/status"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(status["audio_sample_rate"], 96_000);
+        assert_eq!(status["audio_format"], "s24");
+        server.abort();
     }
 
     #[tokio::test]

@@ -791,6 +791,8 @@ mod tests {
             offline: false,
             providers: vec![ProviderId::Youtube],
             default_provider: ProviderId::Youtube,
+            audio_sample_rate: Some(48_000),
+            audio_format: Some("f32".to_string()),
         }
     }
 

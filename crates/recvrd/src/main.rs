@@ -495,7 +495,11 @@ fn run_serve(
         }
         let music: Arc<dyn MusicApi> = music;
 
-        let sink = RodioSink::spawn(config.initial_volume);
+        let sink = RodioSink::spawn(
+            config.initial_volume,
+            config.audio.sample_rate,
+            config.audio.format,
+        );
         let playback = Arc::new(AsyncMutex::new(PlaybackService::with_streams(
             sink,
             cache_dir.clone(),
