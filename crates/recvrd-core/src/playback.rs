@@ -3058,6 +3058,7 @@ mod tests {
                 kind: common_structs::MediaKind::Audio,
             })),
             metadata: None,
+            liked: None,
         }
     }
 
@@ -3211,6 +3212,7 @@ mod tests {
                 feed_url: Some("https://example.com/feed.xml".to_string()),
                 ..Default::default()
             })),
+            liked: None,
         }
     }
 

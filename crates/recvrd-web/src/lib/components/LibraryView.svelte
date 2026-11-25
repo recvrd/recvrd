@@ -354,6 +354,9 @@
           onplay={(track) => store.playTrack(track)}
           onqueue={(track) => store.queueTrack(track)}
           onretry={(track) => store.retryDownload(track)}
+          onlike={store.canLikeTracks
+            ? (track) => store.setTrackLike(track, track.liked !== true)
+            : undefined}
           onremove={store.canEditPlaylist ? requestRemove : undefined}
           onmoveup={store.canEditPlaylist ? (index) => move(index, -1) : undefined}
           onmovedown={store.canEditPlaylist ? (index) => move(index, 1) : undefined}

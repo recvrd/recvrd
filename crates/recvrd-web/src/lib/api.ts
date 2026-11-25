@@ -51,6 +51,7 @@ export interface RecvrdApi {
   movePlaylistTrack(id: string, from: number, to: number): Promise<Track[]>;
   search(query: string, provider?: ProviderId): Promise<SearchResults>;
   trackDetail(provider: ProviderId, trackId: string): Promise<TrackDetail>;
+  setTrackLike(provider: ProviderId, trackId: string, liked: boolean): Promise<OkResponse>;
   queue(): Promise<Queue>;
   history(): Promise<HistoryEntry[]>;
   playPlaylist(playlistId: string, provider?: ProviderId): Promise<Status>;
@@ -202,6 +203,11 @@ export function createApi(baseUrl = ''): RecvrdApi {
     trackDetail: (provider, trackId) =>
       request<TrackDetail>(
         `/api/tracks/${encodeURIComponent(provider)}/${encodeURIComponent(trackId)}`,
+      ),
+    setTrackLike: (provider, trackId, liked) =>
+      request<OkResponse>(
+        `/api/tracks/${encodeURIComponent(provider)}/${encodeURIComponent(trackId)}/like`,
+        { method: 'PUT', body: JSON.stringify({ liked }) },
       ),
     rssFeeds: () => request<RssFeed[]>('/api/rss/feeds'),
     addRssFeed: (url) => post<RssFeed>('/api/rss/feeds', { url }),

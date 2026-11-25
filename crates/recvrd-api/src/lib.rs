@@ -26,6 +26,8 @@ pub struct ProviderCapabilities {
     pub playlist_create: bool,
     /// The provider supports editing playlists.
     pub playlist_edit: bool,
+    /// The provider supports the like state of a track.
+    pub track_like: bool,
     /// The provider supports downloads.
     pub downloads: bool,
     /// The provider supports cover art.
@@ -48,6 +50,7 @@ impl ProviderCapabilities {
                 playlists: true,
                 playlist_create: true,
                 playlist_edit: true,
+                track_like: true,
                 downloads: true,
                 covers: true,
             },
@@ -57,6 +60,7 @@ impl ProviderCapabilities {
                 playlists: true,
                 playlist_create: false,
                 playlist_edit: false,
+                track_like: false,
                 downloads: true,
                 covers: true,
             },
@@ -66,6 +70,7 @@ impl ProviderCapabilities {
                 playlists: true,
                 playlist_create: false,
                 playlist_edit: false,
+                track_like: false,
                 downloads: true,
                 covers: true,
             },
@@ -157,6 +162,10 @@ pub struct Track {
     /// it false. Clients use it to show a track as cached.
     #[serde(default, skip_serializing_if = "is_false")]
     pub cached: bool,
+    /// True when the upstream account liked the track. Absent when
+    /// the provider does not report a like state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub liked: Option<bool>,
 }
 
 impl Track {
@@ -299,6 +308,14 @@ pub struct AddPlaylistTracksRequest {
     #[serde(default)]
     pub provider: ProviderId,
     pub track_ids: Vec<String>,
+}
+
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SetTrackLikeRequest {
+    /// True adds the track to Liked Music. False removes it.
+    pub liked: bool,
 }
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]

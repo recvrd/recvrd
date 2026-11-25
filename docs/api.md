@@ -81,6 +81,7 @@ prompt. A session that expires during pagination ends the load with
 | GET | `/api/search?provider=...&q=...` | Track and playlist search |
 | GET | `/api/tracks/{provider}/{track_id}` | Full track detail and description |
 | GET | `/api/tracks/{provider}/{track_id}/cover` | Cached cover art |
+| PUT | `/api/tracks/{provider}/{track_id}/like` | Set the track like state (`{liked}`) |
 | GET | `/api/queue` | Queue snapshot |
 | POST | `/api/queue` | Enqueue a track (alias: `/api/queue/add`) |
 | DELETE | `/api/queue` | Clear the queue |
@@ -170,6 +171,7 @@ curl http://127.0.0.1:8080/api/providers
       "playlists": true,
       "playlist_create": true,
       "playlist_edit": true,
+      "track_like": true,
       "downloads": true,
       "covers": true
     },
@@ -431,6 +433,24 @@ ID or a failed fetch returns 404 with the normal error envelope.
 Set `cover_cache_mb` in `config.toml` to limit the cache size. The default is
 100 MiB. A value of 0 disables the limit. This endpoint does not change the
 JSON `Track` shape.
+
+### Track likes
+
+```sh
+curl -X PUT http://127.0.0.1:8080/api/tracks/youtube/abcdefghijk/like \
+  -H 'Content-Type: application/json' -d '{"liked":true}'
+```
+
+`PUT /api/tracks/{provider}/{track_id}/like` sets the like state of one
+YouTube Music track. A `liked` value of true adds the track to Liked
+Music. A false value removes it. The call needs a signed-in session.
+The endpoint returns 401 when the session expired. Other providers
+return 400 because they do not support likes. The response is
+`{"ok":true}`.
+
+A track object carries a `liked` field when the provider reports the
+state. The field is omitted when the provider has no state. The web UI
+shows a liked marker on those tracks.
 
 ### Cache
 

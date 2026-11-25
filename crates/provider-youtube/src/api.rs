@@ -13,8 +13,9 @@ use recvrd_api::{
     PlaylistEditError, PlaylistPrivacy, SearchResults, Track, UpdatePlaylistRequest,
 };
 use ytpapi2::{
-    COOKIE, Endpoint, HeaderMap, HeaderValue, PlaylistPrivacy as UpstreamPrivacy, USER_AGENT,
-    YoutubeMusicError, YoutubeMusicInstance, YoutubeMusicPlaylistRef, YoutubeMusicVideoRef,
+    COOKIE, Endpoint, HeaderMap, HeaderValue, LikeStatus, PlaylistPrivacy as UpstreamPrivacy,
+    USER_AGENT, YoutubeMusicError, YoutubeMusicInstance, YoutubeMusicPlaylistRef,
+    YoutubeMusicVideoRef,
 };
 
 /// Message shown when YouTube Music rejects the stored session.
@@ -363,6 +364,19 @@ impl MusicApi for YoutubeMusicApi {
             .await
             .map_err(playlist_read_error)
     }
+
+    async fn set_track_like(
+        &self,
+        provider: ProviderId,
+        track_id: &str,
+        liked: bool,
+    ) -> Result<(), PlaylistEditError> {
+        check_provider(provider).map_err(PlaylistEditError::Invalid)?;
+        self.client
+            .set_video_like(track_id, liked)
+            .await
+            .map_err(self.edit_error("like track"))
+    }
 }
 
 /// Index of the item that the moved item must precede. `None` means the end.
@@ -436,6 +450,7 @@ pub fn track_dto(track: YoutubeMusicVideoRef) -> Track {
         artist: track.author,
         album: track.album,
         duration: track.duration,
+        liked: track.like_status.map(|status| status == LikeStatus::Like),
         ..Default::default()
     }
 }
@@ -450,6 +465,9 @@ pub fn track_from_ref(reference: &YoutubeMusicVideoRef) -> recvrd_core::Track {
         author: reference.author.clone(),
         album: reference.album.clone(),
         duration: reference.duration.clone(),
+        liked: reference
+            .like_status
+            .map(|status| status == LikeStatus::Like),
         ..Default::default()
     }
 }
@@ -465,6 +483,13 @@ pub fn ref_from_track(track: &recvrd_core::Track) -> YoutubeMusicVideoRef {
         duration: track.duration.clone(),
         provider: track.provider,
         set_video_id: None,
+        like_status: track.liked.map(|liked| {
+            if liked {
+                LikeStatus::Like
+            } else {
+                LikeStatus::Indifferent
+            }
+        }),
     }
 }
 
@@ -481,14 +506,18 @@ mod tests {
             duration: "3:00".to_string(),
             provider: common_structs::ProviderId::Youtube,
             set_video_id: None,
+            like_status: None,
         }
     }
 
     #[test]
     fn converts_track_and_playlist() {
-        let track = track_dto(video_ref());
+        let mut reference = video_ref();
+        reference.like_status = Some(LikeStatus::Like);
+        let track = track_dto(reference);
         assert_eq!(track.artist, "Artist");
         assert_eq!(track.track_id, "v1");
+        assert_eq!(track.liked, Some(true));
 
         let playlist = playlist_dto(YoutubeMusicPlaylistRef {
             name: "Mix".to_string(),
@@ -502,16 +531,19 @@ mod tests {
     fn reference_conversions_round_trip() {
         let reference = YoutubeMusicVideoRef {
             set_video_id: Some("set-1".to_string()),
+            like_status: Some(LikeStatus::Like),
             ..video_ref()
         };
         let track = track_from_ref(&reference);
         assert_eq!(track.track_id, "v1");
         assert_eq!(track.author, "Artist");
+        assert_eq!(track.liked, Some(true));
 
         let back = ref_from_track(&track);
         assert_eq!(back.video_id, "v1");
         assert_eq!(back.title, "Song");
         assert_eq!(back.set_video_id, None);
+        assert_eq!(back.like_status, Some(LikeStatus::Like));
     }
 
     #[test]

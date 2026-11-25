@@ -90,4 +90,17 @@ pub trait MusicApi: Send + Sync {
         from: usize,
         to: usize,
     ) -> Result<Vec<Track>, PlaylistEditError>;
+
+    /// Set the like state of one track. Providers that cannot like
+    /// return an `Invalid` error.
+    async fn set_track_like(
+        &self,
+        _provider: ProviderId,
+        _track_id: &str,
+        _liked: bool,
+    ) -> Result<(), PlaylistEditError> {
+        Err(PlaylistEditError::Invalid(
+            "track likes are not supported".to_string(),
+        ))
+    }
 }

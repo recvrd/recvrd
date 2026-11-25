@@ -86,6 +86,26 @@ describe('TrackTable', () => {
     expect(actions.onremove).toHaveBeenCalledWith(0);
   });
 
+  it('likes a track from the context menu', async () => {
+    const actions = { ...props(), onlike: vi.fn() };
+    const { container } = render(TrackTable, { props: actions });
+
+    await fireEvent.contextMenu(container.querySelectorAll('.row')[0]);
+    await fireEvent.click(screen.getByRole('menuitem', { name: 'Like' }));
+    expect(actions.onlike).toHaveBeenCalledWith(actions.tracks[0]);
+  });
+
+  it('shows a liked track and offers Unlike', async () => {
+    const tracks = [makeTrack('v1', { liked: true })];
+    const actions = { ...props(tracks), onlike: vi.fn() };
+    const { container } = render(TrackTable, { props: actions });
+
+    expect(screen.getByLabelText('Liked')).toBeInTheDocument();
+    await fireEvent.contextMenu(container.querySelectorAll('.row')[0]);
+    await fireEvent.click(screen.getByRole('menuitem', { name: 'Unlike' }));
+    expect(actions.onlike).toHaveBeenCalledWith(tracks[0]);
+  });
+
   it('disables retry unless the download failed', async () => {
     const actions = props();
     const { container } = render(TrackTable, { props: actions });

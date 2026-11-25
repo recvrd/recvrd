@@ -299,6 +299,17 @@ export class AppStore {
     return !this.offline && (this.activeProviderInfo?.capabilities.playlist_edit ?? true);
   }
 
+  /// True when the active provider can set a track like, the account
+  /// is signed in, and offline mode is off.
+  get canLikeTracks(): boolean {
+    const info = this.activeProviderInfo;
+    return (
+      !this.offline &&
+      info?.capabilities.track_like === true &&
+      info.auth.state === 'ok'
+    );
+  }
+
   get canSearch(): boolean {
     return this.activeProviderInfo?.capabilities.search ?? true;
   }
@@ -1019,6 +1030,49 @@ export class AppStore {
       this.notify('success', 'Download queued for retry.');
     } catch (error) {
       this.report(error);
+    }
+  }
+
+  /// Set the like state of one track on the provider and update the
+  /// local lists. The daemon reports the result; a failure keeps the
+  /// local state.
+  async setTrackLike(track: Track, liked: boolean): Promise<void> {
+    try {
+      await this.api.setTrackLike(track.provider, track.track_id, liked);
+      this.applyTrackLike(track, liked);
+      this.notify(
+        'success',
+        liked
+          ? `Added “${track.title}” to Liked Music.`
+          : `Removed “${track.title}” from Liked Music.`,
+      );
+    } catch (error) {
+      this.report(error);
+    }
+  }
+
+  /// Apply a like state to every local copy of one track.
+  private applyTrackLike(track: Track, liked: boolean): void {
+    const key = `${track.provider}:${track.track_id}`;
+    const apply = (entry: Track): Track =>
+      `${entry.provider}:${entry.track_id}` === key ? { ...entry, liked } : entry;
+    if (this.playlist) {
+      this.playlist = { ...this.playlist, tracks: this.playlist.tracks.map(apply) };
+    }
+    if (this.queue) {
+      this.queue = {
+        ...this.queue,
+        items: this.queue.items.map((item) => ({ ...item, track: apply(item.track) })),
+      };
+    }
+    if (this.searchResults) {
+      this.searchResults = {
+        ...this.searchResults,
+        tracks: this.searchResults.tracks.map(apply),
+      };
+    }
+    if (this.trackDetail) {
+      this.trackDetail = { ...this.trackDetail, track: apply(this.trackDetail.track) };
     }
   }
 
