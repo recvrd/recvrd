@@ -1,5 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ApiError, coverUrl, createApi, durationSeconds, formatBytes, formatDuration } from './api';
+import {
+  ApiError,
+  coverUrl,
+  createApi,
+  durationSeconds,
+  formatBytes,
+  formatDuration,
+  formatPlayedAt,
+} from './api';
 import { makeStatus, makeTrack } from '../test/fixtures';
 
 afterEach(() => {
@@ -33,6 +41,17 @@ describe('duration helpers', () => {
     expect(formatBytes(1024)).toBe('1.0 KiB');
     expect(formatBytes(1536)).toBe('1.5 KiB');
     expect(formatBytes(2 * 1024 * 1024)).toBe('2.0 MiB');
+  });
+
+  it('formats relative play times', () => {
+    const now = Math.floor(Date.now() / 1000);
+    expect(formatPlayedAt(now)).toBe('just now');
+    expect(formatPlayedAt(now - 90)).toBe('1 min ago');
+    expect(formatPlayedAt(now - 45 * 60)).toBe('45 min ago');
+    expect(formatPlayedAt(now - 3600)).toBe('1 hr ago');
+    expect(formatPlayedAt(now - 5 * 3600)).toBe('5 hr ago');
+    expect(formatPlayedAt(now - 86400)).toBe('1 day ago');
+    expect(formatPlayedAt(now - 3 * 86400)).toBe('3 days ago');
   });
 });
 
@@ -80,6 +99,34 @@ describe('api client', () => {
     const providers = await api.providers();
     expect(fetchMock.mock.calls[3][0]).toBe('/api/providers');
     expect(providers).toEqual({ tracks: [], playlists: [] });
+  });
+
+  it('fetches history from /api/history', async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => {
+      const entry = {
+        provider: 'youtube',
+        track_id: 'v1',
+        title: 'Track v1',
+        artist: 'Artist',
+        album: 'Album',
+        duration: '3:00',
+        started_at: 1764000000,
+        played_secs: 180,
+        completed: true,
+      };
+      return new Response(JSON.stringify([entry]), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const api = createApi();
+
+    const history = await api.history();
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/history');
+    expect(history).toHaveLength(1);
+    expect(history[0].track_id).toBe('v1');
+    expect(history[0].completed).toBe(true);
   });
 
   it('calls the playlist edit endpoints', async () => {

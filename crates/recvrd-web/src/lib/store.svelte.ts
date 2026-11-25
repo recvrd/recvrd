@@ -2,6 +2,7 @@ import type { CacheScope } from '@api/CacheScope';
 import type { CacheSizes } from '@api/CacheSizes';
 import type { DownloadStatus } from '@api/DownloadStatus';
 import type { EventKind } from '@api/EventKind';
+import type { HistoryEntry } from '@api/HistoryEntry';
 import type { PlaybackMode } from '@api/PlaybackMode';
 import type { Playlist } from '@api/Playlist';
 import type { PlaylistDetail } from '@api/PlaylistDetail';
@@ -20,7 +21,8 @@ import { EventStream, type ConnectionState, type EventSourceLike } from './sse';
 export type View =
   | { kind: 'library' }
   | { kind: 'playlist'; id: string; name?: string }
-  | { kind: 'queue' };
+  | { kind: 'queue' }
+  | { kind: 'history' };
 
 export type ToastSeverity = 'info' | 'success' | 'warning' | 'error';
 
@@ -138,6 +140,8 @@ export class AppStore {
   cache = $state<CacheSizes | null>(null);
   cacheLoading = $state(false);
   playlists = $state<Playlist[]>([]);
+  history = $state<HistoryEntry[] | null>(null);
+  historyLoading = $state(false);
   rssFeeds = $state<RssFeed[]>([]);
   playlist = $state<PlaylistDetail | null>(null);
   playlistsLoading = $state(false);
@@ -236,6 +240,8 @@ export class AppStore {
     ]);
     if (this.view.kind === 'playlist') {
       await this.openPlaylist(this.view.id, this.view.name);
+    } else if (this.view.kind === 'history') {
+      await this.openHistory();
     }
   }
 
@@ -675,6 +681,24 @@ export class AppStore {
     this.view = { kind: 'queue' };
     this.selection = 0;
     this.syncLocation();
+  }
+
+  async openHistory(): Promise<void> {
+    this.view = { kind: 'history' };
+    this.selection = 0;
+    this.syncLocation();
+    await this.loadHistory();
+  }
+
+  async loadHistory(): Promise<void> {
+    this.historyLoading = true;
+    try {
+      this.history = await this.api.history();
+    } catch (error) {
+      this.report(error);
+    } finally {
+      this.historyLoading = false;
+    }
   }
 
   setFilter(filter: string): void {
@@ -1512,6 +1536,8 @@ export class AppStore {
     const hash = window.location.hash;
     if (hash.startsWith('#/queue')) {
       this.view = { kind: 'queue' };
+    } else if (hash.startsWith('#/history')) {
+      this.view = { kind: 'history' };
     } else if (hash.startsWith('#/playlist/')) {
       const id = decodeURIComponent(hash.slice('#/playlist/'.length));
       if (id) this.view = { kind: 'playlist', id };
@@ -1526,7 +1552,9 @@ export class AppStore {
         ? '#/library'
         : this.view.kind === 'queue'
           ? '#/queue'
-          : `#/playlist/${encodeURIComponent(this.view.id)}`;
+          : this.view.kind === 'history'
+            ? '#/history'
+            : `#/playlist/${encodeURIComponent(this.view.id)}`;
     if (window.location.hash !== hash) {
       window.history.replaceState(null, '', hash);
     }

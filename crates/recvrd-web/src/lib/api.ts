@@ -4,6 +4,7 @@ import type { CacheSizes } from '@api/CacheSizes';
 import type { CreatePlaylistRequest } from '@api/CreatePlaylistRequest';
 import type { DownloadStatus } from '@api/DownloadStatus';
 import type { ErrorEnvelope } from '@api/ErrorEnvelope';
+import type { HistoryEntry } from '@api/HistoryEntry';
 import type { OkResponse } from '@api/OkResponse';
 import type { OfflineRequest } from '@api/OfflineRequest';
 import type { PlaybackMode } from '@api/PlaybackMode';
@@ -51,6 +52,7 @@ export interface RecvrdApi {
   search(query: string, provider?: ProviderId): Promise<SearchResults>;
   trackDetail(provider: ProviderId, trackId: string): Promise<TrackDetail>;
   queue(): Promise<Queue>;
+  history(): Promise<HistoryEntry[]>;
   playPlaylist(playlistId: string, provider?: ProviderId): Promise<Status>;
   playTrack(track: Track): Promise<Status>;
   queueAdd(track: Track): Promise<Queue>;
@@ -208,6 +210,7 @@ export function createApi(baseUrl = ''): RecvrdApi {
       post<RssFeed>(`/api/rss/feeds/${encodeURIComponent(id)}/refresh`, {}),
     refreshRssFeeds: () => post<RssFeed[]>('/api/rss/feeds/refresh', {}),
     queue: () => request<Queue>('/api/queue'),
+    history: () => request<HistoryEntry[]>('/api/history'),
     playPlaylist: (playlistId, provider: ProviderId = 'youtube') =>
       post<Status>('/api/play/playlist', { playlist_id: playlistId, provider }),
     playTrack: (track) => post<Status>('/api/play/track', { track }),
@@ -257,6 +260,25 @@ export function formatDuration(seconds: number): string {
     return `${hours}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
   }
   return `${minutes}:${String(secs).padStart(2, '0')}`;
+}
+
+/// Relative play time for a history entry, from Unix seconds.
+export function formatPlayedAt(startedAt: number): string {
+  const seconds = Math.max(0, Math.floor(Date.now() / 1000) - startedAt);
+  if (seconds < 60) return 'just now';
+  if (seconds < 3600) {
+    const minutes = Math.floor(seconds / 60);
+    return `${minutes} min ago`;
+  }
+  if (seconds < 86400) {
+    const hours = Math.floor(seconds / 3600);
+    return `${hours} hr ago`;
+  }
+  if (seconds < 7 * 86400) {
+    const days = Math.floor(seconds / 86400);
+    return `${days} day${days === 1 ? '' : 's'} ago`;
+  }
+  return new Date(startedAt * 1000).toLocaleDateString();
 }
 
 export function formatBytes(bytes: number): string {
@@ -320,4 +342,4 @@ export function trackMetadataFacts(track: Track): string[] {
   return facts;
 }
 
-export type { CacheCleanResult, CacheScope, CacheSizes, OfflineRequest, PlaybackMode, PlaybackSnapshot, Playlist, PlaylistDetail, ProviderCapabilities, ProviderId, ProviderInfo, Queue, RepeatMode, RssFeed, SearchResults, Status, Track, TrackDetail };
+export type { CacheCleanResult, CacheScope, CacheSizes, HistoryEntry, OfflineRequest, PlaybackMode, PlaybackSnapshot, Playlist, PlaylistDetail, ProviderCapabilities, ProviderId, ProviderInfo, Queue, RepeatMode, RssFeed, SearchResults, Status, Track, TrackDetail };

@@ -87,6 +87,7 @@ prompt. A session that expires during pagination ends the load with
 | POST | `/api/queue/reorder` | Move an item (`{from,to}`) |
 | POST | `/api/queue/remove` | Remove an item (`{index}`) |
 | POST | `/api/queue/play-next` | Move an item to play next (`{index}`) |
+| GET | `/api/history` | Finished plays, newest first |
 | POST | `/api/play/playlist` | Replace the queue with a playlist and play (`{playlist_id, provider}`) |
 | POST | `/api/play/track` | Play a track immediately |
 | POST | `/api/pause` | Pause (idempotent) |
@@ -465,6 +466,20 @@ When the daemon answers, the command uses the API. When the daemon does not
 answer, the command cleans the files directly from disk and keeps the
 current track from the saved playback state. Active downloads are not
 stopped in that case, so stop the daemon first for a full clean.
+
+### History
+
+```sh
+curl http://127.0.0.1:8080/api/history
+```
+
+`GET /api/history` lists finished plays, newest first. The daemon records
+a play when a track plays for 30 seconds or more. Each entry names the
+provider, track, title, artist, album, duration, start time as Unix seconds,
+seconds played, and whether the track played to the end. A play that ends
+early still appears, with `completed` false. The daemon keeps the last 1000
+plays or 90 days in `history.jsonl` in the state directory, and the list
+survives a daemon restart.
 
 ### Cached library
 

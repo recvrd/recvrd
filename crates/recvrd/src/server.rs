@@ -12,11 +12,12 @@ use common_structs::{PlaybackMode, ProviderId, TrackKey};
 use recvrd_api::{
     AddPlaylistTracksRequest, AddRssFeedRequest, ApiError, AuthState, AuthStatus as ApiAuthStatus,
     CacheCleanRequest, CacheCleanResult, CacheScope, CacheSizes, CreatePlaylistRequest,
-    DownloadStatus, DownloadSummary, ErrorEnvelope, Event, EventKind, MovePlaylistTrackRequest,
-    MusicApi, OfflineRequest, OkResponse, PlayNextRequest, PlayPlaylistRequest, PlayTrackRequest,
-    PlaybackModeRequest, PlaybackSnapshot as ApiPlaybackSnapshot, PlaybackState, Playlist,
-    PlaylistDetail, PlaylistEditError, ProviderInfo, Queue as ApiQueue, QueueItem as ApiQueueItem,
-    QueueRequest, RemovePlaylistTracksRequest, RemoveQueueRequest, ReorderQueueRequest,
+    DownloadStatus, DownloadSummary, ErrorEnvelope, Event, EventKind,
+    HistoryEntry as ApiHistoryEntry, MovePlaylistTrackRequest, MusicApi, OfflineRequest,
+    OkResponse, PlayNextRequest, PlayPlaylistRequest, PlayTrackRequest, PlaybackModeRequest,
+    PlaybackSnapshot as ApiPlaybackSnapshot, PlaybackState, Playlist, PlaylistDetail,
+    PlaylistEditError, ProviderInfo, Queue as ApiQueue, QueueItem as ApiQueueItem, QueueRequest,
+    RemovePlaylistTracksRequest, RemoveQueueRequest, ReorderQueueRequest,
     RepeatMode as ApiRepeatMode, RepeatRequest, RetryDownloadRequest, RssFeed, SearchResults,
     SeekRequest, ShuffleRequest, Status, Track, TrackDetail, UpdatePlaylistRequest, VolumeRequest,
 };
@@ -216,6 +217,7 @@ pub fn router<S: AudioSink + Send + 'static>(state: AppState<S>) -> Router {
         .route("/api/tracks/{provider}/{track_id}", get(track_detail))
         .route("/api/tracks/{provider}/{track_id}/cover", get(cover))
         .route("/api/queue", get(queue).post(queue_add).delete(queue_clear))
+        .route("/api/history", get(history))
         .route("/api/queue/reorder", post(queue_reorder))
         .route("/api/queue/remove", post(queue_remove))
         .route("/api/queue/play-next", post(queue_play_next))
@@ -1073,6 +1075,28 @@ fn set_cover_headers(headers: &mut HeaderMap, etag: &str, content_type: &'static
 async fn queue<S: AudioSink + Send + 'static>(State(state): State<AppState<S>>) -> Json<ApiQueue> {
     let playback = state.playback.lock().await;
     Json(api_queue(&playback.queue_snapshot()))
+}
+
+/// Listen history, newest first.
+async fn history<S: AudioSink + Send + 'static>(
+    State(state): State<AppState<S>>,
+) -> Json<Vec<ApiHistoryEntry>> {
+    let playback = state.playback.lock().await;
+    Json(playback.history().iter().map(api_history_entry).collect())
+}
+
+fn api_history_entry(entry: &recvrd_core::HistoryEntry) -> ApiHistoryEntry {
+    ApiHistoryEntry {
+        provider: entry.provider,
+        track_id: entry.track_id.clone(),
+        title: entry.title.clone(),
+        artist: entry.author.clone(),
+        album: entry.album.clone(),
+        duration: entry.duration.clone(),
+        started_at: entry.started_at,
+        played_secs: entry.played_secs,
+        completed: entry.completed,
+    }
 }
 
 async fn play_playlist<S: AudioSink + Send + 'static>(
@@ -2407,6 +2431,48 @@ mod tests {
             axum::serve(listener, router(state)).await.unwrap();
         });
         (format!("http://{addr}"), server)
+    }
+
+    #[tokio::test]
+    async fn history_lists_finished_plays() {
+        let state = test_state();
+        let playback = state.playback.clone();
+        let (base, _server) = start_server(state).await;
+        let client = reqwest::Client::new();
+
+        let empty: serde_json::Value = client
+            .get(format!("{base}/api/history"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(empty.as_array().unwrap().len(), 0);
+
+        {
+            let mut service = playback.lock().await;
+            service
+                .play_playlist(vec![core_track(track("v1")), core_track(track("v2"))])
+                .await
+                .unwrap();
+            service.seek(Duration::from_secs(45)).unwrap();
+            service.on_track_finished().await.unwrap();
+        }
+
+        let history: serde_json::Value = client
+            .get(format!("{base}/api/history"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(history.as_array().unwrap().len(), 1);
+        assert_eq!(history[0]["track_id"], "v1");
+        assert_eq!(history[0]["title"], "Track v1");
+        assert_eq!(history[0]["artist"], "Artist");
+        assert_eq!(history[0]["completed"], true);
     }
 
     #[tokio::test]

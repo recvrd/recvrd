@@ -16,6 +16,7 @@ import {
   FakeEventSource,
   downloadStatus,
   makeApi,
+  makeHistoryEntry,
   makePlaylist,
   makeProviderInfo,
   makeQueue,
@@ -1034,6 +1035,28 @@ describe('AppStore', () => {
     expect(api.playlist).toHaveBeenCalledWith('p1', 'youtube');
     expect(store.view).toEqual({ kind: 'playlist', id: 'p1' });
     expect(store.playlist?.tracks).toHaveLength(2);
+    store.dispose();
+  });
+
+  it('opens the history view and loads entries', async () => {
+    const { api, store } = setup();
+    const entry = makeHistoryEntry();
+    api.history = vi.fn(async () => [entry]);
+    await store.openHistory();
+    expect(store.view).toEqual({ kind: 'history' });
+    expect(store.history).toEqual([entry]);
+    expect(store.historyLoading).toBe(false);
+    expect(window.location.hash).toBe('#/history');
+    store.dispose();
+  });
+
+  it('opens history from the location hash', async () => {
+    window.history.replaceState(null, '', '/#/history');
+    const { api, store } = setup();
+    await store.init();
+    expect(api.history).toHaveBeenCalled();
+    expect(store.view).toEqual({ kind: 'history' });
+    expect(store.history).toEqual([]);
     store.dispose();
   });
 
