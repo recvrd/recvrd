@@ -13,7 +13,9 @@ pub mod settings;
 pub mod state;
 
 pub use auth::{Auth, AuthError, AuthState, AuthStatus, LoadedAuth, resolve_auth};
-pub use config::{ConfigError, DaemonConfig, Downloader, PodverseConfig, is_loopback_bind};
+pub use config::{
+    ConfigError, DaemonConfig, Downloader, LastfmConfig, PodverseConfig, is_loopback_bind,
+};
 pub use cover::CoverFetcher;
 pub use events::{CoreEvent, EventBus, EventEnvelope, Snapshot};
 pub use history::{
@@ -25,7 +27,7 @@ pub use model::{
 pub use paths::{Paths, PathsError};
 pub use playback::{
     AudioSink, NoStreamFactory, PlaybackCommand, PlaybackError, PlaybackService, PlaybackSource,
-    PositionSyncEvent, StreamFactory, StreamReader,
+    PositionSyncEvent, ScrobbleEvent, StreamFactory, StreamReader,
 };
 pub use settings::{PlaybackSettings, PlaybackSettingsStore, SETTINGS_VERSION};
 pub use state::{PersistedState, STATE_VERSION, StateError};

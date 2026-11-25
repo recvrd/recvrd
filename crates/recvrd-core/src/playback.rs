@@ -29,6 +29,9 @@ const REMOTE_APPLY_WINDOW: Duration = Duration::from_secs(10);
 /// Tolerance for clock skew between the daemon and the Podverse
 /// server, in seconds, when it compares write times.
 const REMOTE_TIMESTAMP_TOLERANCE_SECS: u64 = 5;
+/// A play scrobbles after this many seconds, or after half the
+/// track, whichever comes first.
+const SCROBBLE_MIN_SECS: Duration = Duration::from_secs(240);
 /// Maximum in-memory cleared positions. The map only breaks ties
 /// between a local clear and an old remote row.
 const MAX_CLEARED_POSITIONS: usize = 1000;
@@ -193,6 +196,15 @@ impl PositionSyncEvent {
     }
 }
 
+/// A play event for the Last.fm worker.
+#[derive(Debug, Clone)]
+pub enum ScrobbleEvent {
+    /// A music track started. Send a now-playing update.
+    NowPlaying { track: Track, started_at: u64 },
+    /// A music track reached the scrobble threshold. Send a scrobble.
+    Scrobble { track: Track, started_at: u64 },
+}
+
 /// Headless playback service. Owns the queue, playback state and event bus.
 pub struct PlaybackService<S: AudioSink> {
     queue: Queue,
@@ -224,6 +236,10 @@ pub struct PlaybackService<S: AudioSink> {
     positions_cleared: HashMap<String, u64>,
     /// Channel for position sync events, when the daemon runs one.
     sync_tx: Option<mpsc::Sender<PositionSyncEvent>>,
+    /// Channel for Last.fm events, when the daemon runs a scrobbler.
+    scrobble_tx: Option<mpsc::Sender<ScrobbleEvent>>,
+    /// True when the current play already sent a scrobble.
+    scrobbled: bool,
     restart_at: Option<Instant>,
     restart_delay: Duration,
     /// Listen history, newest first.
@@ -282,6 +298,8 @@ impl<S: AudioSink> PlaybackService<S> {
             positions: TrackPositions::default(),
             positions_cleared: HashMap::new(),
             sync_tx: None,
+            scrobble_tx: None,
+            scrobbled: false,
             restart_at: None,
             restart_delay: STREAM_RESTART_RETRY,
             history: History::new(),
@@ -296,6 +314,12 @@ impl<S: AudioSink> PlaybackService<S> {
         self.sync_tx = Some(sender);
     }
 
+    /// Attach a channel for Last.fm events. The daemon connects the
+    /// scrobble worker here.
+    pub fn set_scrobble_sender(&mut self, sender: mpsc::Sender<ScrobbleEvent>) {
+        self.scrobble_tx = Some(sender);
+    }
+
     /// Return the saved position for a track, if the map holds one.
     pub fn saved_position(&self, key: &TrackKey) -> Option<Duration> {
         self.positions.get(key)
@@ -307,6 +331,48 @@ impl<S: AudioSink> PlaybackService<S> {
         if let Some(sender) = &self.sync_tx {
             let _ = sender.try_send(event);
         }
+    }
+
+    /// Send a Last.fm event. A full or closed channel drops the
+    /// event. Scrobbling never blocks playback.
+    fn emit_scrobble(&self, event: ScrobbleEvent) {
+        if let Some(sender) = &self.scrobble_tx {
+            let _ = sender.try_send(event);
+        }
+    }
+
+    /// Music tracks scrobble. RSS podcast episodes do not.
+    fn scrobbles(track: &Track) -> bool {
+        track.provider != common_structs::ProviderId::Rss
+    }
+
+    /// Emit a scrobble when the current play reaches the threshold.
+    /// The threshold is half the track or four minutes, whichever
+    /// comes first. One play emits at most one scrobble.
+    fn maybe_scrobble(&mut self) {
+        if self.scrobbled {
+            return;
+        }
+        let Some(play) = &self.current_play else {
+            return;
+        };
+        if !Self::scrobbles(&play.track) {
+            return;
+        }
+        let played = self.current_position().saturating_sub(play.start_position);
+        let threshold = parse_duration(&play.track.duration)
+            .map_or(SCROBBLE_MIN_SECS, |duration| {
+                (duration / 2).min(SCROBBLE_MIN_SECS)
+            });
+        if played < threshold {
+            return;
+        }
+        let event = ScrobbleEvent::Scrobble {
+            track: play.track.clone(),
+            started_at: play.started_at,
+        };
+        self.scrobbled = true;
+        self.emit_scrobble(event);
     }
 
     /// Remember a local clear time and keep the map bounded.
@@ -632,6 +698,17 @@ impl<S: AudioSink> PlaybackService<S> {
             started_at: now_unix(),
             start_position: self.current_position(),
         });
+        self.scrobbled = false;
+        if Self::scrobbles(track) {
+            let started_at = self
+                .current_play
+                .as_ref()
+                .map_or_else(now_unix, |play| play.started_at);
+            self.emit_scrobble(ScrobbleEvent::NowPlaying {
+                track: track.clone(),
+                started_at,
+            });
+        }
     }
 
     /// Current position, including the time elapsed since the last play,
@@ -748,6 +825,7 @@ impl<S: AudioSink> PlaybackService<S> {
             if self.sink.is_finished() {
                 self.on_track_finished().await?;
             } else {
+                self.maybe_scrobble();
                 self.publish_playback();
             }
         }
@@ -3193,6 +3271,14 @@ mod tests {
         events
     }
 
+    fn drain_scrobble(rx: &mut tokio::sync::mpsc::Receiver<ScrobbleEvent>) -> Vec<ScrobbleEvent> {
+        let mut events = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            events.push(event);
+        }
+        events
+    }
+
     fn rss_track() -> Track {
         Track {
             provider: common_structs::ProviderId::Rss,
@@ -3240,6 +3326,81 @@ mod tests {
             )),
             "seek and pause must emit a Write at 30s, got {events:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_music_play_emits_now_playing() {
+        let mut service = service();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+        service.set_scrobble_sender(tx);
+        service.play_playlist(tracks(1)).await.unwrap();
+
+        let events = drain_scrobble(&mut rx);
+        assert!(
+            matches!(
+                events.as_slice(),
+                [ScrobbleEvent::NowPlaying { track, .. }] if track.track_id == "video-0"
+            ),
+            "start must emit now-playing, got {events:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn half_the_track_scrobbles_once() {
+        let mut service = service();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+        service.set_scrobble_sender(tx);
+        service.play_playlist(tracks(1)).await.unwrap();
+        drain_scrobble(&mut rx);
+
+        service.position = Duration::from_secs(89);
+        service.started_at = None;
+        service.tick().await.unwrap();
+        assert!(drain_scrobble(&mut rx).is_empty(), "89s is below half");
+
+        service.position = Duration::from_secs(91);
+        service.tick().await.unwrap();
+        service.tick().await.unwrap();
+        let events = drain_scrobble(&mut rx);
+        assert_eq!(events.len(), 1, "one play emits one scrobble");
+        assert!(matches!(
+            &events[0],
+            ScrobbleEvent::Scrobble { track, .. } if track.track_id == "video-0"
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_long_track_scrobbles_after_four_minutes() {
+        let mut service = service();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+        service.set_scrobble_sender(tx);
+        service.play_playlist(long_tracks(1)).await.unwrap();
+        drain_scrobble(&mut rx);
+
+        service.position = Duration::from_secs(241);
+        service.started_at = None;
+        service.tick().await.unwrap();
+
+        let events = drain_scrobble(&mut rx);
+        assert!(
+            matches!(events.as_slice(), [ScrobbleEvent::Scrobble { .. }]),
+            "a long track must scrobble at four minutes, got {events:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_rss_episode_does_not_scrobble() {
+        let mut service = service();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+        service.set_scrobble_sender(tx);
+        service.play_playlist(vec![rss_track()]).await.unwrap();
+        drain_scrobble(&mut rx);
+
+        service.position = Duration::from_secs(3600);
+        service.started_at = None;
+        service.tick().await.unwrap();
+
+        assert!(drain_scrobble(&mut rx).is_empty());
     }
 
     #[tokio::test]

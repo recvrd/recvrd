@@ -37,6 +37,37 @@ impl std::fmt::Debug for PodverseConfig {
     }
 }
 
+/// Last.fm scrobbling configuration.
+#[derive(Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct LastfmConfig {
+    /// Send music plays to Last.fm. The default is off.
+    pub enabled: bool,
+    /// The Last.fm API key.
+    pub api_key: Option<String>,
+    /// The Last.fm API secret.
+    pub api_secret: Option<String>,
+    /// The per-user session key from the Last.fm web auth flow.
+    pub session_key: Option<String>,
+}
+
+impl std::fmt::Debug for LastfmConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LastfmConfig")
+            .field("enabled", &self.enabled)
+            .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
+            .field(
+                "api_secret",
+                &self.api_secret.as_ref().map(|_| "<redacted>"),
+            )
+            .field(
+                "session_key",
+                &self.session_key.as_ref().map(|_| "<redacted>"),
+            )
+            .finish()
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct DaemonConfig {
@@ -59,6 +90,8 @@ pub struct DaemonConfig {
     pub cache_limit_mb: u64,
     /// Podverse provider configuration.
     pub podverse: PodverseConfig,
+    /// Last.fm scrobbling configuration.
+    pub lastfm: LastfmConfig,
 }
 
 impl Default for DaemonConfig {
@@ -74,6 +107,7 @@ impl Default for DaemonConfig {
             cover_cache_mb: 100,
             cache_limit_mb: 10240,
             podverse: PodverseConfig::default(),
+            lastfm: LastfmConfig::default(),
         }
     }
 }
@@ -188,6 +222,7 @@ mod tests {
         assert_eq!(config.port, None);
         assert_eq!(config.headers, None);
         assert_eq!(config.podverse, PodverseConfig::default());
+        assert_eq!(config.lastfm, LastfmConfig::default());
     }
 
     #[test]
@@ -245,6 +280,25 @@ token = "secret"
 
         let config = DaemonConfig::load(&path).unwrap();
         assert!(config.podverse.sync);
+    }
+
+    #[test]
+    fn lastfm_is_opt_in_and_redacts_secrets() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(
+            &path,
+            "[lastfm]\nenabled = true\napi_key = \"key-value\"\napi_secret = \"secret-value\"\nsession_key = \"session-value\"\n",
+        )
+        .unwrap();
+
+        let config = DaemonConfig::load(&path).unwrap();
+        assert!(config.lastfm.enabled);
+        assert_eq!(config.lastfm.api_key.as_deref(), Some("key-value"));
+        let debug = format!("{:?}", config.lastfm);
+        assert!(!debug.contains("secret-value"));
+        assert!(!debug.contains("session-value"));
+        assert!(!debug.contains("key-value"));
     }
 
     #[test]

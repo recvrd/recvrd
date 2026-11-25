@@ -20,6 +20,7 @@ mod artwork;
 mod audio;
 mod cache;
 mod downloads;
+mod lastfm;
 mod mcp;
 mod mpris;
 mod music;
@@ -334,6 +335,30 @@ fn run_serve(
     {
         config.podverse.sync = value.eq_ignore_ascii_case("true") || value == "1";
     }
+    if let Some(value) = std::env::var("RECVRD_LASTFM_ENABLED")
+        .ok()
+        .or_else(|| std::env::var("YTERMUSICD_LASTFM_ENABLED").ok())
+    {
+        config.lastfm.enabled = value.eq_ignore_ascii_case("true") || value == "1";
+    }
+    if let Some(value) = std::env::var("RECVRD_LASTFM_API_KEY")
+        .ok()
+        .or_else(|| std::env::var("YTERMUSICD_LASTFM_API_KEY").ok())
+    {
+        config.lastfm.api_key = Some(value);
+    }
+    if let Some(value) = std::env::var("RECVRD_LASTFM_API_SECRET")
+        .ok()
+        .or_else(|| std::env::var("YTERMUSICD_LASTFM_API_SECRET").ok())
+    {
+        config.lastfm.api_secret = Some(value);
+    }
+    if let Some(value) = std::env::var("RECVRD_LASTFM_SESSION_KEY")
+        .ok()
+        .or_else(|| std::env::var("YTERMUSICD_LASTFM_SESSION_KEY").ok())
+    {
+        config.lastfm.session_key = Some(value);
+    }
 
     let bind = bind
         .or(config.bind)
@@ -515,6 +540,12 @@ fn run_serve(
             }
         } else if config.podverse.sync {
             log::warn!("Podverse position sync is on, but no base URL or token is set");
+        }
+
+        // Start Last.fm scrobbling when the config enables it.
+        if let Some(sender) = lastfm::start(&config.lastfm, offline.clone()) {
+            let mut service = playback.lock().await;
+            service.set_scrobble_sender(sender);
         }
 
         let downloads = DownloadService::new(

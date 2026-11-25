@@ -43,6 +43,22 @@ cache_limit_mb = 10240
 #   RECVRD_PODVERSE_URL
 #   RECVRD_PODVERSE_TOKEN
 
+# Last.fm scrobbling. Off by default. Register an API account at
+# https://www.last.fm/api/account/create to get an API key and secret.
+# Then complete the desktop auth flow to get a session key. Keep the
+# secrets out of a shared file.
+# [lastfm]
+# enabled = true
+# api_key = "your-api-key"
+# api_secret = "your-api-secret"
+# session_key = "your-session-key"
+
+# Environment overrides:
+#   RECVRD_LASTFM_ENABLED
+#   RECVRD_LASTFM_API_KEY
+#   RECVRD_LASTFM_API_SECRET
+#   RECVRD_LASTFM_SESSION_KEY
+
 # Playback modes are not set here. The daemon stores per-provider choices
 # in $XDG_CONFIG_HOME/recvrd/settings.toml and changes them through
 # PUT /api/providers/{provider}/playback. The defaults are:

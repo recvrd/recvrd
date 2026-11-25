@@ -38,7 +38,16 @@ SIGINT/SIGTERM. State is owned by the daemon, not by an individual client.
 | `crates/player` | Current | Audio decoding/playback |
 | `crates/database` | Current | Local download database |
 | `crates/download-manager` | Current | Download queue |
+
 | `crates/common-structs` | Current | Shared status types |
+
+## Scrobbling
+
+The daemon sends music plays to Last.fm when `lastfm.enabled` is true. The
+playback service emits a now-playing event when a music track starts. It
+emits a scrobble after half the track or four minutes, whichever comes
+first. RSS episodes do not scrobble. The worker keeps failed and offline
+scrobbles in memory and retries them.
 
 ## Data flow
 
