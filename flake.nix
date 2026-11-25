@@ -1,10 +1,13 @@
 {
   description = "recvrd development environment and package";
 
-  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    crane.url = "github:ipetkov/crane/v0.24.0";
+  };
 
   outputs =
-    { self, nixpkgs, ... }:
+    { self, nixpkgs, crane, ... }:
     let
       systems = [
         "x86_64-linux"
@@ -27,98 +30,113 @@
           installPhase = "cp -r dist $out";
         };
 
-      recvrdFor =
+      rustLibFor =
         system:
         let
           pkgs = import nixpkgs { inherit system; };
           inherit (pkgs) lib;
-        in
-        pkgs.rustPlatform.buildRustPackage {
-          pname = "recvrd";
-          version = (builtins.fromTOML (builtins.readFile ./crates/recvrd/Cargo.toml)).package.version;
-          src = self;
+          craneLib = crane.mkLib pkgs;
+          commonArgs = {
+            src = craneLib.cleanCargoSource ./.;
+            strictDeps = true;
 
-          cargoLock = {
-            lockFile = ./Cargo.lock;
-            outputHashes = {
-              "rusty_ytdl-0.7.4" = "sha256-mCX+vylB4uV8GFhv8vLC69MEszEkfUgA7xXtD1fP6go=";
+            nativeBuildInputs =
+              [ pkgs.pkg-config ]
+              ++ lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.llvmPackages.libclang ];
+
+            buildInputs =
+              with pkgs;
+              [
+                openssl
+                sqlite
+              ]
+              ++ lib.optionals pkgs.stdenv.hostPlatform.isLinux [
+                pipewire
+                dbus
+              ];
+
+            env = lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+              LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
+              BINDGEN_EXTRA_CLANG_ARGS = "-I${pkgs.glibc.dev}/include";
             };
           };
-
-          cargoBuildFlags = [ "--package" "recvrd" ];
-          doCheck = false;
-
-          preBuild = ''
-            ${
-              lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
-                export LIBCLANG_PATH="${pkgs.llvmPackages.libclang.lib}/lib"
-                export BINDGEN_EXTRA_CLANG_ARGS="-I${pkgs.glibc.dev}/include"
-              ''
+        in
+        {
+          inherit pkgs lib craneLib commonArgs;
+          cargoArtifacts = craneLib.buildDepsOnly (
+            commonArgs
+            // {
+              pname = "recvrd-deps";
+              version = (builtins.fromTOML (builtins.readFile ./crates/recvrd/Cargo.toml)).package.version;
             }
-            mkdir -p crates/recvrd-web/dist
-            cp -r ${webFor system}/. crates/recvrd-web/dist/
-          '';
-
-          nativeBuildInputs =
-            [ pkgs.makeWrapper pkgs.pkg-config ]
-            ++ lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.llvmPackages.libclang ];
-
-          buildInputs =
-            with pkgs;
-            [
-              openssl
-              sqlite
-            ]
-            ++ lib.optionals pkgs.stdenv.hostPlatform.isLinux [
-              pipewire
-              dbus
-            ];
-
-          postInstall = ''
-            wrapProgram $out/bin/recvrd \
-              --prefix PATH : ${lib.makeBinPath [ pkgs.yt-dlp pkgs.ffmpeg ]}
-            install -Dm644 packaging/systemd/recvrd.service \
-              $out/lib/systemd/user/recvrd.service
-            install -Dm644 packaging/systemd/recvrd.env.example \
-              $out/share/doc/recvrd/recvrd.env.example
-            install -Dm644 config.example.toml \
-              $out/share/doc/recvrd/config.example.toml
-          '';
-
-          meta = {
-            description = "Headless YouTube Music daemon with a web UI, MPRIS and MCP";
-            license = lib.licenses.asl20;
-            mainProgram = "recvrd";
-          };
+          );
         };
+
+      recvrdFor =
+        system:
+        let
+          rust = rustLibFor system;
+          inherit (rust) pkgs lib craneLib commonArgs cargoArtifacts;
+        in
+        craneLib.buildPackage (
+          commonArgs
+          // {
+            inherit cargoArtifacts;
+            src = self;
+            pname = "recvrd";
+            version = (builtins.fromTOML (builtins.readFile ./crates/recvrd/Cargo.toml)).package.version;
+            cargoBuildFlags = [ "--package" "recvrd" ];
+            doCheck = false;
+
+            nativeBuildInputs = commonArgs.nativeBuildInputs ++ [ pkgs.makeWrapper ];
+
+            preBuild = ''
+              mkdir -p crates/recvrd-web/dist
+              cp -r ${webFor system}/. crates/recvrd-web/dist/
+            '';
+
+            postInstall = ''
+              wrapProgram $out/bin/recvrd \
+                --prefix PATH : ${lib.makeBinPath [ pkgs.yt-dlp pkgs.ffmpeg ]}
+              install -Dm644 packaging/systemd/recvrd.service \
+                $out/lib/systemd/user/recvrd.service
+              install -Dm644 packaging/systemd/recvrd.env.example \
+                $out/share/doc/recvrd/recvrd.env.example
+              install -Dm644 config.example.toml \
+                $out/share/doc/recvrd/config.example.toml
+            '';
+
+            meta = {
+              description = "Headless YouTube Music daemon with a web UI, MPRIS and MCP";
+              license = lib.licenses.asl20;
+              mainProgram = "recvrd";
+            };
+          }
+        );
 
       recvcFor =
         system:
         let
-          pkgs = import nixpkgs { inherit system; };
-          inherit (pkgs) lib;
+          rust = rustLibFor system;
+          inherit (rust) lib craneLib commonArgs cargoArtifacts;
         in
-        pkgs.rustPlatform.buildRustPackage {
-          pname = "recvc";
-          version = (builtins.fromTOML (builtins.readFile ./crates/recvc/Cargo.toml)).package.version;
-          src = self;
+        craneLib.buildPackage (
+          commonArgs
+          // {
+            inherit cargoArtifacts;
+            src = self;
+            pname = "recvc";
+            version = (builtins.fromTOML (builtins.readFile ./crates/recvc/Cargo.toml)).package.version;
+            cargoBuildFlags = [ "--package" "recvc" ];
+            doCheck = false;
 
-          cargoLock = {
-            lockFile = ./Cargo.lock;
-            outputHashes = {
-              "rusty_ytdl-0.7.4" = "sha256-mCX+vylB4uV8GFhv8vLC69MEszEkfUgA7xXtD1fP6go=";
+            meta = {
+              description = "Terminal client for the recvrd daemon";
+              license = lib.licenses.asl20;
+              mainProgram = "recvc";
             };
-          };
-
-          cargoBuildFlags = [ "--package" "recvc" ];
-          doCheck = false;
-
-          meta = {
-            description = "Terminal client for the recvrd daemon";
-            license = lib.licenses.asl20;
-            mainProgram = "recvc";
-          };
-        };
+          }
+        );
 
       nixosModule =
         { config, lib, pkgs, ... }:

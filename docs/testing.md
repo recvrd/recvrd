@@ -134,8 +134,10 @@ Never commit the test account's `headers.txt` or `account_id.txt`.
 
 Each pull request to `main` runs `.github/workflows/ci.yml`. You can also run
 it with `workflow_dispatch`. Draft pull requests run no jobs. Mark the pull
-request ready for review to run the full matrix. Run `just ci` before the push;
-it needs `just web-install` on a new checkout. The `rust` job runs:
+request ready for review to run the full matrix. A push to `main` runs only the
+`nix` job and warms the Nix cache. Pull requests restore that cache when the
+store paths match. Run `just ci` before the push; it needs `just web-install`
+on a new checkout. The `rust` job runs:
 
 - `cargo fmt --all -- --check`
 - `cargo clippy --workspace --all-targets -- -D warnings`

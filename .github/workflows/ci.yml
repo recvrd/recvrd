@@ -1,6 +1,9 @@
 name: CI
 
 on:
+  # A push to main warms the Nix cache for pull requests.
+  push:
+    branches: [ main ]
   pull_request:
     branches: [ main ]
     types: [ opened, synchronize, reopened, ready_for_review ]
@@ -17,7 +20,7 @@ jobs:
   rust:
     name: Rust workspace
     runs-on: ubuntu-latest
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    if: github.event_name != 'push' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
     steps:
       - name: Checkout sources
         uses: actions/checkout@v4
@@ -69,7 +72,7 @@ jobs:
   web:
     name: Web build
     runs-on: ubuntu-latest
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    if: github.event_name != 'push' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
     steps:
       - name: Checkout sources
         uses: actions/checkout@v4
@@ -116,12 +119,20 @@ jobs:
     name: Nix flake
     runs-on: ubuntu-latest
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - name: Checkout sources
         uses: actions/checkout@v4
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v21
+
+      - name: Configure the Nix cache
+        uses: DeterminateSystems/magic-nix-cache-action@v15
+        with:
+          use-flakehub: false
 
       - name: Check flake
         run: nix flake check
