@@ -160,6 +160,21 @@ describe('LibraryView', () => {
     expect(api.deletePlaylist).toHaveBeenCalledWith('p1');
   });
 
+  it('shows the library name when the daemon returns the raw playlist ID', () => {
+    const { store } = setupPlaylist();
+    const id = 'VLPLEuTNuVCEhNwBcYRtEfw52PMGYPpyX1v4';
+    store.view = { kind: 'playlist', id, name: 'Christmas Classics' };
+    store.playlist = makePlaylistDetail(makePlaylist(id, { name: id }), [
+      makeTrack('v1'),
+    ]);
+    render(LibraryView, { props: { store } });
+
+    expect(
+      screen.getByRole('heading', { level: 1, name: 'Christmas Classics' }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(id)).not.toBeInTheDocument();
+  });
+
   it('opens the search palette to add tracks', async () => {
     const { store } = setupPlaylist();
     render(LibraryView, { props: { store } });
