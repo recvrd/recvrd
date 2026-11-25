@@ -33,6 +33,13 @@ impl TrackPositions {
         Duration::try_from_secs_f64(position.position_secs).ok()
     }
 
+    /// Get the write time of the saved position for a track.
+    pub fn updated_at(&self, key: &TrackKey) -> Option<u64> {
+        self.0
+            .get(&key.to_string())
+            .map(|position| position.updated_at)
+    }
+
     /// Save a position and evict the oldest entry when the map is full.
     /// A zero position removes the entry.
     pub fn set(&mut self, key: &TrackKey, position: Duration, updated_at: u64) {

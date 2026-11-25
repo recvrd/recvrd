@@ -368,6 +368,29 @@ impl PodverseClient {
         self.get_json(&format!("/item/{id}")).await
     }
 
+    /// Send a GET and return the raw response. The caller maps
+    /// the status, so this call never turns a status into an error.
+    pub(crate) async fn get_response(
+        &self,
+        path: &str,
+    ) -> Result<reqwest::Response, PodverseError> {
+        Ok(self.request(path).send().await?)
+    }
+
+    /// Send a JSON POST and return the raw response. The caller
+    /// maps the status, so this call never turns a status into an error.
+    pub(crate) async fn post_json(
+        &self,
+        path: &str,
+        body: &impl serde::Serialize,
+    ) -> Result<reqwest::Response, PodverseError> {
+        let mut request = self.http.post(format!("{}{path}", self.base_url));
+        if let Some(token) = &self.token {
+            request = request.bearer_auth(token);
+        }
+        Ok(request.json(body).send().await?)
+    }
+
     /// Fetch a media URL. Send the token only when the URL shares
     /// the origin of the configured API base URL.
     pub async fn get_url(&self, url: &str) -> Result<reqwest::Response, PodverseError> {

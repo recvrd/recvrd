@@ -340,6 +340,39 @@ description in `description`. Podverse plays in `stream_then_download` by
 default; see [Playback modes](#playback-modes). Podverse channels are
 read-only.
 
+#### Podverse position sync
+
+Set `podverse.sync = true` in `config.toml` or `RECVRD_PODVERSE_SYNC=true`
+to sync per-track positions with the Podverse queue. Sync also needs a
+token (`podverse.token` or `RECVRD_PODVERSE_TOKEN`) and a signed-in
+account with an unexpired membership. The default is off.
+
+Local storage stays the source of truth. Sync works only for Podverse
+and RSS tracks. YouTube tracks never sync. Sync writes the position
+on pause, seek, and stop, moves a finished track to history, and
+reads the remote position when a track starts. It never blocks
+playback. A failed sync leaves local state alone.
+
+The daemon selects the active account queue. It never creates a
+queue. Podverse tracks sync by item ID. RSS tracks sync by feed URL
+and enclosure URL. A 401 or 403 stops sync for the rest of the run.
+A 429 pauses sync until the server allows it again.
+
+Conflict policy: the newer write wins. The daemon adopts the remote
+position only when the remote write is newer than the last local
+write for the track, with a 5 second tolerance for clock skew. When
+the remote row has no write time, the daemon adopts it only when the
+local map has no entry for the track. A remote position at the end of
+a track clears the local entry. A local rewind to zero clears the
+local entry and the remote position stays, because the server keeps
+the maximum position. The daemon never switches tracks from a remote
+read.
+
+The deployed API version is unconfirmed. The client uses the paths
+and bodies from the public Podverse API source. The live OpenAPI
+document was not readable from this machine. Verify the paths
+against a release before you trust the sync on a new instance.
+
 ### Library and search
 
 ```sh

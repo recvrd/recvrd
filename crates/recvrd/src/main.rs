@@ -23,6 +23,7 @@ mod downloads;
 mod mcp;
 mod mpris;
 mod music;
+mod podverse_sync;
 mod providers;
 mod server;
 mod streams;
@@ -327,6 +328,12 @@ fn run_serve(
     {
         config.podverse.token = Some(value);
     }
+    if let Some(value) = std::env::var("RECVRD_PODVERSE_SYNC")
+        .ok()
+        .or_else(|| std::env::var("YTERMUSICD_PODVERSE_SYNC").ok())
+    {
+        config.podverse.sync = value.eq_ignore_ascii_case("true") || value == "1";
+    }
 
     let bind = bind
         .or(config.bind)
@@ -476,6 +483,37 @@ fn run_serve(
                 }
             }
             service.set_wait_for_downloads(true);
+        }
+
+        // Start Podverse position sync when the config enables it.
+        // The worker reads the remote position of the restored
+        // current track, so a restart resumes where another device
+        // left off.
+        if let Some(sender) =
+            podverse_sync::start_sync(&config.podverse, playback.clone(), offline.clone())
+        {
+            log::info!("Podverse position sync is on");
+            let startup_read = {
+                let mut service = playback.lock().await;
+                service.set_position_sync(sender.clone());
+                service.snapshot().current.map(|track| {
+                    let feed_url = track
+                        .metadata
+                        .as_ref()
+                        .and_then(|metadata| metadata.feed_url.clone());
+                    let enclosure_url = track.source.as_ref().map(|source| source.url.clone());
+                    recvrd_core::PositionSyncEvent::Read {
+                        key: track.key(),
+                        feed_url,
+                        enclosure_url,
+                    }
+                })
+            };
+            if let Some(event) = startup_read {
+                let _ = sender.try_send(event);
+            }
+        } else if config.podverse.sync {
+            log::warn!("Podverse position sync is on, but no base URL or token is set");
         }
 
         let downloads = DownloadService::new(
