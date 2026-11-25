@@ -9,6 +9,7 @@
 //! an API key, an API secret, and a session key. The daemon never
 //! ships a key.
 
+use crate::scrobble::duration_secs;
 use recvrd_core::{LastfmConfig, ScrobbleEvent, Track};
 use std::{
     collections::VecDeque,
@@ -18,7 +19,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use tokio::sync::mpsc;
+use tokio::sync::broadcast;
 
 /// The Last.fm API endpoint.
 const API_URL: &str = "https://ws.audioscrobbler.com/2.0/";
@@ -26,28 +27,28 @@ const API_URL: &str = "https://ws.audioscrobbler.com/2.0/";
 const RETRY_DELAY: Duration = Duration::from_secs(30);
 /// Maximum queued scrobbles. The oldest leaves when the queue is full.
 const MAX_QUEUED: usize = 1000;
-/// A duration longer than this is not sent. Last.fm rejects it.
-const MAX_DURATION_SECS: u64 = 24 * 60 * 60;
 /// Request timeout. Last.fm answers fast, or the call is a retry.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// Build a scrobble worker when the config enables it. Return the
-/// event sender, or `None` when scrobbling cannot run.
+/// Build a scrobble worker when the config enables it. Return true
+/// when the worker starts.
 pub fn start(
     config: &LastfmConfig,
     offline: Arc<AtomicBool>,
-) -> Option<mpsc::Sender<ScrobbleEvent>> {
+    events: broadcast::Receiver<ScrobbleEvent>,
+) -> bool {
     if !config.enabled {
-        return None;
+        return false;
     }
     let Some(client) = LastfmClient::from_config(config) else {
         log::warn!(
             "Last.fm scrobbling is on, but the API key, API secret, or session key is missing"
         );
-        return None;
+        return false;
     };
     log::info!("Last.fm scrobbling is on");
-    Some(start_worker(client, offline, RETRY_DELAY))
+    start_worker(client, offline, RETRY_DELAY, events);
+    true
 }
 
 /// Start the worker with a client and a retry delay. Tests use a
@@ -56,20 +57,19 @@ fn start_worker(
     client: LastfmClient,
     offline: Arc<AtomicBool>,
     retry_delay: Duration,
-) -> mpsc::Sender<ScrobbleEvent> {
-    let (tx, rx) = mpsc::channel(64);
+    events: broadcast::Receiver<ScrobbleEvent>,
+) {
     tokio::spawn(
         LastfmWorker {
             client,
             offline,
-            events: rx,
+            events,
             queue: VecDeque::new(),
             retry_delay,
             retry_at: None,
         }
         .run(),
     );
-    tx
 }
 
 /// A queued scrobble with its original start time.
@@ -78,7 +78,7 @@ type QueuedScrobble = (Track, u64);
 struct LastfmWorker {
     client: LastfmClient,
     offline: Arc<AtomicBool>,
-    events: mpsc::Receiver<ScrobbleEvent>,
+    events: broadcast::Receiver<ScrobbleEvent>,
     queue: VecDeque<QueuedScrobble>,
     retry_delay: Duration,
     retry_at: Option<Instant>,
@@ -98,8 +98,11 @@ impl LastfmWorker {
                 wait = wait.min(Duration::from_secs(1));
             }
             match tokio::time::timeout(wait, self.events.recv()).await {
-                Ok(Some(event)) => self.handle(event).await,
-                Ok(None) => return,
+                Ok(Ok(event)) => self.handle(event).await,
+                Ok(Err(broadcast::error::RecvError::Lagged(count))) => {
+                    log::warn!("the Last.fm worker lagged by {count} events");
+                }
+                Ok(Err(broadcast::error::RecvError::Closed)) => return,
                 Err(_) => {}
             }
         }
@@ -329,27 +332,6 @@ fn classify_error(code: i64, message: &str) -> ScrobbleError {
     }
 }
 
-/// Parse a `m:ss` or `h:mm:ss` duration, in seconds.
-fn duration_secs(text: &str) -> Option<u64> {
-    let parts: Vec<&str> = text.split(':').collect();
-    let (seconds, minutes, hours) = match parts.as_slice() {
-        [seconds] => (seconds.parse::<u64>().ok()?, 0, 0),
-        [minutes, seconds] => (
-            seconds.parse::<u64>().ok()?,
-            minutes.parse::<u64>().ok()?,
-            0,
-        ),
-        [hours, minutes, seconds] => (
-            seconds.parse::<u64>().ok()?,
-            minutes.parse::<u64>().ok()?,
-            hours.parse::<u64>().ok()?,
-        ),
-        _ => return None,
-    };
-    let total = hours * 3600 + minutes * 60 + seconds;
-    (total > 0 && total <= MAX_DURATION_SECS).then_some(total)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -463,15 +445,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn parses_track_durations() {
-        assert_eq!(duration_secs("3:00"), Some(180));
-        assert_eq!(duration_secs("1:02:03"), Some(3723));
-        assert_eq!(duration_secs("0:00"), None);
-        assert_eq!(duration_secs(""), None);
-        assert_eq!(duration_secs("bad"), None);
-    }
-
     #[tokio::test]
     async fn sends_now_playing_and_scrobble() {
         let (base_url, requests, server) = mock_server("{}").await;
@@ -502,14 +475,14 @@ mod tests {
             mock_server(r#"{"scrobbles":{"@attr":{"accepted":1}}}"#).await;
         let client = client(base_url);
         let offline = Arc::new(AtomicBool::new(true));
-        let sender = start_worker(client, offline.clone(), Duration::from_millis(10));
+        let (sender, events) = broadcast::channel(16);
+        start_worker(client, offline.clone(), Duration::from_millis(10), events);
 
         sender
             .send(ScrobbleEvent::Scrobble {
                 track: track(),
                 started_at: 1_700_000_000,
             })
-            .await
             .unwrap();
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert!(requests.lock().unwrap().is_empty());
@@ -520,7 +493,6 @@ mod tests {
                 track: track(),
                 started_at: 1_700_000_000,
             })
-            .await
             .unwrap();
 
         assert!(
@@ -566,10 +538,12 @@ mod tests {
             }
         });
         let client = client(format!("http://{address}/2.0/"));
-        let sender = start_worker(
+        let (sender, events) = broadcast::channel(16);
+        start_worker(
             client,
             Arc::new(AtomicBool::new(false)),
             Duration::from_millis(10),
+            events,
         );
 
         sender
@@ -577,7 +551,6 @@ mod tests {
                 track: track(),
                 started_at: 1_700_000_000,
             })
-            .await
             .unwrap();
 
         assert!(

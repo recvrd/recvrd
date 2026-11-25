@@ -11,6 +11,9 @@
 - Add opt-in Last.fm scrobbling for music tracks. The daemon sends a
   now-playing update and a scrobble after half the track or four minutes.
   Plays made while offline are queued and sent later.
+- Add opt-in ListenBrainz scrobbling for music tracks. The daemon sends a
+  now-playing update and a single listen after half the track or four
+  minutes. Plays made while offline are queued and sent later.
 
 ### Removed
 
