@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { MenuItem } from '../types';
+  import { clampMenuPosition, type MenuPosition } from '../menu-position';
 
   let {
     x,
@@ -14,6 +15,21 @@
   } = $props();
 
   let menu: HTMLDivElement | undefined = $state();
+  let position: MenuPosition | null = $state(null);
+
+  $effect(() => {
+    if (menu) {
+      const rect = menu.getBoundingClientRect();
+      position = clampMenuPosition(
+        x,
+        y,
+        rect.width,
+        rect.height,
+        window.innerWidth,
+        window.innerHeight,
+      );
+    }
+  });
 
   $effect(() => {
     const close = (event: Event) => {
@@ -36,8 +52,8 @@
   class="menu"
   role="menu"
   bind:this={menu}
-  style:left={`${x}px`}
-  style:top={`${y}px`}
+  style:left={`${position?.left ?? x}px`}
+  style:top={`${position?.top ?? y}px`}
 >
   {#each items as item}
     <button
@@ -58,6 +74,8 @@
     position: fixed;
     z-index: 60;
     min-width: 10rem;
+    max-height: calc(100vh - 1rem);
+    overflow-y: auto;
     display: flex;
     flex-direction: column;
     padding: 0.3rem;

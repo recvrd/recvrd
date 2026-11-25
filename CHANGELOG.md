@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Added
+
+- Save the playback position of each track, up to 1000 entries, and resume each
+  track at its saved position.
+
 ### Removed
 
 - Remove the legacy `ytermusic` TUI. `recvc` is the terminal client.

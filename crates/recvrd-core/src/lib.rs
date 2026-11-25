@@ -25,7 +25,7 @@ pub use model::{
 pub use paths::{Paths, PathsError};
 pub use playback::{
     AudioSink, NoStreamFactory, PlaybackCommand, PlaybackError, PlaybackService, PlaybackSource,
-    StreamFactory, StreamReader,
+    PositionSyncEvent, StreamFactory, StreamReader,
 };
 pub use settings::{PlaybackSettings, PlaybackSettingsStore, SETTINGS_VERSION};
 pub use state::{PersistedState, STATE_VERSION, StateError};

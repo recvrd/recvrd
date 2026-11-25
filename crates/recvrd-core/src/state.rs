@@ -1,12 +1,119 @@
 use crate::model::{RepeatMode, Track};
+use common_structs::TrackKey;
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::{BTreeMap, BTreeSet},
     fs, io,
     path::{Path, PathBuf},
+    time::Duration,
 };
 use thiserror::Error;
 
 pub const STATE_VERSION: u32 = 1;
+/// The maximum number of per-track positions to keep.
+pub const MAX_TRACK_POSITIONS: usize = 1000;
+
+/// The last saved position of one track.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TrackPosition {
+    pub position_secs: f64,
+    #[serde(default)]
+    pub updated_at: u64,
+}
+
+/// Saved positions keyed by `provider:track_id`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct TrackPositions(BTreeMap<String, TrackPosition>);
+
+impl TrackPositions {
+    /// Get the saved position for a track.
+    pub fn get(&self, key: &TrackKey) -> Option<Duration> {
+        let position = self.0.get(&key.to_string())?;
+        Duration::try_from_secs_f64(position.position_secs).ok()
+    }
+
+    /// Get the write time of the saved position for a track.
+    pub fn updated_at(&self, key: &TrackKey) -> Option<u64> {
+        self.0
+            .get(&key.to_string())
+            .map(|position| position.updated_at)
+    }
+
+    /// Save a position and evict the oldest entry when the map is full.
+    /// A zero position removes the entry.
+    pub fn set(&mut self, key: &TrackKey, position: Duration, updated_at: u64) {
+        let key = key.to_string();
+        if position.is_zero() {
+            self.0.remove(&key);
+            return;
+        }
+        if self.0.len() >= MAX_TRACK_POSITIONS && !self.0.contains_key(&key) {
+            self.evict_oldest();
+        }
+        self.0.insert(
+            key,
+            TrackPosition {
+                position_secs: position.as_secs_f64(),
+                updated_at,
+            },
+        );
+    }
+
+    /// Remove the saved position for a track.
+    pub fn remove(&mut self, key: &TrackKey) {
+        self.0.remove(&key.to_string());
+    }
+
+    /// Keep only the positions for the given track keys.
+    pub fn retain_for(&mut self, keys: &[TrackKey]) {
+        let keys: BTreeSet<String> = keys.iter().map(ToString::to_string).collect();
+        self.0.retain(|key, _| keys.contains(key));
+    }
+
+    /// Remove all saved positions.
+    pub fn clear(&mut self) {
+        self.0.clear();
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn contains(&self, key: &TrackKey) -> bool {
+        self.0.contains_key(&key.to_string())
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&String, &TrackPosition)> {
+        self.0.iter()
+    }
+
+    /// Remove the oldest entries until the map is within the cap.
+    pub fn enforce_cap(&mut self) {
+        while self.0.len() > MAX_TRACK_POSITIONS {
+            self.evict_oldest();
+        }
+    }
+
+    fn evict_oldest(&mut self) {
+        let oldest = self
+            .0
+            .iter()
+            .min_by(|(left_key, left), (right_key, right)| {
+                left.updated_at
+                    .cmp(&right.updated_at)
+                    .then_with(|| left_key.cmp(right_key))
+            })
+            .map(|(key, _)| key.clone());
+        if let Some(key) = oldest {
+            self.0.remove(&key);
+        }
+    }
+}
 
 /// Versioned player state persisted between daemon runs.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -22,6 +129,10 @@ pub struct PersistedState {
     pub shuffle: bool,
     pub volume: u8,
     pub position_secs: f64,
+    /// Saved positions for tracks in the queue, keyed by
+    /// `provider:track_id`. Empty in state files that predate this field.
+    #[serde(default)]
+    pub positions: TrackPositions,
 }
 
 impl Default for PersistedState {
@@ -35,6 +146,7 @@ impl Default for PersistedState {
             shuffle: false,
             volume: 50,
             position_secs: 0.0,
+            positions: TrackPositions::default(),
         }
     }
 }
@@ -91,7 +203,7 @@ impl PersistedState {
             }
         };
 
-        let state: Self = toml::from_str(&text).map_err(|source| StateError::Parse {
+        let mut state: Self = toml::from_str(&text).map_err(|source| StateError::Parse {
             path: path.to_path_buf(),
             source,
         })?;
@@ -102,6 +214,7 @@ impl PersistedState {
             });
         }
         state.validate()?;
+        state.positions.enforce_cap();
         Ok(state)
     }
 
@@ -125,6 +238,13 @@ impl PersistedState {
                 "position {} is invalid",
                 self.position_secs
             )));
+        }
+        for (key, position) in self.positions.iter() {
+            if !position.position_secs.is_finite() || position.position_secs < 0.0 {
+                return Err(StateError::Invalid(format!(
+                    "position for {key} is invalid"
+                )));
+            }
         }
         if !self.original_tracks.is_empty() {
             let mut saved: Vec<_> = self.tracks.iter().map(|track| track.key()).collect();
@@ -309,7 +429,119 @@ mod tests {
         .unwrap();
         let state = PersistedState::load(&path).unwrap();
         assert!(state.original_tracks.is_empty());
+        assert!(state.positions.is_empty());
         assert!(state.shuffle);
+    }
+
+    #[test]
+    fn state_without_positions_loads() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("state.toml");
+        fs::write(
+            &path,
+            "version = 1\ncurrent = 0\nrepeat = \"off\"\nshuffle = false\nvolume = 50\nposition_secs = 12.0\n[[tracks]]\ntrack_id = \"video-0\"\ntitle = \"Track\"\nauthor = \"Artist\"\nalbum = \"Album\"\nduration = \"3:00\"\n",
+        )
+        .unwrap();
+        let state = PersistedState::load(&path).unwrap();
+        assert!(state.positions.is_empty());
+        assert_eq!(state.position_secs, 12.0);
+    }
+
+    #[test]
+    fn position_map_round_trip() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        let tracks = vec![track(0), track(1), track(2)];
+        let mut state = PersistedState {
+            tracks: tracks.clone(),
+            current: Some(1),
+            position_secs: 15.0,
+            ..PersistedState::default()
+        };
+        state
+            .positions
+            .set(&tracks[0].key(), Duration::from_secs(42), 100);
+        state
+            .positions
+            .set(&tracks[1].key(), Duration::from_secs(15), 200);
+        state
+            .positions
+            .set(&tracks[2].key(), Duration::from_secs(90), 300);
+
+        state.save(&path).unwrap();
+        let loaded = PersistedState::load(&path).unwrap();
+
+        assert_eq!(loaded, state);
+        assert_eq!(
+            loaded.positions.get(&tracks[0].key()),
+            Some(Duration::from_secs(42))
+        );
+    }
+
+    #[test]
+    fn position_map_cap_evicts_the_oldest_entry() {
+        let mut positions = TrackPositions::default();
+        for index in 0..MAX_TRACK_POSITIONS {
+            positions.set(
+                &TrackKey::youtube(format!("{index:011}")),
+                Duration::from_secs(index as u64 + 1),
+                index as u64,
+            );
+        }
+        assert_eq!(positions.len(), MAX_TRACK_POSITIONS);
+
+        let newest = TrackKey::youtube("aaaaaaaaaaa");
+        positions.set(&newest, Duration::from_secs(1), MAX_TRACK_POSITIONS as u64);
+
+        assert_eq!(positions.len(), MAX_TRACK_POSITIONS);
+        assert!(positions.contains(&newest));
+        assert!(!positions.contains(&TrackKey::youtube("00000000000")));
+    }
+
+    #[test]
+    fn updating_a_position_does_not_evict_it() {
+        let mut positions = TrackPositions::default();
+        let first = TrackKey::youtube("aaaaaaaaaaa");
+        positions.set(&first, Duration::from_secs(10), 0);
+        for index in 0..MAX_TRACK_POSITIONS - 1 {
+            positions.set(
+                &TrackKey::youtube(format!("{index:011}")),
+                Duration::from_secs(index as u64 + 1),
+                index as u64 + 1,
+            );
+        }
+        assert_eq!(positions.len(), MAX_TRACK_POSITIONS);
+
+        positions.set(&first, Duration::from_secs(20), u64::MAX);
+        let newest = TrackKey::youtube("bbbbbbbbbbb");
+        positions.set(&newest, Duration::from_secs(1), u64::MAX);
+
+        assert_eq!(positions.len(), MAX_TRACK_POSITIONS);
+        assert!(positions.contains(&first));
+        assert!(positions.contains(&newest));
+    }
+
+    #[test]
+    fn zero_positions_are_not_stored() {
+        let mut positions = TrackPositions::default();
+        let key = TrackKey::youtube("dQw4w9WgXcQ");
+        positions.set(&key, Duration::from_secs(10), 1);
+        positions.set(&key, Duration::ZERO, 2);
+        assert!(positions.is_empty());
+    }
+
+    #[test]
+    fn invalid_track_position_is_rejected() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("state.toml");
+        fs::write(
+            &path,
+            "version = 1\ntracks = []\nrepeat = \"off\"\nshuffle = false\nvolume = 50\nposition_secs = 0.0\n\n[positions.\"youtube:abc\"]\nposition_secs = -1.0\nupdated_at = 0\n",
+        )
+        .unwrap();
+        let error = PersistedState::load(&path).unwrap_err();
+        assert!(matches!(error, StateError::Invalid(_)));
+        assert!(error.to_string().contains("youtube:abc"));
     }
 
     #[test]

@@ -662,6 +662,7 @@ mod tests {
             PodverseProvider::new(&PodverseConfig {
                 base_url: Some(self.base_url.clone()),
                 token: None,
+                sync: false,
             })
             .unwrap()
         }
@@ -670,6 +671,7 @@ mod tests {
             PodverseProvider::new(&PodverseConfig {
                 base_url: Some(self.base_url.clone()),
                 token: Some("test-token".to_string()),
+                sync: false,
             })
             .unwrap()
         }

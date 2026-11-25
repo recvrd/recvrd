@@ -3,16 +3,18 @@ use crate::{
     history::{HISTORY_MIN_PLAY_SECS, History, HistoryEntry, now_unix},
     model::{PlaybackSnapshot, PlaybackStatus, Queue, RepeatMode, Track},
     settings::PlaybackSettingsStore,
-    state::{PersistedState, STATE_VERSION, StateError},
+    state::{PersistedState, STATE_VERSION, StateError, TrackPositions},
 };
 use async_trait::async_trait;
 use common_structs::{PlaybackMode, PlaybackSourceKind, ReadSeek, TrackKey, TrackSource};
 use std::{
+    collections::HashMap,
     path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
 };
 use thiserror::Error;
+use tokio::sync::mpsc;
 
 /// Delay before the playback service retries a track after a failed restart.
 const STREAM_RESTART_RETRY: Duration = Duration::from_secs(5);
@@ -21,6 +23,15 @@ const STREAM_RESTART_MAX_DELAY: Duration = Duration::from_secs(60);
 /// A restored position within this margin of the end of the track
 /// counts as the end. Resume starts from zero instead.
 const RESUME_END_MARGIN: Duration = Duration::from_secs(5);
+/// A remote position applies to playback only within this window
+/// after the track starts. A late read only updates the map.
+const REMOTE_APPLY_WINDOW: Duration = Duration::from_secs(10);
+/// Tolerance for clock skew between the daemon and the Podverse
+/// server, in seconds, when it compares write times.
+const REMOTE_TIMESTAMP_TOLERANCE_SECS: u64 = 5;
+/// Maximum in-memory cleared positions. The map only breaks ties
+/// between a local clear and an old remote row.
+const MAX_CLEARED_POSITIONS: usize = 1000;
 
 /// A play in progress: the track, when it started, and the
 /// position it started from. The history records the play when it
@@ -144,6 +155,44 @@ pub enum PlaybackError {
     NotCached,
 }
 
+/// A position sync request for the Podverse queue worker. The
+/// playback service emits these events. The worker sends them to
+/// the API. The worker never blocks playback.
+#[derive(Debug, Clone)]
+pub enum PositionSyncEvent {
+    /// A position was recorded for a track. Push it to now-playing.
+    Write {
+        key: TrackKey,
+        position: Duration,
+        duration: Option<Duration>,
+        completed: bool,
+        feed_url: Option<String>,
+        enclosure_url: Option<String>,
+    },
+    /// A track finished. Move it to history.
+    Finished {
+        key: TrackKey,
+        duration: Option<Duration>,
+        feed_url: Option<String>,
+        enclosure_url: Option<String>,
+    },
+    /// A track started. Read the remote position for it.
+    Read {
+        key: TrackKey,
+        feed_url: Option<String>,
+        enclosure_url: Option<String>,
+    },
+}
+
+impl PositionSyncEvent {
+    /// The track this event concerns.
+    pub fn key(&self) -> &TrackKey {
+        match self {
+            Self::Write { key, .. } | Self::Finished { key, .. } | Self::Read { key, .. } => key,
+        }
+    }
+}
+
 /// Headless playback service. Owns the queue, playback state and event bus.
 pub struct PlaybackService<S: AudioSink> {
     queue: Queue,
@@ -165,6 +214,16 @@ pub struct PlaybackService<S: AudioSink> {
     /// restore. A tick never consumes this position: the daemon
     /// stays stopped until the user presses play.
     resume_pending: Option<Duration>,
+    /// The track that `resume_pending` belongs to.
+    resume_track: Option<TrackKey>,
+    /// Saved positions for tracks in the queue.
+    positions: TrackPositions,
+    /// Write times of positions that local playback cleared. The
+    /// map is memory only. It lets the remote-adopt rule tell a
+    /// local rewind apart from a track that never played.
+    positions_cleared: HashMap<String, u64>,
+    /// Channel for position sync events, when the daemon runs one.
+    sync_tx: Option<mpsc::Sender<PositionSyncEvent>>,
     restart_at: Option<Instant>,
     restart_delay: Duration,
     /// Listen history, newest first.
@@ -219,12 +278,135 @@ impl<S: AudioSink> PlaybackService<S> {
             source_kind: None,
             restart_pending: None,
             resume_pending: None,
+            resume_track: None,
+            positions: TrackPositions::default(),
+            positions_cleared: HashMap::new(),
+            sync_tx: None,
             restart_at: None,
             restart_delay: STREAM_RESTART_RETRY,
             history: History::new(),
             history_path: None,
             current_play: None,
         }
+    }
+
+    /// Attach a channel for position sync events. The daemon
+    /// connects the Podverse sync worker here.
+    pub fn set_position_sync(&mut self, sender: mpsc::Sender<PositionSyncEvent>) {
+        self.sync_tx = Some(sender);
+    }
+
+    /// Return the saved position for a track, if the map holds one.
+    pub fn saved_position(&self, key: &TrackKey) -> Option<Duration> {
+        self.positions.get(key)
+    }
+
+    /// Send a position sync event. A full or closed channel drops
+    /// the event. Sync never blocks playback.
+    fn emit_sync(&self, event: PositionSyncEvent) {
+        if let Some(sender) = &self.sync_tx {
+            let _ = sender.try_send(event);
+        }
+    }
+
+    /// Remember a local clear time and keep the map bounded.
+    fn remember_cleared(&mut self, key: &TrackKey) {
+        let key = key.to_string();
+        if self.positions_cleared.len() >= MAX_CLEARED_POSITIONS
+            && !self.positions_cleared.contains_key(&key)
+            && let Some(oldest) = self
+                .positions_cleared
+                .iter()
+                .min_by_key(|(_, updated_at)| **updated_at)
+                .map(|(key, _)| key.clone())
+        {
+            self.positions_cleared.remove(&oldest);
+        }
+        self.positions_cleared.insert(key, now_secs());
+    }
+
+    /// The RSS identity fields for a track, for Podverse sync.
+    fn sync_identity(track: &Track) -> (Option<String>, Option<String>) {
+        (
+            track
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.feed_url.clone()),
+            track.source.as_ref().map(|source| source.url.clone()),
+        )
+    }
+
+    /// Apply a remote position from the Podverse queue. The remote
+    /// side wins only when its write is newer than the last local
+    /// write for the track. A missing local entry counts as a write
+    /// at time zero, unless local playback cleared the entry. When
+    /// the remote write time is missing, adopt only if the local map
+    /// has no entry and local playback did not clear one. The method
+    /// returns true when it adopts the remote position.
+    pub fn apply_remote_position(
+        &mut self,
+        key: &TrackKey,
+        position: Duration,
+        remote_updated_at: Option<u64>,
+    ) -> bool {
+        let local_updated_at = self
+            .positions
+            .updated_at(key)
+            .or_else(|| self.positions_cleared.get(&key.to_string()).copied())
+            .unwrap_or(0);
+        let remote_is_newer = match remote_updated_at {
+            Some(remote_updated_at) => {
+                remote_updated_at > local_updated_at + REMOTE_TIMESTAMP_TOLERANCE_SECS
+            }
+            None => {
+                self.positions.get(key).is_none()
+                    && !self.positions_cleared.contains_key(&key.to_string())
+            }
+        };
+        if !remote_is_newer {
+            return false;
+        }
+        if position.is_zero() {
+            self.positions.remove(key);
+            self.remember_cleared(key);
+            return false;
+        }
+        let at_end = self
+            .queue
+            .items()
+            .iter()
+            .find(|item| item.track.key() == *key)
+            .and_then(|item| parse_duration(&item.track.duration))
+            .is_some_and(|duration| position + RESUME_END_MARGIN >= duration);
+        if at_end {
+            self.positions.remove(key);
+            self.remember_cleared(key);
+            return false;
+        }
+        self.positions.set(key, position, now_secs());
+        self.positions_cleared.remove(&key.to_string());
+        let is_current = self
+            .queue
+            .current_track()
+            .is_some_and(|track| track.key() == *key);
+        if !is_current {
+            return true;
+        }
+        match self.status {
+            PlaybackStatus::Stopped => {
+                self.resume_pending = Some(position);
+                self.resume_track = Some(key.clone());
+            }
+            PlaybackStatus::Paused => {
+                let _ = self.seek(position);
+            }
+            PlaybackStatus::Playing => {
+                if self.current_position() <= REMOTE_APPLY_WINDOW {
+                    let _ = self.seek(position);
+                }
+            }
+        }
+        true
     }
 
     /// Return the current playback mode for a provider.
@@ -265,6 +447,8 @@ impl<S: AudioSink> PlaybackService<S> {
                 .current_track()
                 .is_some_and(|track| !self.is_cached(track))
         {
+            self.record_current_position();
+            self.clear_resume();
             return self.start_next_cached().await;
         }
         self.publish_all();
@@ -282,6 +466,15 @@ impl<S: AudioSink> PlaybackService<S> {
             return false;
         };
         std::fs::metadata(&path).is_ok_and(|metadata| metadata.len() > 0)
+    }
+
+    /// Whether playback can seek this track. A cached file is always
+    /// seekable. A remote stream follows its source flag.
+    fn track_seekable(&self, track: &Track) -> bool {
+        if self.is_cached(track) {
+            return true;
+        }
+        track.source.as_ref().is_none_or(|source| source.seekable)
     }
 
     /// The next cached track after the current track. With repeat all,
@@ -476,6 +669,53 @@ impl<S: AudioSink> PlaybackService<S> {
         self.started_at = None;
     }
 
+    /// Save the current track's position in the map.
+    fn record_current_position(&mut self) {
+        let position = self.current_position();
+        self.record_position(position);
+    }
+
+    /// Save an exact position for the current track.
+    fn record_position(&mut self, position: Duration) {
+        let Some(track) = self.queue.current_track().cloned() else {
+            return;
+        };
+        let key = track.key();
+        let position = self.resume_position(position);
+        if position.is_zero() {
+            self.remember_cleared(&key);
+        } else {
+            self.positions_cleared.remove(&key.to_string());
+        }
+        self.positions.set(&key, position, now_secs());
+        if position.is_zero() {
+            return;
+        }
+        let (feed_url, enclosure_url) = Self::sync_identity(&track);
+        self.emit_sync(PositionSyncEvent::Write {
+            key,
+            position,
+            duration: parse_duration(&track.duration),
+            completed: false,
+            feed_url,
+            enclosure_url,
+        });
+    }
+
+    /// Clear the restored resume position.
+    fn clear_resume(&mut self) {
+        self.resume_pending = None;
+        self.resume_track = None;
+    }
+
+    /// Take the restored resume position when it belongs to `key`.
+    fn take_resume_for(&mut self, key: &TrackKey) -> Option<Duration> {
+        let matches = self.resume_track.as_ref() == Some(key);
+        self.resume_track = None;
+        let pending = self.resume_pending.take();
+        if matches { pending } else { None }
+    }
+
     pub fn queue_snapshot(&self) -> crate::model::QueueSnapshot {
         self.queue.snapshot()
     }
@@ -572,7 +812,7 @@ impl<S: AudioSink> PlaybackService<S> {
             self.restart_delay = STREAM_RESTART_RETRY;
         }
         if clears_resume {
-            self.resume_pending = None;
+            self.clear_resume();
         }
 
         match command {
@@ -645,6 +885,14 @@ impl<S: AudioSink> PlaybackService<S> {
 
     /// Snapshot of the state that should survive a restart.
     pub fn persisted_state(&self) -> PersistedState {
+        let current_position = self.current_position();
+        let mut positions = self.positions.clone();
+        if self.status != PlaybackStatus::Stopped
+            && let Some(track) = self.queue.current_track()
+        {
+            let position = self.resume_position(current_position);
+            positions.set(&track.key(), position, now_secs());
+        }
         PersistedState {
             version: STATE_VERSION,
             tracks: self
@@ -658,7 +906,8 @@ impl<S: AudioSink> PlaybackService<S> {
             repeat: self.queue.repeat(),
             shuffle: self.queue.shuffle(),
             volume: self.volume,
-            position_secs: self.current_position().as_secs_f64(),
+            position_secs: current_position.as_secs_f64(),
+            positions,
         }
     }
 
@@ -681,20 +930,44 @@ impl<S: AudioSink> PlaybackService<S> {
             state.shuffle,
         );
         self.volume = state.volume.min(100);
+        self.positions = state.positions.clone();
+        let queue_keys: Vec<TrackKey> = self
+            .queue
+            .items()
+            .iter()
+            .map(|item| item.track.key())
+            .collect();
+        self.positions.retain_for(&queue_keys);
         // State validation checks finiteness only, so a hand-edited
         // state file can hold a huge finite value that overflows a
         // Duration. Fall back to zero instead of panicking.
         self.position =
             Duration::try_from_secs_f64(state.position_secs.max(0.0)).unwrap_or(Duration::ZERO);
-        // Resume at the saved position on the first start after
-        // restore. A tick never consumes this position: the daemon
-        // stays stopped until the user presses play.
-        self.position = self.resume_position(self.position);
-        self.resume_pending = if self.position.is_zero() {
-            None
+        self.resume_pending = None;
+        self.resume_track = None;
+        if let Some(key) = self.queue.current_track().map(|track| track.key()) {
+            let seekable = self
+                .queue
+                .current_track()
+                .is_some_and(|track| self.track_seekable(track));
+            if seekable {
+                // Resume at the saved position on the first start
+                // after restore. A tick never consumes this position:
+                // the daemon stays stopped until the user presses play.
+                self.position = self.resume_position(self.position);
+            } else {
+                self.position = Duration::ZERO;
+            }
+            if self.position.is_zero() {
+                self.positions.remove(&key);
+            } else {
+                self.positions.set(&key, self.position, now_secs());
+                self.resume_pending = Some(self.position);
+                self.resume_track = Some(key);
+            }
         } else {
-            Some(self.position)
-        };
+            self.position = Duration::ZERO;
+        }
         self.restart_pending = None;
         self.restart_at = None;
         self.restart_delay = STREAM_RESTART_RETRY;
@@ -711,8 +984,16 @@ impl<S: AudioSink> PlaybackService<S> {
     }
 
     pub async fn play_playlist(&mut self, tracks: Vec<Track>) -> Result<(), PlaybackError> {
-        self.resume_pending = None;
+        self.record_current_position();
+        self.clear_resume();
         self.queue.replace(tracks);
+        let keys: Vec<TrackKey> = self
+            .queue
+            .items()
+            .iter()
+            .map(|item| item.track.key())
+            .collect();
+        self.positions.retain_for(&keys);
         self.start_current().await
     }
 
@@ -720,7 +1001,8 @@ impl<S: AudioSink> PlaybackService<S> {
         if self.offline && !self.is_cached(&track) {
             return Err(PlaybackError::NotCached);
         }
-        self.resume_pending = None;
+        self.record_current_position();
+        self.clear_resume();
         self.queue.play_now(track);
         self.start_current().await
     }
@@ -732,10 +1014,12 @@ impl<S: AudioSink> PlaybackService<S> {
 
     pub async fn remove(&mut self, index: usize) -> Result<(), PlaybackError> {
         let was_current = self.queue.current_index() == Some(index);
-        self.queue.remove(index);
+        if let Some(removed) = self.queue.remove(index) {
+            self.positions.remove(&removed.track.key());
+        }
         if was_current {
             self.restart_pending = None;
-            self.resume_pending = None;
+            self.clear_resume();
             self.restart_at = None;
             self.restart_delay = STREAM_RESTART_RETRY;
             self.start_current().await
@@ -757,11 +1041,12 @@ impl<S: AudioSink> PlaybackService<S> {
         self.record_current_play(false);
         let _ = self.sink.stop();
         self.queue.clear();
+        self.positions.clear();
         self.status = PlaybackStatus::Stopped;
         self.position = Duration::ZERO;
         self.source_kind = None;
         self.restart_pending = None;
-        self.resume_pending = None;
+        self.clear_resume();
         self.restart_at = None;
         self.restart_delay = STREAM_RESTART_RETRY;
         self.publish_all();
@@ -769,6 +1054,7 @@ impl<S: AudioSink> PlaybackService<S> {
     }
 
     pub fn stop(&mut self) {
+        self.record_current_position();
         self.stop_playback();
     }
 
@@ -781,10 +1067,11 @@ impl<S: AudioSink> PlaybackService<S> {
                 return Err(PlaybackError::NotCached);
             }
         }
+        self.record_current_position();
+        self.clear_resume();
         if !self.queue.play_index(index) {
             return Err(PlaybackError::IndexOutOfBounds);
         }
-        self.resume_pending = None;
         self.start_current().await
     }
 
@@ -794,6 +1081,7 @@ impl<S: AudioSink> PlaybackService<S> {
                 .pause()
                 .map_err(|error| PlaybackError::Sink(error.to_string()))?;
             self.freeze_position();
+            self.record_current_position();
             self.status = PlaybackStatus::Paused;
             self.publish_playback();
         }
@@ -832,7 +1120,12 @@ impl<S: AudioSink> PlaybackService<S> {
     }
 
     pub async fn next_track(&mut self) -> Result<(), PlaybackError> {
-        self.resume_pending = None;
+        self.record_current_position();
+        self.advance_next().await
+    }
+
+    async fn advance_next(&mut self) -> Result<(), PlaybackError> {
+        self.clear_resume();
         if self.offline {
             return self.start_next_cached().await;
         }
@@ -849,7 +1142,8 @@ impl<S: AudioSink> PlaybackService<S> {
     }
 
     pub async fn previous_track(&mut self) -> Result<(), PlaybackError> {
-        self.resume_pending = None;
+        self.record_current_position();
+        self.clear_resume();
         if self.offline {
             return match self.previous_cached_index() {
                 Some(index) => {
@@ -884,6 +1178,7 @@ impl<S: AudioSink> PlaybackService<S> {
         } else {
             None
         };
+        self.record_position(position);
         self.publish_playback();
         Ok(())
     }
@@ -915,16 +1210,26 @@ impl<S: AudioSink> PlaybackService<S> {
 
     pub async fn on_track_finished(&mut self) -> Result<(), PlaybackError> {
         self.record_current_play(true);
-        if let Some(track) = self.queue.current_track() {
+        let finished = self.queue.current_track().cloned();
+        if let Some(track) = &finished {
+            let key = track.key();
             self.events.publish(CoreEvent::TrackEnded {
-                track_id: track.key(),
+                track_id: key.clone(),
+            });
+            self.positions.remove(&key);
+            self.remember_cleared(&key);
+            let (feed_url, enclosure_url) = Self::sync_identity(track);
+            self.emit_sync(PositionSyncEvent::Finished {
+                key,
+                duration: parse_duration(&track.duration),
+                feed_url,
+                enclosure_url,
             });
         }
         if self.queue.repeat() == RepeatMode::One {
-            self.start_current().await
-        } else {
-            self.next_track().await
+            return self.start_current().await;
         }
+        self.advance_next().await
     }
 
     pub async fn on_download_failed(&mut self, key: &TrackKey) {
@@ -938,7 +1243,7 @@ impl<S: AudioSink> PlaybackService<S> {
         {
             self.pending_start = false;
             self.restart_pending = None;
-            self.resume_pending = None;
+            self.clear_resume();
             self.restart_at = None;
             self.restart_delay = STREAM_RESTART_RETRY;
             let _ = self.next_track().await;
@@ -1064,21 +1369,23 @@ impl<S: AudioSink> PlaybackService<S> {
         if let Err(error) = self.sink.play(&track, PlaybackSource::File(path)) {
             return self.fail_start(error.to_string());
         }
-        self.finish_start(&track, PlaybackSourceKind::File)
+        self.finish_start(&track, PlaybackSourceKind::File, true)
     }
 
     fn start_stream(&mut self, track: Track, reader: StreamReader) -> Result<(), PlaybackError> {
         self.pending_start = false;
+        let seekable = reader.seekable;
         if let Err(error) = self.sink.play(&track, PlaybackSource::Stream(reader)) {
             return self.fail_start(error.to_string());
         }
-        self.finish_start(&track, PlaybackSourceKind::Stream)
+        self.finish_start(&track, PlaybackSourceKind::Stream, seekable)
     }
 
     fn finish_start(
         &mut self,
         track: &Track,
         source_kind: PlaybackSourceKind,
+        seekable: bool,
     ) -> Result<(), PlaybackError> {
         let was_restart = self.restart_pending.is_some();
         self.status = PlaybackStatus::Playing;
@@ -1095,17 +1402,35 @@ impl<S: AudioSink> PlaybackService<S> {
         }
         self.publish_all();
 
-        let resume_position = self.resume_pending.take();
-        if let Some(position) = self.restart_pending.take().or(resume_position) {
+        let key = track.key();
+        let restart_position = self.restart_pending.take();
+        let resume_position = self.take_resume_for(&key);
+        let stored_position = self.positions.get(&key);
+        if !seekable {
+            // A non-seekable stream always starts from zero.
+            self.positions.remove(&key);
+            self.restart_at = None;
+            self.restart_delay = STREAM_RESTART_RETRY;
+            return Ok(());
+        }
+        let position = restart_position
+            .or(resume_position)
+            .or_else(|| stored_position.map(|position| self.resume_position(position)));
+        if let Some(position) = position {
             self.restart_at = None;
             self.restart_delay = STREAM_RESTART_RETRY;
             if !position.is_zero() {
-                // A failed seek must not fail the start. A
-                // non-seekable stream starts from zero instead.
+                // A failed seek must not fail the start.
                 let _ = self.seek(position);
             }
         }
         self.begin_play(track, was_restart);
+        let (feed_url, enclosure_url) = Self::sync_identity(track);
+        self.emit_sync(PositionSyncEvent::Read {
+            key,
+            feed_url,
+            enclosure_url,
+        });
         Ok(())
     }
 
@@ -1130,7 +1455,7 @@ impl<S: AudioSink> PlaybackService<S> {
         self.pending_start = false;
         self.source_kind = None;
         self.restart_pending = None;
-        self.resume_pending = None;
+        self.clear_resume();
         self.restart_at = None;
         self.restart_delay = STREAM_RESTART_RETRY;
         self.publish_all();
@@ -1148,6 +1473,12 @@ impl<S: AudioSink> PlaybackService<S> {
         self.publish_playback();
         self.publish_queue();
     }
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs())
 }
 
 fn format_duration(duration: Duration) -> String {
@@ -1188,6 +1519,7 @@ mod tests {
         plays: Vec<(String, PathBuf)>,
         sources: Vec<PlaybackSourceKind>,
         actions: Vec<&'static str>,
+        seeks: Vec<Duration>,
         volume: u8,
         finished: bool,
         stream_error: bool,
@@ -1231,8 +1563,9 @@ mod tests {
             Ok(())
         }
 
-        fn seek(&mut self, _position: Duration) -> Result<(), Self::Error> {
+        fn seek(&mut self, position: Duration) -> Result<(), Self::Error> {
             self.actions.push("seek");
+            self.seeks.push(position);
             if self.seek_fails {
                 return Err(std::io::Error::other("seek failed"));
             }
@@ -1274,6 +1607,14 @@ mod tests {
                 ..Default::default()
             })
             .collect()
+    }
+
+    fn long_tracks(count: usize) -> Vec<Track> {
+        let mut tracks = tracks(count);
+        for track in &mut tracks {
+            track.duration = "20:00".to_string();
+        }
+        tracks
     }
 
     fn service() -> PlaybackService<MockSink> {
@@ -2152,6 +2493,7 @@ mod tests {
             shuffle: false,
             volume: 50,
             position_secs: 12.0,
+            positions: TrackPositions::default(),
         };
         service.restore_state(&state).unwrap();
         assert_eq!(service.snapshot().status, PlaybackStatus::Stopped);
@@ -2183,6 +2525,7 @@ mod tests {
             shuffle: false,
             volume: 50,
             position_secs: 12.0,
+            positions: TrackPositions::default(),
         };
         service.restore_state(&state).unwrap();
 
@@ -2209,6 +2552,7 @@ mod tests {
             shuffle: false,
             volume: 50,
             position_secs: 12.0,
+            positions: TrackPositions::default(),
         };
         service.restore_state(&state).unwrap();
 
@@ -2248,6 +2592,7 @@ mod tests {
                 shuffle: false,
                 volume: 50,
                 position_secs: 12.0,
+                positions: TrackPositions::default(),
             };
             service.restore_state(&state).unwrap();
 
@@ -2282,6 +2627,7 @@ mod tests {
             shuffle: false,
             volume: 50,
             position_secs: 12.0,
+            positions: TrackPositions::default(),
         };
         service.restore_state(&state).unwrap();
         assert_eq!(service.snapshot().status, PlaybackStatus::Stopped);
@@ -2327,6 +2673,7 @@ mod tests {
                 shuffle: false,
                 volume: 50,
                 position_secs,
+                positions: TrackPositions::default(),
             };
             service.restore_state(&state).unwrap();
             assert_eq!(service.snapshot().status, PlaybackStatus::Stopped);
@@ -2353,6 +2700,7 @@ mod tests {
             shuffle: false,
             volume: 50,
             position_secs: 12.0,
+            positions: TrackPositions::default(),
         };
         service.restore_state(&state).unwrap();
 
@@ -2362,6 +2710,234 @@ mod tests {
         assert!(service.sink.actions.contains(&"seek"));
         let position = service.current_position().as_secs_f64();
         assert!(position < 0.5, "position was {position}");
+    }
+
+    #[tokio::test]
+    async fn switching_tracks_resumes_each_saved_position() {
+        let mut service = service();
+        service.play_playlist(long_tracks(3)).await.unwrap();
+        service.seek(Duration::from_secs(600)).unwrap();
+        service.next_track().await.unwrap();
+        assert_eq!(service.snapshot().current.unwrap().track_id, "video-1");
+
+        service.previous_track().await.unwrap();
+
+        assert_eq!(service.snapshot().current.unwrap().track_id, "video-0");
+        let position = service.current_position().as_secs_f64();
+        assert!((position - 600.0).abs() < 0.5, "position was {position}");
+        assert!(
+            service
+                .sink
+                .seeks
+                .iter()
+                .any(|seek| (seek.as_secs_f64() - 600.0).abs() < 0.5)
+        );
+    }
+
+    #[tokio::test]
+    async fn positions_survive_save_and_restore() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.toml");
+        let mut source = service();
+        source.play_playlist(long_tracks(3)).await.unwrap();
+        source.seek(Duration::from_secs(600)).unwrap();
+        source.next_track().await.unwrap();
+        source.seek(Duration::from_secs(120)).unwrap();
+        source.save_state(&path).unwrap();
+
+        let mut restored = service();
+        restored.load_state(&path).unwrap();
+        restored.previous_track().await.unwrap();
+
+        assert_eq!(restored.snapshot().current.unwrap().track_id, "video-0");
+        let position = restored.current_position().as_secs_f64();
+        assert!((position - 600.0).abs() < 0.5, "position was {position}");
+    }
+
+    #[tokio::test]
+    async fn pause_and_seek_update_the_stored_position() {
+        let mut service = service();
+        service.play_playlist(tracks(1)).await.unwrap();
+        let key = TrackKey::youtube("video-0");
+
+        service.seek(Duration::from_secs(30)).unwrap();
+        let stored = service.positions.get(&key).unwrap();
+        assert!((stored.as_secs_f64() - 30.0).abs() < 0.1);
+
+        service.pause().unwrap();
+        let stored = service.persisted_state().positions.get(&key).unwrap();
+        assert!((stored.as_secs_f64() - 30.0).abs() < 0.1);
+    }
+
+    #[tokio::test]
+    async fn the_restored_current_position_wins_over_the_map() {
+        let mut service = service();
+        let key = TrackKey::youtube("video-0");
+        let mut state = PersistedState {
+            version: STATE_VERSION,
+            tracks: tracks(1),
+            original_tracks: Vec::new(),
+            current: Some(0),
+            repeat: RepeatMode::Off,
+            shuffle: false,
+            volume: 50,
+            position_secs: 12.0,
+            positions: TrackPositions::default(),
+        };
+        state.positions.set(&key, Duration::from_secs(90), 1);
+        service.restore_state(&state).unwrap();
+
+        assert_eq!(service.positions.get(&key), Some(Duration::from_secs(12)));
+        service.play().await.unwrap();
+
+        let position = service.current_position().as_secs_f64();
+        assert!((position - 12.0).abs() < 0.5, "position was {position}");
+        assert!(
+            service
+                .sink
+                .seeks
+                .iter()
+                .any(|seek| (seek.as_secs_f64() - 12.0).abs() < 0.5)
+        );
+    }
+
+    #[tokio::test]
+    async fn map_positions_clamp_and_clear_near_the_end() {
+        for (stored, expected) in [(170u64, 170u64), (179, 0), (500, 0)] {
+            let mut service = service();
+            service.play_playlist(tracks(2)).await.unwrap();
+            service.next_track().await.unwrap();
+            service.positions.set(
+                &TrackKey::youtube("video-0"),
+                Duration::from_secs(stored),
+                1,
+            );
+
+            service.previous_track().await.unwrap();
+
+            let position = service.current_position().as_secs_f64();
+            assert!(
+                (position - expected as f64).abs() < 0.5,
+                "stored {stored} gave position {position}"
+            );
+            assert!(
+                !service
+                    .sink
+                    .seeks
+                    .iter()
+                    .any(|seek| seek.as_secs_f64() > 180.0),
+                "stored {stored} seeked past the duration"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_non_seekable_stream_starts_from_zero() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut service = PlaybackService::with_streams(
+            MockSink::default(),
+            dir.path(),
+            50,
+            mode_settings(PlaybackMode::Stream),
+            Arc::new(NonSeekableStreams),
+        );
+        let mut stream = stream_track();
+        stream.source.as_mut().unwrap().seekable = false;
+        let tracks = vec![tracks(1).remove(0), stream];
+        let key = tracks[1].key();
+        let mut state = PersistedState {
+            version: STATE_VERSION,
+            tracks: tracks.clone(),
+            original_tracks: Vec::new(),
+            current: Some(0),
+            repeat: RepeatMode::Off,
+            shuffle: false,
+            volume: 50,
+            position_secs: 0.0,
+            positions: TrackPositions::default(),
+        };
+        state.positions.set(&key, Duration::from_secs(12), 1);
+        service.restore_state(&state).unwrap();
+
+        service.next_track().await.unwrap();
+
+        assert_eq!(service.snapshot().current.unwrap().track_id, "YvIRJrjZVe");
+        let position = service.current_position().as_secs_f64();
+        assert!(position < 0.5, "position was {position}");
+        assert!(!service.sink.seeks.contains(&Duration::from_secs(12)));
+        assert!(!service.positions.contains(&key));
+    }
+
+    #[tokio::test]
+    async fn finishing_a_track_prunes_its_position() {
+        let mut service = service();
+        service.play_playlist(tracks(2)).await.unwrap();
+        service.seek(Duration::from_secs(30)).unwrap();
+        let key = TrackKey::youtube("video-0");
+
+        service.on_track_finished().await.unwrap();
+
+        assert_eq!(service.snapshot().current.unwrap().track_id, "video-1");
+        assert!(!service.positions.contains(&key));
+    }
+
+    #[tokio::test]
+    async fn removing_a_track_prunes_its_position() {
+        let mut service = service();
+        service.play_playlist(tracks(2)).await.unwrap();
+        service.seek(Duration::from_secs(30)).unwrap();
+        let key = TrackKey::youtube("video-0");
+
+        service.remove(0).await.unwrap();
+
+        assert_eq!(service.snapshot().current.unwrap().track_id, "video-1");
+        assert!(!service.positions.contains(&key));
+    }
+
+    #[tokio::test]
+    async fn clearing_the_queue_clears_positions() {
+        let mut service = service();
+        service.play_playlist(tracks(2)).await.unwrap();
+        service.seek(Duration::from_secs(30)).unwrap();
+
+        service.clear().unwrap();
+
+        assert!(service.positions.is_empty());
+    }
+
+    #[tokio::test]
+    async fn offline_resumes_a_cached_track_from_the_position_map() {
+        let dir = tempfile::tempdir().unwrap();
+        cache_track(dir.path(), "00000000001");
+        let mut service = offline_service(dir.path());
+        let tracks = offline_tracks(2);
+        let mut state = PersistedState {
+            version: STATE_VERSION,
+            tracks: tracks.clone(),
+            original_tracks: Vec::new(),
+            current: Some(0),
+            repeat: RepeatMode::Off,
+            shuffle: false,
+            volume: 50,
+            position_secs: 0.0,
+            positions: TrackPositions::default(),
+        };
+        let key = TrackKey::youtube("00000000001");
+        state.positions.set(&key, Duration::from_secs(30), 1);
+        service.restore_state(&state).unwrap();
+        service.set_offline(true).await.unwrap();
+
+        assert_eq!(service.snapshot().status, PlaybackStatus::Playing);
+        assert_eq!(service.snapshot().current.unwrap().track_id, "00000000001");
+        let position = service.current_position().as_secs_f64();
+        assert!((position - 30.0).abs() < 0.5, "position was {position}");
+        assert!(service.sink.seeks.contains(&Duration::from_secs(30)));
+
+        let uncached = offline_tracks(2).remove(0);
+        assert!(matches!(
+            service.play_track(uncached).await,
+            Err(PlaybackError::NotCached)
+        ));
     }
 
     #[tokio::test]
@@ -2419,6 +2995,7 @@ mod tests {
             shuffle: false,
             volume: 80,
             position_secs: 7.5,
+            positions: TrackPositions::default(),
         };
         service.restore_state(&state).unwrap();
 
@@ -2438,6 +3015,20 @@ mod tests {
                 mime: Some("audio/mpeg".to_string()),
                 length: Some(16),
                 seekable: true,
+            })
+        }
+    }
+
+    struct NonSeekableStreams;
+
+    #[async_trait]
+    impl StreamFactory for NonSeekableStreams {
+        async fn open(&self, _source: &TrackSource) -> Result<StreamReader, String> {
+            Ok(StreamReader {
+                reader: Box::new(std::io::Cursor::new(vec![0u8; 16])),
+                mime: Some("audio/mpeg".to_string()),
+                length: Some(16),
+                seekable: false,
             })
         }
     }
@@ -2589,5 +3180,189 @@ mod tests {
         assert!(service.play_playlist(vec![track]).await.is_err());
         assert_eq!(service.snapshot().status, PlaybackStatus::Stopped);
         assert!(service.sink.plays.is_empty());
+    }
+
+    fn drain_sync(
+        rx: &mut tokio::sync::mpsc::Receiver<PositionSyncEvent>,
+    ) -> Vec<PositionSyncEvent> {
+        let mut events = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            events.push(event);
+        }
+        events
+    }
+
+    fn rss_track() -> Track {
+        Track {
+            provider: common_structs::ProviderId::Rss,
+            track_id: "episode-1".to_string(),
+            title: "Episode 1".to_string(),
+            author: "Show".to_string(),
+            album: "Show".to_string(),
+            duration: "30:00".to_string(),
+            source: Some(Box::new(common_structs::TrackSource {
+                url: "https://example.com/ep1.mp3".to_string(),
+                mime: Some("audio/mpeg".to_string()),
+                length: None,
+                seekable: true,
+                kind: common_structs::MediaKind::Audio,
+            })),
+            metadata: Some(Box::new(common_structs::TrackMetadata {
+                feed_url: Some("https://example.com/feed.xml".to_string()),
+                ..Default::default()
+            })),
+        }
+    }
+
+    #[tokio::test]
+    async fn start_seek_and_pause_emit_sync_events() {
+        let mut service = service();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+        service.set_position_sync(tx);
+        service.play_playlist(tracks(1)).await.unwrap();
+        service.seek(Duration::from_secs(30)).unwrap();
+        service.pause().unwrap();
+        let events = drain_sync(&mut rx);
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                PositionSyncEvent::Read { key, .. } if key.id == "video-0"
+            )),
+            "start must emit a Read, got {events:?}"
+        );
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                PositionSyncEvent::Write { position, .. }
+                    if *position == Duration::from_secs(30)
+            )),
+            "seek and pause must emit a Write at 30s, got {events:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn seek_emits_sync_write_with_rss_identity() {
+        let mut service = service();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+        service.set_position_sync(tx);
+        service.play_playlist(vec![rss_track()]).await.unwrap();
+        service.seek(Duration::from_secs(60)).unwrap();
+        let events = drain_sync(&mut rx);
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                PositionSyncEvent::Write {
+                    feed_url,
+                    enclosure_url,
+                    ..
+                } if feed_url.as_deref() == Some("https://example.com/feed.xml")
+                    && enclosure_url.as_deref() == Some("https://example.com/ep1.mp3")
+            )),
+            "RSS seek must carry the feed and enclosure URLs, got {events:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn track_finish_emits_sync_finished() {
+        let mut service = service();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+        service.set_position_sync(tx);
+        service.play_playlist(tracks(1)).await.unwrap();
+        service.on_track_finished().await.unwrap();
+        let events = drain_sync(&mut rx);
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                PositionSyncEvent::Finished { duration, .. }
+                    if *duration == Some(Duration::from_secs(180))
+            )),
+            "finish must emit a Finished event, got {events:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_remote_position_adopts_newer_remote() {
+        let mut service = service();
+        service.play_playlist(tracks(1)).await.unwrap();
+        service.seek(Duration::from_secs(5)).unwrap();
+        let key = TrackKey::youtube("video-0");
+        let adopted =
+            service.apply_remote_position(&key, Duration::from_secs(60), Some(now_secs() + 1000));
+        assert!(adopted);
+        assert!(service.sink.seeks.contains(&Duration::from_secs(60)));
+        assert_eq!(service.saved_position(&key), Some(Duration::from_secs(60)));
+    }
+
+    #[tokio::test]
+    async fn apply_remote_position_sets_resume_when_stopped() {
+        let mut service = service();
+        service.play_playlist(tracks(1)).await.unwrap();
+        service.stop();
+        let key = TrackKey::youtube("video-0");
+        let adopted =
+            service.apply_remote_position(&key, Duration::from_secs(60), Some(now_secs() + 1000));
+        assert!(adopted);
+        service.play().await.unwrap();
+        assert!(service.sink.seeks.contains(&Duration::from_secs(60)));
+    }
+
+    #[tokio::test]
+    async fn apply_remote_position_ignores_older_remote() {
+        let mut service = service();
+        service.play_playlist(tracks(1)).await.unwrap();
+        service.seek(Duration::from_secs(30)).unwrap();
+        let key = TrackKey::youtube("video-0");
+        let adopted = service.apply_remote_position(
+            &key,
+            Duration::from_secs(60),
+            Some(now_secs().saturating_sub(1000)),
+        );
+        assert!(!adopted);
+        assert!(!service.sink.seeks.contains(&Duration::from_secs(60)));
+    }
+
+    #[tokio::test]
+    async fn apply_remote_position_ignores_remote_after_local_clear() {
+        let mut service = service();
+        service.play_playlist(tracks(1)).await.unwrap();
+        service.seek(Duration::from_secs(30)).unwrap();
+        service.seek(Duration::ZERO).unwrap();
+        let key = TrackKey::youtube("video-0");
+        assert_eq!(service.saved_position(&key), None);
+        let adopted =
+            service.apply_remote_position(&key, Duration::from_secs(60), Some(now_secs()));
+        assert!(!adopted);
+    }
+
+    #[tokio::test]
+    async fn apply_remote_position_ignores_remote_at_end() {
+        let mut service = service();
+        service.play_playlist(tracks(1)).await.unwrap();
+        let key = TrackKey::youtube("video-0");
+        let adopted =
+            service.apply_remote_position(&key, Duration::from_secs(179), Some(now_secs() + 1000));
+        assert!(!adopted);
+        assert_eq!(service.saved_position(&key), None);
+    }
+
+    #[tokio::test]
+    async fn apply_remote_position_without_a_timestamp_fills_an_empty_map() {
+        let mut service = service();
+        service.play_playlist(tracks(1)).await.unwrap();
+        let key = TrackKey::youtube("video-0");
+        let adopted = service.apply_remote_position(&key, Duration::from_secs(60), None);
+        assert!(adopted);
+        assert_eq!(service.saved_position(&key), Some(Duration::from_secs(60)));
+    }
+
+    #[tokio::test]
+    async fn apply_remote_position_without_a_timestamp_keeps_a_local_entry() {
+        let mut service = service();
+        service.play_playlist(tracks(1)).await.unwrap();
+        service.seek(Duration::from_secs(5)).unwrap();
+        let key = TrackKey::youtube("video-0");
+        let adopted = service.apply_remote_position(&key, Duration::from_secs(60), None);
+        assert!(!adopted);
+        assert_eq!(service.saved_position(&key), Some(Duration::from_secs(5)));
     }
 }

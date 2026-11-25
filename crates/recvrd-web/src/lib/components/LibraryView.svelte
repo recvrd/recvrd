@@ -2,6 +2,7 @@
   import { tick } from 'svelte';
   import type { AppStore } from '../store.svelte';
   import { coverUrl } from '../api';
+  import { playlistTitle } from '../playlist-title';
   import TrackTable from './TrackTable.svelte';
 
   let { store }: { store: AppStore } = $props();
@@ -16,7 +17,15 @@
 
   const playlistView = $derived(store.view.kind === 'playlist' ? store.view : null);
   const tracks = $derived(playlistView ? (store.playlist?.tracks ?? []) : []);
-  const name = $derived(store.playlist?.playlist.name ?? playlistView?.name ?? 'Playlist');
+  const name = $derived(
+    playlistView
+      ? playlistTitle(
+          playlistView.id,
+          store.playlist?.playlist.name,
+          playlistView.name,
+        )
+      : 'Playlist',
+  );
   const currentTrack = $derived(store.currentTrack);
   const isPlaying = $derived(store.status?.playback.state === 'playing');
 

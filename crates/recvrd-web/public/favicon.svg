@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- R glyph from Russo One by Jovanny Lemonad, SIL Open Font License 1.1.
+       Free for personal and commercial use; the font file itself is not
+       shipped here, only this glyph outline with the theme gradient. -->
+  <defs>
+    <linearGradient id="rg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0abdc6" />
+      <stop offset="1" stop-color="#ea00d9" />
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="#091833" />
+  <g stroke="#0abdc6" stroke-width="1" opacity="0.55">
+    <line x1="8" y1="48" x2="56" y2="48" />
+    <line x1="6" y1="54" x2="58" y2="54" />
+    <line x1="4" y1="60" x2="60" y2="60" />
+    <line x1="32" y1="44" x2="32" y2="64" />
+    <line x1="32" y1="44" x2="14" y2="64" />
+    <line x1="32" y1="44" x2="50" y2="64" />
+  </g>
+  <g transform="translate(10.57 47.00) scale(0.0571 -0.0571)">
+    <path d="M60 700H480Q585 700 632.5 652.5Q680 605 680 500V410Q680 327 652.5 281.0Q625 235 565 220L690 0H495L380 210H240V0H60ZM500 500Q500 560 440 560H240V350H440Q500 350 500 410Z" fill="url(#rg)" />
+  </g>
+</svg>

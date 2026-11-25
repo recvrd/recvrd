@@ -4,6 +4,7 @@
   import type { AppStore } from './lib/store.svelte';
   import { appStore } from './lib/app-store';
   import { playbackModeLabel } from './lib/api';
+  import { playlistTitle } from './lib/playlist-title';
   import { Keymap } from './lib/keymap';
   import AuthBanner from './lib/components/AuthBanner.svelte';
   import ConnectionBanner from './lib/components/ConnectionBanner.svelte';
@@ -28,7 +29,11 @@
         ? 'Queue'
         : store.view.kind === 'history'
           ? 'Recently played'
-          : (store.playlist?.playlist.name ?? store.view.name ?? 'Playlist'),
+          : playlistTitle(
+              store.view.id,
+              store.playlist?.playlist.name,
+              store.view.name,
+            ),
   );
 
   const auth = $derived(store.activeProviderInfo?.auth ?? store.status?.auth ?? null);
