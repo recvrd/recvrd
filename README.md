@@ -16,8 +16,8 @@
 ## What it is
 
 `recvrd` keeps playback, queue and downloads in a long-running daemon. It
-serves RSS feeds, Podverse channels and YouTube Music. A manual offline switch
-serves cached content without provider calls. Clients are thin:
+serves local files, RSS feeds, Podverse channels and YouTube Music. A manual
+offline switch serves cached content without provider calls. Clients are thin:
 
 - **Web UI** — library, search, queue, now playing, cover art, vim-style keys
   and playlist editing.
@@ -152,6 +152,18 @@ with the file path; they are never silently replaced with defaults.
 `cache_limit_mb` caps the download cache (default 10240 MiB, 0 disables). When
 it is exceeded, the oldest complete downloads are evicted, keeping the current
 queue. The cover cache has its own `cover_cache_mb` limit.
+
+To enable the local-files provider, add a `[local]` table with a music
+directory. The provider is hidden from `/api/providers` when the table is
+absent. It scans `mp3`, `m4a`, `ogg`, `flac`, and `wav` files.
+
+```toml
+[local]
+music_dir = "/home/user/Music"
+```
+
+`RECVRD_LOCAL_DIR` overrides the file value. The file name is the track
+title. Tag metadata and cover art are not read yet.
 
 To enable the Podverse provider, add a `[podverse]` table with the API base
 URL. The provider is hidden from `/api/providers` when the table is absent.

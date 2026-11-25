@@ -26,13 +26,14 @@ impl PlaybackMode {
             ProviderId::Youtube => Self::Download,
             ProviderId::Rss => Self::Download,
             ProviderId::Podverse => Self::StreamThenDownload,
+            ProviderId::Local => Self::Download,
         }
     }
 
     /// The modes a provider supports.
     pub const fn supported_for(provider: ProviderId) -> &'static [Self] {
         match provider {
-            ProviderId::Youtube => &[Self::Download],
+            ProviderId::Youtube | ProviderId::Local => &[Self::Download],
             ProviderId::Rss | ProviderId::Podverse => {
                 &[Self::Download, Self::Stream, Self::StreamThenDownload]
             }

@@ -5,6 +5,7 @@
 use async_trait::async_trait;
 use common_structs::{ProviderId, TrackKey};
 use download_manager::{DownloadError, TrackDownloader};
+use provider_local::LocalProvider;
 use provider_podverse::PodverseProvider;
 use provider_rss::RssProvider;
 use provider_youtube::{AUTH_EXPIRED_MESSAGE, YoutubeMusicApi, YoutubeMusicError, connect};
@@ -39,6 +40,7 @@ pub struct ReloadableMusicApi {
     auth_source: Option<String>,
     rss: Arc<RssProvider>,
     podverse: Option<Arc<PodverseProvider>>,
+    local: Option<Arc<LocalProvider>>,
     offline: Arc<AtomicBool>,
     inner: RwLock<Option<Arc<dyn MusicApi>>>,
     /// Auth state learned while connecting. A failed login is sticky
@@ -54,6 +56,7 @@ impl ReloadableMusicApi {
         auth_source: Option<String>,
         rss: Arc<RssProvider>,
         podverse: Option<Arc<PodverseProvider>>,
+        local: Option<Arc<LocalProvider>>,
         offline: Arc<AtomicBool>,
     ) -> Self {
         Self {
@@ -61,6 +64,7 @@ impl ReloadableMusicApi {
             auth_source,
             rss,
             podverse,
+            local,
             offline,
             inner: RwLock::new(None),
             auth_override: std::sync::Mutex::new(None),
@@ -76,7 +80,7 @@ impl ReloadableMusicApi {
     }
 
     /// Route a non-YouTube provider without touching the YouTube
-    /// client. RSS and Podverse are local clients.
+    /// client. Local, RSS, and Podverse are local clients.
     fn route(&self, provider: ProviderId) -> Result<Arc<dyn MusicApi>, String> {
         match provider {
             ProviderId::Youtube => Err("YouTube needs the lazy client".to_string()),
@@ -86,6 +90,11 @@ impl ReloadableMusicApi {
                 .clone()
                 .map(|provider| provider as Arc<dyn MusicApi>)
                 .ok_or_else(|| "Podverse is not configured".to_string()),
+            ProviderId::Local => self
+                .local
+                .clone()
+                .map(|provider| provider as Arc<dyn MusicApi>)
+                .ok_or_else(|| "local music is not configured".to_string()),
         }
     }
 
@@ -145,6 +154,7 @@ impl ReloadableMusicApi {
             youtube,
             self.rss.clone(),
             self.podverse.clone(),
+            self.local.clone(),
         ));
         *guard = Some(composite.clone());
         Ok(composite)
@@ -294,6 +304,7 @@ pub struct CompositeMusicApi {
     youtube: Arc<dyn MusicApi>,
     rss: Arc<RssProvider>,
     podverse: Option<Arc<PodverseProvider>>,
+    local: Option<Arc<LocalProvider>>,
 }
 
 impl CompositeMusicApi {
@@ -301,11 +312,13 @@ impl CompositeMusicApi {
         youtube: Arc<dyn MusicApi>,
         rss: Arc<RssProvider>,
         podverse: Option<Arc<PodverseProvider>>,
+        local: Option<Arc<LocalProvider>>,
     ) -> Self {
         Self {
             youtube,
             rss,
             podverse,
+            local,
         }
     }
 
@@ -318,6 +331,11 @@ impl CompositeMusicApi {
                 .clone()
                 .map(|provider| provider as Arc<dyn MusicApi>)
                 .ok_or_else(|| "Podverse is not configured".to_string()),
+            ProviderId::Local => self
+                .local
+                .clone()
+                .map(|provider| provider as Arc<dyn MusicApi>)
+                .ok_or_else(|| "local music is not configured".to_string()),
         }
     }
 }
@@ -439,6 +457,7 @@ impl CompositeDownloader {
                 .podverse
                 .clone()
                 .map(|provider| provider as Arc<dyn TrackDownloader>),
+            ProviderId::Local => None,
         }
     }
 }
@@ -496,6 +515,7 @@ impl CoverFetcher for CompositeCoverFetcher {
             ProviderId::Youtube => self.youtube.fetch(key).await,
             ProviderId::Rss => self.rss.fetch(key).await,
             ProviderId::Podverse => self.podverse.as_ref()?.fetch(key).await,
+            ProviderId::Local => None,
         }
     }
 }
@@ -588,7 +608,8 @@ mod tests {
 
     #[tokio::test]
     async fn reads_route_by_provider_and_edits_stay_on_youtube() {
-        let composite = CompositeMusicApi::new(Arc::new(NamedApi { name: "youtube" }), rss(), None);
+        let composite =
+            CompositeMusicApi::new(Arc::new(NamedApi { name: "youtube" }), rss(), None, None);
         let youtube = composite.playlists(ProviderId::Youtube).await.unwrap();
         assert_eq!(youtube[0].id, "youtube");
         // RSS has no feeds yet, so its list is empty.
@@ -657,6 +678,7 @@ mod tests {
             Arc::new(NamedApi { name: "youtube" }),
             rss(),
             Some(podverse),
+            None,
         );
         let lists = composite.playlists(ProviderId::Podverse).await.unwrap();
         assert_eq!(lists.len(), 1);
@@ -664,7 +686,7 @@ mod tests {
         assert_eq!(lists[0].name, "Rock The Halls");
         mock.abort();
         let unconfigured =
-            CompositeMusicApi::new(Arc::new(NamedApi { name: "youtube" }), rss(), None);
+            CompositeMusicApi::new(Arc::new(NamedApi { name: "youtube" }), rss(), None, None);
         assert!(unconfigured.playlists(ProviderId::Podverse).await.is_err());
     }
 
@@ -695,7 +717,14 @@ mod tests {
 
     #[tokio::test]
     async fn offline_music_api_refuses_provider_calls() {
-        let api = ReloadableMusicApi::new(None, None, rss(), None, Arc::new(AtomicBool::new(true)));
+        let api = ReloadableMusicApi::new(
+            None,
+            None,
+            rss(),
+            None,
+            None,
+            Arc::new(AtomicBool::new(true)),
+        );
         let error = api.search(ProviderId::Youtube, "test").await.unwrap_err();
         assert_eq!(error, OFFLINE_MESSAGE);
         assert!(api.auth_status(ProviderId::Youtube).is_none());
@@ -703,8 +732,14 @@ mod tests {
 
     #[tokio::test]
     async fn non_youtube_calls_do_not_initialize_youtube() {
-        let api =
-            ReloadableMusicApi::new(None, None, rss(), None, Arc::new(AtomicBool::new(false)));
+        let api = ReloadableMusicApi::new(
+            None,
+            None,
+            rss(),
+            None,
+            None,
+            Arc::new(AtomicBool::new(false)),
+        );
         let _ = api.search(ProviderId::Rss, "test").await;
         assert_eq!(api.ensure_calls(), 0);
 
@@ -714,8 +749,14 @@ mod tests {
 
     #[tokio::test]
     async fn online_without_auth_uses_the_unavailable_api() {
-        let api =
-            ReloadableMusicApi::new(None, None, rss(), None, Arc::new(AtomicBool::new(false)));
+        let api = ReloadableMusicApi::new(
+            None,
+            None,
+            rss(),
+            None,
+            None,
+            Arc::new(AtomicBool::new(false)),
+        );
         let error = api.search(ProviderId::Youtube, "test").await.unwrap_err();
         assert!(error.contains("unavailable"), "{error}");
     }

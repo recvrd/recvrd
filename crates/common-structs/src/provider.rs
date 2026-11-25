@@ -13,8 +13,8 @@ use std::{
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-/// A music provider. RSS is the default when it is available.
-/// YouTube Music is the last provider. New providers add a variant here.
+/// A music provider. Local files are the default when configured.
+/// RSS is next. YouTube Music is the last provider.
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(
     Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, TS,
@@ -26,18 +26,20 @@ pub enum ProviderId {
     Youtube,
     Rss,
     Podverse,
+    Local,
 }
 
 impl ProviderId {
-    /// All providers the daemon knows, in display order. RSS comes
-    /// first. YouTube Music comes last.
+    /// All providers the daemon knows, in display order. Local files
+    /// come first, YouTube Music comes last.
     pub const fn all() -> &'static [Self] {
-        &[Self::Rss, Self::Podverse, Self::Youtube]
+        &[Self::Local, Self::Rss, Self::Podverse, Self::Youtube]
     }
 
-    /// The default provider for a fresh install. RSS needs no setup.
+    /// The default provider for a fresh install. Local files need a
+    /// configured directory, so RSS is the fallback in practice.
     pub const fn default_provider() -> Self {
-        Self::Rss
+        Self::Local
     }
 
     /// The first provider in display order that is available. A fresh
@@ -56,6 +58,7 @@ impl ProviderId {
             Self::Youtube => "YouTube Music",
             Self::Rss => "RSS",
             Self::Podverse => "Podverse",
+            Self::Local => "Local files",
         }
     }
 
@@ -65,6 +68,7 @@ impl ProviderId {
             Self::Youtube => "youtube",
             Self::Rss => "rss",
             Self::Podverse => "podverse",
+            Self::Local => "local",
         }
     }
 
@@ -72,6 +76,7 @@ impl ProviderId {
     /// A YouTube Music track ID has 11 characters from `[A-Za-z0-9_-]`.
     /// An RSS track ID has 32 lowercase hexadecimal characters: the
     /// first 32 characters of the SHA-256 hash of the episode identity.
+    /// A local track ID is the same hash of the relative file path.
     /// Any other value can escape the cache directory when it is
     /// joined into a path, so callers must reject it.
     pub fn validate_id(&self, id: &str) -> bool {
@@ -82,7 +87,9 @@ impl ProviderId {
                         .bytes()
                         .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
             }
-            Self::Rss => id.len() == 32 && id.bytes().all(|byte| byte.is_ascii_hexdigit()),
+            Self::Rss | Self::Local => {
+                id.len() == 32 && id.bytes().all(|byte| byte.is_ascii_hexdigit())
+            }
             Self::Podverse => {
                 (1..=64).contains(&id.len())
                     && id
@@ -107,6 +114,7 @@ impl FromStr for ProviderId {
             "youtube" => Ok(Self::Youtube),
             "rss" => Ok(Self::Rss),
             "podverse" => Ok(Self::Podverse),
+            "local" => Ok(Self::Local),
             _ => Err(UnknownProvider),
         }
     }
@@ -218,15 +226,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn provider_list_puts_rss_first() {
+    fn provider_list_puts_local_and_rss_first() {
         assert_eq!(
             ProviderId::all(),
-            &[ProviderId::Rss, ProviderId::Podverse, ProviderId::Youtube]
+            &[
+                ProviderId::Local,
+                ProviderId::Rss,
+                ProviderId::Podverse,
+                ProviderId::Youtube
+            ]
         );
-        assert_eq!(ProviderId::default_provider(), ProviderId::Rss);
+        assert_eq!(ProviderId::default_provider(), ProviderId::Local);
         assert_eq!(
             ProviderId::default_for(&[ProviderId::Youtube, ProviderId::Rss]),
             ProviderId::Rss
+        );
+        assert_eq!(
+            ProviderId::default_for(&[ProviderId::Local, ProviderId::Youtube]),
+            ProviderId::Local
         );
         assert_eq!(
             ProviderId::default_for(&[ProviderId::Youtube]),
@@ -235,6 +252,7 @@ mod tests {
         assert_eq!(ProviderId::Youtube.display_name(), "YouTube Music");
         assert_eq!(ProviderId::Rss.display_name(), "RSS");
         assert_eq!(ProviderId::Podverse.display_name(), "Podverse");
+        assert_eq!(ProviderId::Local.display_name(), "Local files");
     }
 
     #[test]

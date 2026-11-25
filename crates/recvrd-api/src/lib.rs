@@ -74,6 +74,16 @@ impl ProviderCapabilities {
                 downloads: true,
                 covers: true,
             },
+            ProviderId::Local => Self {
+                search: true,
+                library: true,
+                playlists: true,
+                playlist_create: false,
+                playlist_edit: false,
+                track_like: false,
+                downloads: false,
+                covers: false,
+            },
         }
     }
 }
@@ -99,12 +109,13 @@ pub struct ProviderInfo {
 }
 
 impl ProviderInfo {
-    /// Build the description of one provider.
+    /// Build the description of one provider. The caller sets the
+    /// default flag from the available provider list.
     pub fn new(id: ProviderId, auth: AuthStatus, playback: PlaybackMode) -> Self {
         Self {
             id,
             name: id.display_name().to_string(),
-            default: id == ProviderId::default_provider(),
+            default: false,
             capabilities: ProviderCapabilities::for_provider(id),
             auth,
             playback,
@@ -776,7 +787,7 @@ mod tests {
             PlaybackMode::Download,
         );
         assert_eq!(info.name, "RSS");
-        assert!(info.default);
+        assert!(!info.default);
         assert!(info.capabilities.search);
         assert!(!info.capabilities.playlist_edit);
         let json = serde_json::to_string(&info).unwrap();

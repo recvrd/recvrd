@@ -459,6 +459,11 @@ fn provider_auth<S: AudioSink + Send + 'static>(
             source: None,
             message: None,
         }),
+        ProviderId::Local => ApiAuthStatus {
+            state: AuthState::Ok,
+            source: None,
+            message: None,
+        },
     }
 }
 
@@ -1190,7 +1195,12 @@ async fn play_playlist<S: AudioSink + Send + 'static>(
         .await
         .map_err(playback_failure)?;
     if !offline && mode != PlaybackMode::Stream {
-        state.downloads.queue_playlist(&tracks);
+        let download_tracks: Vec<_> = tracks
+            .iter()
+            .filter(|track| track.provider != ProviderId::Local)
+            .cloned()
+            .collect();
+        state.downloads.queue_playlist(&download_tracks);
     }
     Ok(Json(status_from_parts(
         &state,
@@ -1215,7 +1225,7 @@ async fn play_track<S: AudioSink + Send + 'static>(
         .play_track(track.clone())
         .await
         .map_err(playback_failure)?;
-    if !offline && mode != PlaybackMode::Stream {
+    if !offline && mode != PlaybackMode::Stream && track.provider != ProviderId::Local {
         state.downloads.queue_tracks(std::slice::from_ref(&track));
     }
     Ok(Json(status_from_parts(
@@ -1235,7 +1245,10 @@ async fn queue_add<S: AudioSink + Send + 'static>(
     }
     let track = core_track(request.track);
     let mode = state.settings.mode(track.provider);
-    if !state.settings.offline() && mode != PlaybackMode::Stream {
+    if !state.settings.offline()
+        && mode != PlaybackMode::Stream
+        && track.provider != ProviderId::Local
+    {
         state.downloads.queue_tracks(std::slice::from_ref(&track));
     }
     let mut playback = state.playback.lock().await;
@@ -1474,7 +1487,9 @@ async fn cache_clean<S: AudioSink + Send + 'static>(
             let mut playback = state.playback.lock().await;
             playback.reset_download_statuses(current_key.as_ref());
         }
-        if let Some(track) = current_track {
+        if let Some(track) = current_track
+            && track.provider != ProviderId::Local
+        {
             state.downloads.queue_tracks(std::slice::from_ref(&track));
         }
     }
@@ -2702,6 +2717,45 @@ mod tests {
         assert_eq!(list[1]["capabilities"]["downloads"], true);
         assert_eq!(list[1]["auth"]["state"], "ok");
         assert_eq!(list[1]["auth"]["source"], "/tmp/headers.txt");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn local_provider_is_first_when_configured() {
+        let mut state = test_state();
+        state.providers.insert(0, ProviderId::Local);
+        let (base, server) = start_server(state).await;
+        let client = reqwest::Client::new();
+
+        let providers: serde_json::Value = client
+            .get(format!("{base}/api/providers"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let list = providers.as_array().unwrap();
+        assert_eq!(list[0]["id"], "local");
+        assert_eq!(list[0]["name"], "Local files");
+        assert_eq!(list[0]["default"], true);
+        assert_eq!(list[0]["capabilities"]["library"], true);
+        assert_eq!(list[0]["capabilities"]["playlist_edit"], false);
+        assert_eq!(list[0]["capabilities"]["downloads"], false);
+
+        let status: serde_json::Value = client
+            .get(format!("{base}/api/status"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(status["default_provider"], "local");
+        assert_eq!(
+            status["providers"],
+            serde_json::json!(["local", "rss", "youtube"])
+        );
         server.abort();
     }
 

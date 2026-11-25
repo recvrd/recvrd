@@ -40,6 +40,7 @@ use crate::{
     providers::{CompositeCoverFetcher, CompositeDownloader, ReloadableMusicApi},
     streams::HttpStreamFactory,
 };
+use provider_local::LocalProvider;
 use provider_podverse::PodverseProvider;
 use provider_rss::RssProvider;
 use provider_youtube::{YoutubeCoverFetcher, YoutubeDownloader};
@@ -373,6 +374,12 @@ fn run_serve(
     {
         config.listenbrainz.token = Some(value);
     }
+    if let Some(value) = std::env::var("RECVRD_LOCAL_DIR")
+        .ok()
+        .or_else(|| std::env::var("YTERMUSICD_LOCAL_DIR").ok())
+    {
+        config.local.music_dir = Some(PathBuf::from(value));
+    }
 
     let bind = bind
         .or(config.bind)
@@ -476,7 +483,15 @@ fn run_serve(
             },
             None => None,
         };
-        let mut providers = vec![ProviderId::Rss];
+        let local = config.local.music_dir.as_ref().map(|dir| {
+            log::info!("local files provider ready for {}", dir.display());
+            Arc::new(LocalProvider::new(dir))
+        });
+        let mut providers = Vec::new();
+        if local.is_some() {
+            providers.push(ProviderId::Local);
+        }
+        providers.push(ProviderId::Rss);
         if podverse.is_some() {
             providers.push(ProviderId::Podverse);
         }
@@ -487,6 +502,7 @@ fn run_serve(
             auth_source.as_ref().map(|path| path.display().to_string()),
             rss.clone(),
             podverse.clone(),
+            local.clone(),
             offline.clone(),
         ));
         if !offline.load(Ordering::SeqCst)
@@ -619,6 +635,7 @@ fn run_serve(
                 .into_iter()
                 .map(|item| item.track)
                 .filter(|track| settings.mode(track.provider) != PlaybackMode::Stream)
+                .filter(|track| track.provider != ProviderId::Local)
                 .collect()
         };
         if !restored_tracks.is_empty() {

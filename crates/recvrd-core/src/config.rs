@@ -89,6 +89,15 @@ impl std::fmt::Debug for ListenBrainzConfig {
     }
 }
 
+/// Local-files provider configuration.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct LocalConfig {
+    /// The directory to scan for audio files. The provider is hidden
+    /// when the directory is empty.
+    pub music_dir: Option<PathBuf>,
+}
+
 /// Audio output configuration.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default)]
@@ -136,6 +145,8 @@ pub struct DaemonConfig {
     pub listenbrainz: ListenBrainzConfig,
     /// Audio output configuration.
     pub audio: AudioConfig,
+    /// Local-files provider configuration.
+    pub local: LocalConfig,
 }
 
 impl Default for DaemonConfig {
@@ -154,6 +165,7 @@ impl Default for DaemonConfig {
             lastfm: LastfmConfig::default(),
             listenbrainz: ListenBrainzConfig::default(),
             audio: AudioConfig::default(),
+            local: LocalConfig::default(),
         }
     }
 }
@@ -253,6 +265,17 @@ impl DaemonConfig {
             return Err(ConfigError::Invalid {
                 path: path.to_path_buf(),
                 message: "podverse.base_url must not be empty".to_string(),
+            });
+        }
+        if self
+            .local
+            .music_dir
+            .as_ref()
+            .is_some_and(|dir| dir.as_os_str().is_empty())
+        {
+            return Err(ConfigError::Invalid {
+                path: path.to_path_buf(),
+                message: "local.music_dir must not be empty".to_string(),
             });
         }
         Ok(())
@@ -393,6 +416,18 @@ token = "secret"
 
         let error = DaemonConfig::load(&path).unwrap_err();
         assert!(error.to_string().contains("audio.sample_rate"));
+    }
+
+    #[test]
+    fn local_music_dir_is_optional() {
+        let config = DaemonConfig::default();
+        assert_eq!(config.local.music_dir, None);
+
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(&path, "[local]\nmusic_dir = \"/music\"\n").unwrap();
+        let config = DaemonConfig::load(&path).unwrap();
+        assert_eq!(config.local.music_dir, Some(PathBuf::from("/music")));
     }
 
     #[test]

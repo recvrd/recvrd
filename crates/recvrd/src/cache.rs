@@ -157,7 +157,7 @@ impl CacheService {
     /// Tracks without a local audio file keep a false flag.
     pub fn annotate_tracks(&self, tracks: &mut [recvrd_api::Track]) {
         for track in tracks {
-            track.cached = self.is_cached(&track.key());
+            track.cached = track.provider == ProviderId::Local || self.is_cached(&track.key());
         }
     }
 
