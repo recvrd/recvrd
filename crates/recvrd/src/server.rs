@@ -19,7 +19,8 @@ use recvrd_api::{
     PlaylistEditError, ProviderInfo, Queue as ApiQueue, QueueItem as ApiQueueItem, QueueRequest,
     RemovePlaylistTracksRequest, RemoveQueueRequest, ReorderQueueRequest,
     RepeatMode as ApiRepeatMode, RepeatRequest, RetryDownloadRequest, RssFeed, SearchResults,
-    SeekRequest, ShuffleRequest, Status, Track, TrackDetail, UpdatePlaylistRequest, VolumeRequest,
+    SeekRequest, SetTrackLikeRequest, ShuffleRequest, Status, Track, TrackDetail,
+    UpdatePlaylistRequest, VolumeRequest,
 };
 use recvrd_core::{
     AudioSink, AuthState as CoreAuthState, AuthStatus, CoreEvent, EventBus, PlaybackCommand,
@@ -215,6 +216,10 @@ pub fn router<S: AudioSink + Send + 'static>(state: AppState<S>) -> Router {
         .route("/api/playlists/{id}/tracks/move", post(move_playlist_track))
         .route("/api/search", get(search))
         .route("/api/tracks/{provider}/{track_id}", get(track_detail))
+        .route(
+            "/api/tracks/{provider}/{track_id}/like",
+            put(set_track_like),
+        )
         .route("/api/tracks/{provider}/{track_id}/cover", get(cover))
         .route("/api/queue", get(queue).post(queue_add).delete(queue_clear))
         .route("/api/history", get(history))
@@ -819,6 +824,7 @@ fn core_track(track: Track) -> recvrd_core::Track {
         duration: track.duration,
         source: track.source,
         metadata: track.metadata,
+        liked: track.liked,
     }
 }
 
@@ -1000,6 +1006,37 @@ async fn track_detail<S: AudioSink + Send + 'static>(
         .cache
         .annotate_tracks(std::slice::from_mut(&mut detail.track));
     Ok(Json(detail))
+}
+
+/// Set the like state of one track. The provider must report the
+/// `track_like` capability, and the account must be signed in.
+async fn set_track_like<S: AudioSink + Send + 'static>(
+    State(state): State<AppState<S>>,
+    AxumPath((provider, track_id)): AxumPath<(String, String)>,
+    Json(request): Json<SetTrackLikeRequest>,
+) -> Result<Json<OkResponse>, ApiFailure> {
+    ensure_online(&state)?;
+    let Ok(provider) = provider.parse::<ProviderId>() else {
+        return Err(ApiFailure::not_found(format!(
+            "unknown provider {provider}"
+        )));
+    };
+    if !state.providers.contains(&provider) {
+        return Err(ApiFailure::not_found(format!(
+            "provider {provider} is not configured"
+        )));
+    }
+    if !provider.validate_id(&track_id) {
+        return Err(ApiFailure::bad_request(format!(
+            "invalid track ID {provider}:{track_id}"
+        )));
+    }
+    state
+        .music
+        .set_track_like(provider, &track_id, request.liked)
+        .await
+        .map_err(|error| edit_failure(&state, error))?;
+    Ok(Json(OkResponse { ok: true }))
 }
 
 /// Serve a cached cover image.
@@ -1757,6 +1794,7 @@ fn api_track(track: &recvrd_core::Track) -> Track {
         metadata: track.metadata.clone(),
         // The queue does not carry the flag. List responses set it.
         cached: false,
+        liked: track.liked,
     }
 }
 
@@ -1998,6 +2036,19 @@ mod tests {
 
         async fn delete_playlist(&self, id: &str) -> Result<(), PlaylistEditError> {
             self.edits.lock().unwrap().push(format!("delete {id}"));
+            Ok(())
+        }
+
+        async fn set_track_like(
+            &self,
+            provider: ProviderId,
+            track_id: &str,
+            liked: bool,
+        ) -> Result<(), PlaylistEditError> {
+            self.edits
+                .lock()
+                .unwrap()
+                .push(format!("like {provider}:{track_id} {liked}"));
             Ok(())
         }
 
@@ -3022,6 +3073,7 @@ mod tests {
                 channel_title: Some(channel.to_string()),
                 ..Default::default()
             })),
+            liked: None,
         };
         write_cache_file(
             &root.join(format!("downloads/podverse/{id}.mp3")),
@@ -3047,6 +3099,7 @@ mod tests {
             duration: "3:00".to_string(),
             source: None,
             metadata: None,
+            liked: None,
         };
         write_cache_file(
             &root.join("downloads/podverse/1004.json"),
@@ -4650,6 +4703,44 @@ mod tests {
         assert!(calls.contains(&"add VLnew abcdefghijk".to_string()));
         assert!(calls.contains(&"remove VLnew [0]".to_string()));
         assert!(calls.contains(&"move VLnew 0 1".to_string()));
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn like_route_sets_the_track_like_state() {
+        let music = Arc::new(MockMusicApi::default());
+        let state = test_state_with(music.clone());
+        let (base, server) = start_server(state).await;
+        let client = reqwest::Client::new();
+
+        let liked = client
+            .put(format!("{base}/api/tracks/youtube/abcdefghijk/like"))
+            .json(&SetTrackLikeRequest { liked: true })
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(liked.status(), reqwest::StatusCode::OK);
+        assert_eq!(liked.json::<serde_json::Value>().await.unwrap()["ok"], true);
+
+        let unliked = client
+            .put(format!("{base}/api/tracks/youtube/abcdefghijk/like"))
+            .json(&SetTrackLikeRequest { liked: false })
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(unliked.status(), reqwest::StatusCode::OK);
+
+        let calls = music.edits.lock().unwrap().clone();
+        assert!(calls.contains(&"like youtube:abcdefghijk true".to_string()));
+        assert!(calls.contains(&"like youtube:abcdefghijk false".to_string()));
+
+        let invalid = client
+            .put(format!("{base}/api/tracks/youtube/short/like"))
+            .json(&SetTrackLikeRequest { liked: true })
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(invalid.status(), reqwest::StatusCode::BAD_REQUEST);
         server.abort();
     }
 

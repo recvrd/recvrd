@@ -41,7 +41,7 @@ pub(crate) fn from_json<T: PartialEq>(
     Ok(playlists)
 }
 
-#[derive(Debug, Clone, PartialOrd, Eq, Ord, PartialEq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, PartialOrd, Eq, Ord, Hash, Serialize, Deserialize)]
 pub struct YoutubeMusicVideoRef {
     pub title: String,
     pub author: String,
@@ -55,6 +55,18 @@ pub struct YoutubeMusicVideoRef {
     /// Unique ID of one playlist item. Mutations need it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub set_video_id: Option<String>,
+    /// The like state from the item menu, when the page reports it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub like_status: Option<LikeStatus>,
+}
+
+/// The like state that YouTube Music reports for one track.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum LikeStatus {
+    Like,
+    Dislike,
+    Indifferent,
 }
 
 impl YoutubeMusicVideoRef {
@@ -281,6 +293,7 @@ pub fn get_video_from_album(value: &Value) -> Option<YoutubeMusicVideoRef> {
         duration: String::new(),
         provider: ProviderId::Youtube,
         set_video_id: get_set_video_id(value),
+        like_status: get_like_status(value),
     })
 }
 
@@ -372,7 +385,27 @@ pub(crate) fn get_video(value: &Value) -> Option<YoutubeMusicVideoRef> {
         duration: String::new(),
         provider: ProviderId::Youtube,
         set_video_id: get_set_video_id(value),
+        like_status: get_like_status(value),
     })
+}
+
+/// Tries to find the like state in the json item menu.
+fn get_like_status(value: &Value) -> Option<LikeStatus> {
+    match value {
+        Value::Array(items) => items.iter().find_map(get_like_status),
+        Value::Object(map) => {
+            if let Some(status) = map.get("likeStatus").and_then(Value::as_str) {
+                return match status {
+                    "LIKE" => Some(LikeStatus::Like),
+                    "DISLIKE" => Some(LikeStatus::Dislike),
+                    "INDIFFERENT" => Some(LikeStatus::Indifferent),
+                    _ => None,
+                };
+            }
+            map.values().find_map(get_like_status)
+        }
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -707,6 +740,30 @@ mod tests {
         let value = json!([playlist(), playlist()]);
         let playlists = from_json(&value, get_playlist).expect("playlists");
         assert_eq!(playlists.len(), 1);
+    }
+
+    #[test]
+    fn extracts_the_like_status_from_the_menu() {
+        let mut value = search_video();
+        value["menu"] = json!({
+            "topLevelButtons": [{
+                "likeButtonRenderer": { "likeStatus": "LIKE" }
+            }]
+        });
+        let video = get_video(&value).expect("video");
+        assert_eq!(video.like_status, Some(LikeStatus::Like));
+    }
+
+    #[test]
+    fn an_unknown_like_status_is_none() {
+        let mut value = search_video();
+        value["menu"] = json!({
+            "topLevelButtons": [{
+                "likeButtonRenderer": { "likeStatus": "UNKNOWN" }
+            }]
+        });
+        let video = get_video(&value).expect("video");
+        assert_eq!(video.like_status, None);
     }
 
     #[test]

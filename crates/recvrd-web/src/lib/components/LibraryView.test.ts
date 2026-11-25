@@ -41,6 +41,7 @@ function setupRssLibrary() {
         playlists: true,
         playlist_create: false,
         playlist_edit: false,
+        track_like: false,
         downloads: true,
         covers: true,
       },
@@ -173,6 +174,32 @@ describe('LibraryView', () => {
       screen.getByRole('heading', { level: 1, name: 'Christmas Classics' }),
     ).toBeInTheDocument();
     expect(screen.queryByText(id)).not.toBeInTheDocument();
+  });
+
+  it('likes a playlist track when the account is signed in', async () => {
+    const { store } = setupPlaylist();
+    store.providers = [makeProviderInfo()];
+    const { container } = render(LibraryView, { props: { store } });
+
+    await fireEvent.contextMenu(container.querySelectorAll('.row')[0]);
+    await fireEvent.click(screen.getByRole('menuitem', { name: 'Like' }));
+    await tick();
+
+    expect(store.playlist?.tracks[0].liked).toBe(true);
+    expect(screen.getByLabelText('Liked')).toBeInTheDocument();
+  });
+
+  it('hides the like action when the account is signed out', async () => {
+    const { store } = setupPlaylist();
+    store.providers = [
+      makeProviderInfo({
+        auth: { state: 'expired', source: null, message: null },
+      }),
+    ];
+    const { container } = render(LibraryView, { props: { store } });
+
+    await fireEvent.contextMenu(container.querySelectorAll('.row')[0]);
+    expect(screen.queryByRole('menuitem', { name: 'Like' })).not.toBeInTheDocument();
   });
 
   it('opens the search palette to add tracks', async () => {

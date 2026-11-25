@@ -25,6 +25,7 @@ export function makeProviderInfo(overrides: Partial<ProviderInfo> = {}): Provide
       playlists: true,
       playlist_create: true,
       playlist_edit: true,
+      track_like: true,
       downloads: true,
       covers: true,
     },
@@ -193,6 +194,7 @@ export function makeApi(
         }),
       ),
     ),
+    setTrackLike: vi.fn(async () => ({ ok: true })),
     createPlaylist: vi.fn(async (request) => {
       const playlist = makePlaylist(`p${playlists.length + 1}`, {
         name: request.title,

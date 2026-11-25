@@ -26,4 +26,9 @@ metadata?: TrackMetadata | null,
  * daemon sets this field on list responses. Providers leave
  * it false. Clients use it to show a track as cached.
  */
-cached?: boolean, };
+cached?: boolean, 
+/**
+ * True when the upstream account liked the track. Absent when
+ * the provider does not report a like state.
+ */
+liked?: boolean | null, };

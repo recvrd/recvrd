@@ -674,6 +674,7 @@ describe('AppStore', () => {
           playlists: true,
           playlist_create: false,
           playlist_edit: false,
+          track_like: false,
           downloads: true,
           covers: true,
         },
@@ -699,6 +700,7 @@ describe('AppStore', () => {
           playlists: true,
           playlist_create: false,
           playlist_edit: false,
+          track_like: false,
           downloads: true,
           covers: true,
         },
@@ -1555,6 +1557,68 @@ describe('AppStore', () => {
     store.openRenamePlaylist();
     store.closeOverlays();
     expect(store.renamePlaylistOpen).toBe(false);
+    store.dispose();
+  });
+});
+
+describe('track likes', () => {
+  it('sends the like and updates every local copy', async () => {
+    const { api, store } = setup();
+    const track = makeTrack('v1');
+    store.playlist = { playlist: makePlaylist('p1'), tracks: [track] };
+    store.queue = makeQueue([track]);
+    store.searchResults = { tracks: [track], playlists: [] };
+
+    await store.setTrackLike(track, true);
+
+    expect(api.setTrackLike).toHaveBeenCalledWith('youtube', 'v1', true);
+    expect(store.playlist?.tracks[0].liked).toBe(true);
+    expect(store.queue?.items[0].track.liked).toBe(true);
+    expect(store.searchResults?.tracks[0].liked).toBe(true);
+    store.dispose();
+  });
+
+  it('keeps the local state when the like fails', async () => {
+    const { api, store } = setup();
+    const track = makeTrack('v1');
+    store.playlist = { playlist: makePlaylist('p1'), tracks: [track] };
+    api.setTrackLike = vi.fn(async () => {
+      throw new ApiError('no session', 'auth_expired');
+    });
+
+    await store.setTrackLike(track, true);
+
+    expect(store.playlist?.tracks[0].liked).toBeUndefined();
+    store.dispose();
+  });
+
+  it('enables likes only for a signed-in provider with the capability', async () => {
+    const { store } = setup();
+    await store.init();
+    expect(store.canLikeTracks).toBe(true);
+
+    store.providers = [
+      makeProviderInfo({
+        auth: { state: 'expired', source: null, message: null },
+      }),
+    ];
+    expect(store.canLikeTracks).toBe(false);
+
+    store.providers = [
+      makeProviderInfo({
+        capabilities: {
+          search: true,
+          library: true,
+          playlists: true,
+          playlist_create: true,
+          playlist_edit: true,
+          track_like: false,
+          downloads: true,
+          covers: true,
+        },
+      }),
+    ];
+    expect(store.canLikeTracks).toBe(false);
     store.dispose();
   });
 });

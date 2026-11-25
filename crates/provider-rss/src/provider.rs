@@ -404,6 +404,7 @@ fn track_dto(episode: &StoredEpisode) -> Track {
             ..Default::default()
         })),
         cached: false,
+        liked: None,
     }
 }
 

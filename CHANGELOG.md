@@ -6,6 +6,8 @@
 
 - Save the playback position of each track, up to 1000 entries, and resume each
   track at its saved position.
+- Add a Like action for YouTube Music tracks. The web UI track menu sets the
+  like state, and the track list shows a liked marker.
 
 ### Removed
 

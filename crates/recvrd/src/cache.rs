@@ -728,6 +728,7 @@ mod tests {
                 channel_title: channel_title.map(str::to_string),
                 ..Default::default()
             })),
+            liked: None,
         }
     }
 

@@ -14,6 +14,7 @@
     onplay,
     onqueue,
     onretry,
+    onlike,
     onremove,
     onmoveup,
     onmovedown,
@@ -29,6 +30,7 @@
     onplay: (track: Track) => void;
     onqueue: (track: Track) => void;
     onretry: (track: Track) => void;
+    onlike?: (track: Track) => void;
     onremove?: (index: number) => void;
     onmoveup?: (index: number) => void;
     onmovedown?: (index: number) => void;
@@ -84,6 +86,12 @@
         action: () => onretry(menu!.track),
       },
     ];
+    if (onlike) {
+      items.push({
+        label: menu.track.liked === true ? 'Unlike' : 'Like',
+        action: () => onlike(menu!.track),
+      });
+    }
     if (onmoveup) {
       items.push({
         label: 'Move up',
@@ -189,6 +197,9 @@
           </span>
           <span class="title" title={track.title}>
             {track.title}
+            {#if track.liked === true}
+              <span class="liked" role="img" aria-label="Liked" title="Liked">♥</span>
+            {/if}
             {#if unavailable}
               <button
                 class="info"
@@ -330,6 +341,12 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .liked {
+    margin-left: 0.4rem;
+    color: var(--accent);
+    font-weight: 400;
   }
 
   .cover {

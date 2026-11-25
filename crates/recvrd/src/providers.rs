@@ -272,6 +272,19 @@ impl MusicApi for ReloadableMusicApi {
             .move_playlist_track(id, from, to)
             .await
     }
+
+    async fn set_track_like(
+        &self,
+        provider: ProviderId,
+        track_id: &str,
+        liked: bool,
+    ) -> Result<(), PlaylistEditError> {
+        self.api_for(provider)
+            .await
+            .map_err(PlaylistEditError::Upstream)?
+            .set_track_like(provider, track_id, liked)
+            .await
+    }
 }
 
 /// One music client for every provider. Reads route by provider.
@@ -381,6 +394,18 @@ impl MusicApi for CompositeMusicApi {
         to: usize,
     ) -> Result<Vec<Track>, PlaylistEditError> {
         self.youtube.move_playlist_track(id, from, to).await
+    }
+
+    async fn set_track_like(
+        &self,
+        provider: ProviderId,
+        track_id: &str,
+        liked: bool,
+    ) -> Result<(), PlaylistEditError> {
+        self.api(provider)
+            .map_err(PlaylistEditError::Invalid)?
+            .set_track_like(provider, track_id, liked)
+            .await
     }
 }
 

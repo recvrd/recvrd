@@ -22,7 +22,7 @@ use string_utils::StringUtils;
 mod json_extractor;
 mod string_utils;
 
-pub use json_extractor::YoutubeMusicVideoRef;
+pub use json_extractor::{LikeStatus, YoutubeMusicVideoRef};
 
 pub type Result<T> = std::result::Result<T, YoutubeMusicError>;
 
@@ -882,6 +882,22 @@ impl YoutubeMusicInstance {
         ensure_edit_succeeded(&response)
     }
 
+    /// Like or unlike one video. A like adds the video to Liked
+    /// Music. The unlike route removes it again.
+    pub async fn set_video_like(&self, video_id: &str, liked: bool) -> Result<()> {
+        if video_id.is_empty() {
+            return Err(YoutubeMusicError::Other("video ID is empty".to_string()));
+        }
+        let route = if liked {
+            "like/like"
+        } else {
+            "like/removelike"
+        };
+        let body = json!({ "target": { "videoId": video_id } });
+        let response = self.post_edit(route, body).await?;
+        ensure_edit_succeeded(&response)
+    }
+
     /// Move one playlist item before a successor item. A missing successor
     /// moves the item to the end.
     pub async fn move_playlist_item(
@@ -1301,6 +1317,63 @@ mod edit_tests {
         assert_eq!(body["title"], "Mix");
         assert_eq!(body["privacyStatus"], "UNLISTED");
         assert_eq!(body["context"]["client"]["clientName"], "WEB_REMIX");
+    }
+
+    #[tokio::test]
+    async fn likes_and_unlikes_a_video() {
+        use tokio::io::AsyncWriteExt;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let requests = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let recorded = requests.clone();
+        tokio::spawn(async move {
+            for _ in 0..2 {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let request = read_request(&mut socket).await;
+                recorded.lock().await.push(request);
+                let response = "{}";
+                let reply = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    response.len(),
+                    response
+                );
+                socket.write_all(reply.as_bytes()).await.unwrap();
+            }
+        });
+
+        let instance = YoutubeMusicInstance::for_test(
+            format!("http://{address}"),
+            "test-key".to_string(),
+            "1.0".to_string(),
+            "SAPISID=x".to_string(),
+            None,
+        );
+        instance.set_video_like("vid123", true).await.unwrap();
+        instance.set_video_like("vid123", false).await.unwrap();
+
+        let requests = requests.lock().await;
+        let like = &requests[0];
+        assert!(like.starts_with("POST /youtubei/v1/like/like?key=test-key"));
+        let body = like.split("\r\n\r\n").nth(1).unwrap();
+        let body: Value = serde_json::from_str(body).unwrap();
+        assert_eq!(body["target"]["videoId"], "vid123");
+
+        let unlike = &requests[1];
+        assert!(unlike.starts_with("POST /youtubei/v1/like/removelike?key=test-key"));
+    }
+
+    #[tokio::test]
+    async fn a_like_without_a_video_id_fails() {
+        let instance = YoutubeMusicInstance::for_test(
+            "http://127.0.0.1:1".to_string(),
+            "test-key".to_string(),
+            "1.0".to_string(),
+            "SAPISID=x".to_string(),
+            None,
+        );
+
+        assert!(instance.set_video_like("", true).await.is_err());
     }
 
     /// Serve a fixed sequence of statuses, one per connection, and

@@ -402,6 +402,7 @@ fn track_from_item(item: &Item, channel: Option<&ChannelResponse>) -> Option<Tra
         source: source_from_item(item).map(Box::new),
         metadata: Some(Box::new(metadata_from_item(item, channel))),
         cached: false,
+        liked: None,
     })
 }
 
@@ -775,6 +776,7 @@ mod tests {
             duration: "4:03".to_string(),
             source: Some(Box::new(source)),
             metadata: None,
+            liked: None,
         }
     }
 

@@ -23,6 +23,10 @@ pub struct Track {
     /// Provider metadata for the track.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Box<TrackMetadata>>,
+    /// True when the upstream account liked the track. Absent when
+    /// the provider does not report a like state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub liked: Option<bool>,
 }
 
 impl Track {

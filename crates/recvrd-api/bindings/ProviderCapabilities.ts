@@ -22,6 +22,10 @@ playlist_create: boolean,
  */
 playlist_edit: boolean, 
 /**
+ * The provider supports the like state of a track.
+ */
+track_like: boolean, 
+/**
  * The provider supports downloads.
  */
 downloads: boolean, 
