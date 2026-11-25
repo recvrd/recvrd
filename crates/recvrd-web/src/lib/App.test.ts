@@ -3,7 +3,14 @@ import { tick } from 'svelte';
 import { beforeEach, describe, expect, it } from 'vitest';
 import App from '../App.svelte';
 import { AppStore } from '../lib/store.svelte';
-import { FakeEventSource, makeApi, makeProviderInfo } from '../test/fixtures';
+import {
+  FakeEventSource,
+  makeApi,
+  makePlaylist,
+  makePlaylistDetail,
+  makeProviderInfo,
+  makeTrack,
+} from '../test/fixtures';
 
 function setup() {
   const api = makeApi();
@@ -89,6 +96,24 @@ describe('App shell', () => {
     ).toBeInTheDocument();
     expect(await screen.findByText('Track v1')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Play all' })).toBeInTheDocument();
+  });
+
+  it('shows the library name when the daemon returns the raw playlist ID', async () => {
+    const { api, store } = setup();
+    render(App, { props: { store } });
+    await screen.findByRole('heading', { level: 2, name: 'Playlist p1' });
+
+    const id = 'VLPLEuTNuVCEhNwBcYRtEfw52PMGYPpyX1v4';
+    api.playlist = async () =>
+      makePlaylistDetail(makePlaylist(id, { name: id }), [makeTrack('v1')]);
+    await store.openPlaylist(id, 'Christmas Classics');
+    await tick();
+
+    expect(
+      screen.getByRole('heading', { level: 1, name: 'Christmas Classics' }),
+    ).toBeInTheDocument();
+    expect(screen.getAllByText('Christmas Classics')).toHaveLength(2);
+    expect(screen.queryByText(id)).not.toBeInTheDocument();
   });
 
   it('toggles offline mode from the top bar', async () => {
