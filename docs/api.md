@@ -360,11 +360,13 @@ A 429 pauses sync until the server allows it again.
 
 Conflict policy: the newer write wins. The daemon adopts the remote
 position only when the remote write is newer than the last local
-write for the track, with a 5 second tolerance for clock skew. A
-remote position at the end of a track clears the local entry. A
-local rewind to zero clears the local entry and the remote position
-stays, because the server keeps the maximum position. The daemon
-never switches tracks from a remote read.
+write for the track, with a 5 second tolerance for clock skew. When
+the remote row has no write time, the daemon adopts it only when the
+local map has no entry for the track. A remote position at the end of
+a track clears the local entry. A local rewind to zero clears the
+local entry and the remote position stays, because the server keeps
+the maximum position. The daemon never switches tracks from a remote
+read.
 
 The deployed API version is unconfirmed. The client uses the paths
 and bodies from the public Podverse API source. The live OpenAPI

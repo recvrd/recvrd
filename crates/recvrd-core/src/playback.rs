@@ -28,6 +28,9 @@ const REMOTE_APPLY_WINDOW: Duration = Duration::from_secs(10);
 /// Tolerance for clock skew between the daemon and the Podverse
 /// server, in seconds, when it compares write times.
 const REMOTE_TIMESTAMP_TOLERANCE_SECS: u64 = 5;
+/// Maximum in-memory cleared positions. The map only breaks ties
+/// between a local clear and an old remote row.
+const MAX_CLEARED_POSITIONS: usize = 1000;
 
 /// A stream reader that the daemon opens before it starts playback.
 pub struct StreamReader {
@@ -286,6 +289,22 @@ impl<S: AudioSink> PlaybackService<S> {
         }
     }
 
+    /// Remember a local clear time and keep the map bounded.
+    fn remember_cleared(&mut self, key: &TrackKey) {
+        let key = key.to_string();
+        if self.positions_cleared.len() >= MAX_CLEARED_POSITIONS
+            && !self.positions_cleared.contains_key(&key)
+            && let Some(oldest) = self
+                .positions_cleared
+                .iter()
+                .min_by_key(|(_, updated_at)| **updated_at)
+                .map(|(key, _)| key.clone())
+        {
+            self.positions_cleared.remove(&oldest);
+        }
+        self.positions_cleared.insert(key, now_secs());
+    }
+
     /// The RSS identity fields for a track, for Podverse sync.
     fn sync_identity(track: &Track) -> (Option<String>, Option<String>) {
         (
@@ -300,25 +319,36 @@ impl<S: AudioSink> PlaybackService<S> {
     /// Apply a remote position from the Podverse queue. The remote
     /// side wins only when its write is newer than the last local
     /// write for the track. A missing local entry counts as a write
-    /// at time zero, unless local playback cleared the entry. The
-    /// method returns true when it adopts the remote position.
+    /// at time zero, unless local playback cleared the entry. When
+    /// the remote write time is missing, adopt only if the local map
+    /// has no entry and local playback did not clear one. The method
+    /// returns true when it adopts the remote position.
     pub fn apply_remote_position(
         &mut self,
         key: &TrackKey,
         position: Duration,
-        remote_updated_at: u64,
+        remote_updated_at: Option<u64>,
     ) -> bool {
         let local_updated_at = self
             .positions
             .updated_at(key)
             .or_else(|| self.positions_cleared.get(&key.to_string()).copied())
             .unwrap_or(0);
-        if remote_updated_at <= local_updated_at + REMOTE_TIMESTAMP_TOLERANCE_SECS {
+        let remote_is_newer = match remote_updated_at {
+            Some(remote_updated_at) => {
+                remote_updated_at > local_updated_at + REMOTE_TIMESTAMP_TOLERANCE_SECS
+            }
+            None => {
+                self.positions.get(key).is_none()
+                    && !self.positions_cleared.contains_key(&key.to_string())
+            }
+        };
+        if !remote_is_newer {
             return false;
         }
         if position.is_zero() {
             self.positions.remove(key);
-            self.positions_cleared.insert(key.to_string(), now_secs());
+            self.remember_cleared(key);
             return false;
         }
         let at_end = self
@@ -330,7 +360,7 @@ impl<S: AudioSink> PlaybackService<S> {
             .is_some_and(|duration| position + RESUME_END_MARGIN >= duration);
         if at_end {
             self.positions.remove(key);
-            self.positions_cleared.insert(key.to_string(), now_secs());
+            self.remember_cleared(key);
             return false;
         }
         self.positions.set(key, position, now_secs());
@@ -569,7 +599,7 @@ impl<S: AudioSink> PlaybackService<S> {
         let key = track.key();
         let position = self.resume_position(position);
         if position.is_zero() {
-            self.positions_cleared.insert(key.to_string(), now_secs());
+            self.remember_cleared(&key);
         } else {
             self.positions_cleared.remove(&key.to_string());
         }
@@ -1100,7 +1130,7 @@ impl<S: AudioSink> PlaybackService<S> {
                 track_id: key.clone(),
             });
             self.positions.remove(&key);
-            self.positions_cleared.insert(key.to_string(), now_secs());
+            self.remember_cleared(&key);
             let (feed_url, enclosure_url) = Self::sync_identity(track);
             self.emit_sync(PositionSyncEvent::Finished {
                 key,
@@ -3046,7 +3076,7 @@ mod tests {
         service.seek(Duration::from_secs(5)).unwrap();
         let key = TrackKey::youtube("video-0");
         let adopted =
-            service.apply_remote_position(&key, Duration::from_secs(60), now_secs() + 1000);
+            service.apply_remote_position(&key, Duration::from_secs(60), Some(now_secs() + 1000));
         assert!(adopted);
         assert!(service.sink.seeks.contains(&Duration::from_secs(60)));
         assert_eq!(service.saved_position(&key), Some(Duration::from_secs(60)));
@@ -3059,7 +3089,7 @@ mod tests {
         service.stop();
         let key = TrackKey::youtube("video-0");
         let adopted =
-            service.apply_remote_position(&key, Duration::from_secs(60), now_secs() + 1000);
+            service.apply_remote_position(&key, Duration::from_secs(60), Some(now_secs() + 1000));
         assert!(adopted);
         service.play().await.unwrap();
         assert!(service.sink.seeks.contains(&Duration::from_secs(60)));
@@ -3074,7 +3104,7 @@ mod tests {
         let adopted = service.apply_remote_position(
             &key,
             Duration::from_secs(60),
-            now_secs().saturating_sub(1000),
+            Some(now_secs().saturating_sub(1000)),
         );
         assert!(!adopted);
         assert!(!service.sink.seeks.contains(&Duration::from_secs(60)));
@@ -3088,7 +3118,8 @@ mod tests {
         service.seek(Duration::ZERO).unwrap();
         let key = TrackKey::youtube("video-0");
         assert_eq!(service.saved_position(&key), None);
-        let adopted = service.apply_remote_position(&key, Duration::from_secs(60), now_secs());
+        let adopted =
+            service.apply_remote_position(&key, Duration::from_secs(60), Some(now_secs()));
         assert!(!adopted);
     }
 
@@ -3098,8 +3129,29 @@ mod tests {
         service.play_playlist(tracks(1)).await.unwrap();
         let key = TrackKey::youtube("video-0");
         let adopted =
-            service.apply_remote_position(&key, Duration::from_secs(179), now_secs() + 1000);
+            service.apply_remote_position(&key, Duration::from_secs(179), Some(now_secs() + 1000));
         assert!(!adopted);
         assert_eq!(service.saved_position(&key), None);
+    }
+
+    #[tokio::test]
+    async fn apply_remote_position_without_a_timestamp_fills_an_empty_map() {
+        let mut service = service();
+        service.play_playlist(tracks(1)).await.unwrap();
+        let key = TrackKey::youtube("video-0");
+        let adopted = service.apply_remote_position(&key, Duration::from_secs(60), None);
+        assert!(adopted);
+        assert_eq!(service.saved_position(&key), Some(Duration::from_secs(60)));
+    }
+
+    #[tokio::test]
+    async fn apply_remote_position_without_a_timestamp_keeps_a_local_entry() {
+        let mut service = service();
+        service.play_playlist(tracks(1)).await.unwrap();
+        service.seek(Duration::from_secs(5)).unwrap();
+        let key = TrackKey::youtube("video-0");
+        let adopted = service.apply_remote_position(&key, Duration::from_secs(60), None);
+        assert!(!adopted);
+        assert_eq!(service.saved_position(&key), Some(Duration::from_secs(5)));
     }
 }

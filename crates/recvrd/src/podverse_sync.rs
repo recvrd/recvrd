@@ -19,9 +19,6 @@ use std::{
 };
 use tokio::sync::{Mutex as AsyncMutex, mpsc};
 
-/// Maximum pending events that one drain pass collapses.
-const MAX_DRAIN: usize = 32;
-
 /// Build the sync worker when the config enables it. Return the
 /// event sender, or `None` when sync cannot run.
 pub fn start_sync<S: AudioSink + Send + 'static>(
@@ -76,29 +73,11 @@ impl<S: AudioSink + Send + 'static> PodverseSyncWorker<S> {
         sender
     }
 
-    /// Drain events until the sender closes.
+    /// Drain events until the sender closes. Each event runs in
+    /// order; a read and a write for the same track both happen.
     async fn run(mut self) {
         while let Some(event) = self.events.recv().await {
-            let mut pending = vec![event];
-            while pending.len() < MAX_DRAIN {
-                match self.events.try_recv() {
-                    Ok(event) => pending.push(event),
-                    Err(_) => break,
-                }
-            }
-            // Keep only the latest event per track. A newer event
-            // for a track replaces an older one.
-            let mut latest: Vec<PositionSyncEvent> = Vec::new();
-            for event in pending {
-                if let Some(position) = latest.iter().position(|other| other.key() == event.key()) {
-                    latest[position] = event;
-                } else {
-                    latest.push(event);
-                }
-            }
-            for event in latest {
-                self.handle(event).await;
-            }
+            self.handle(event).await;
         }
     }
 
@@ -166,8 +145,9 @@ impl<S: AudioSink + Send + 'static> PodverseSyncWorker<S> {
         }
     }
 
-    /// Adopt a remote position when it matches the track and its
-    /// write is newer than the last local write.
+    /// Adopt a remote position when it matches the track. A remote
+    /// write time must be newer than the last local write. A missing
+    /// remote time adopts only when the local map has no entry.
     async fn adopt(
         &mut self,
         key: &TrackKey,
@@ -187,14 +167,14 @@ impl<S: AudioSink + Send + 'static> PodverseSyncWorker<S> {
         if !matches {
             return;
         }
-        let (Some(position), Some(updated_at)) = (row.position(), row.last_played_unix()) else {
+        let Some(position) = row.position() else {
             return;
         };
-        let adopted = self
-            .playback
-            .lock()
-            .await
-            .apply_remote_position(key, position, updated_at);
+        let adopted =
+            self.playback
+                .lock()
+                .await
+                .apply_remote_position(key, position, row.last_played_unix());
         if adopted {
             log::debug!("adopted the remote position for {key}");
         }
@@ -542,6 +522,99 @@ mod tests {
                 .try_lock()
                 .map(|service| service.saved_position(&key) == Some(Duration::from_secs_f64(752.5)))
                 .unwrap_or(false))
+            .await
+        );
+    }
+
+    #[tokio::test]
+    async fn read_event_without_a_remote_timestamp_fills_an_empty_entry() {
+        let server = MockServer::start().await;
+        server.route("/queue/all-for-account/private", 200, QUEUE_LIST);
+        server.route(
+            "/queue/Q1/resources/now-playing",
+            200,
+            r#"{"item":{"id_text":"YvIRJrjZVe"},"playback_position":"752.5","media_file_duration":"1800","completed":false}"#,
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let playback = Arc::new(AsyncMutex::new(PlaybackService::new(
+            TestSink::default(),
+            dir.path(),
+            50,
+        )));
+        {
+            let mut service = playback.lock().await;
+            service.play_playlist(vec![podverse_track()]).await.unwrap();
+        }
+        let sender = start_worker(&server, playback.clone(), false);
+        sender
+            .send(PositionSyncEvent::Read {
+                key: TrackKey::podverse("YvIRJrjZVe"),
+                feed_url: None,
+                enclosure_url: None,
+            })
+            .await
+            .unwrap();
+        let key = TrackKey::podverse("YvIRJrjZVe");
+        assert!(
+            wait_for(|| playback
+                .try_lock()
+                .map(|service| service.saved_position(&key) == Some(Duration::from_secs_f64(752.5)))
+                .unwrap_or(false))
+            .await
+        );
+    }
+
+    #[tokio::test]
+    async fn a_read_and_a_write_for_the_same_track_both_run() {
+        let server = MockServer::start().await;
+        server.route("/queue/all-for-account/private", 200, QUEUE_LIST);
+        server.route(
+            "/queue/Q1/resources/now-playing",
+            200,
+            r#"{"item":{"id_text":"YvIRJrjZVe"},"playback_position":"10","last_played_at":"2026-11-24T16:33:00.000Z"}"#,
+        );
+        server.route("/queue/Q1/item/YvIRJrjZVe/now-playing", 201, "{}");
+        let dir = tempfile::tempdir().unwrap();
+        let playback = Arc::new(AsyncMutex::new(PlaybackService::new(
+            TestSink::default(),
+            dir.path(),
+            50,
+        )));
+        {
+            let mut service = playback.lock().await;
+            service.play_playlist(vec![podverse_track()]).await.unwrap();
+        }
+        let sender = start_worker(&server, playback, false);
+        let key = TrackKey::podverse("YvIRJrjZVe");
+        sender
+            .send(PositionSyncEvent::Read {
+                key: key.clone(),
+                feed_url: None,
+                enclosure_url: None,
+            })
+            .await
+            .unwrap();
+        sender
+            .send(PositionSyncEvent::Write {
+                key,
+                position: Duration::from_secs(60),
+                duration: Some(Duration::from_secs(1800)),
+                completed: false,
+                feed_url: None,
+                enclosure_url: None,
+            })
+            .await
+            .unwrap();
+        assert!(
+            wait_for(|| server.requests().iter().any(|request| {
+                request.method == "GET" && request.path == "/queue/Q1/resources/now-playing"
+            }))
+            .await
+        );
+        assert!(
+            wait_for(|| server.requests().iter().any(|request| {
+                request.method == "POST" && request.path == "/queue/Q1/item/YvIRJrjZVe/now-playing"
+            }))
             .await
         );
     }
