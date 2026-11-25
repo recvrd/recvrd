@@ -476,10 +476,11 @@ fn run_serve(
             },
             None => None,
         };
-        let mut providers = vec![ProviderId::Youtube, ProviderId::Rss];
+        let mut providers = vec![ProviderId::Rss];
         if podverse.is_some() {
             providers.push(ProviderId::Podverse);
         }
+        providers.push(ProviderId::Youtube);
 
         let music = Arc::new(ReloadableMusicApi::new(
             auth,

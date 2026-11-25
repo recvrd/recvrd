@@ -13,14 +13,15 @@ use std::{
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-/// A music provider. YouTube Music is the default provider.
-/// RSS feeds are the second provider. New providers add a variant here.
+/// A music provider. RSS is the default when it is available.
+/// YouTube Music is the last provider. New providers add a variant here.
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(
     Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, TS,
 )]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderId {
+    /// The default for old payloads without a provider field.
     #[default]
     Youtube,
     Rss,
@@ -28,16 +29,25 @@ pub enum ProviderId {
 }
 
 impl ProviderId {
-    /// All providers the daemon knows, in display order.
-    /// YouTube Music is the default provider. RSS feeds are second.
-    /// New providers add a variant here and an entry in this list.
+    /// All providers the daemon knows, in display order. RSS comes
+    /// first. YouTube Music comes last.
     pub const fn all() -> &'static [Self] {
-        &[Self::Youtube, Self::Rss, Self::Podverse]
+        &[Self::Rss, Self::Podverse, Self::Youtube]
     }
 
-    /// The default provider for a fresh install.
+    /// The default provider for a fresh install. RSS needs no setup.
     pub const fn default_provider() -> Self {
-        Self::Youtube
+        Self::Rss
+    }
+
+    /// The first provider in display order that is available. A fresh
+    /// install always has RSS, so the list is never empty in practice.
+    pub fn default_for(providers: &[Self]) -> Self {
+        Self::all()
+            .iter()
+            .copied()
+            .find(|provider| providers.contains(provider))
+            .unwrap_or_else(Self::default_provider)
     }
 
     /// The display name for the provider, as shown in clients.
@@ -208,12 +218,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn provider_list_has_youtube_as_the_default() {
+    fn provider_list_puts_rss_first() {
         assert_eq!(
             ProviderId::all(),
-            &[ProviderId::Youtube, ProviderId::Rss, ProviderId::Podverse]
+            &[ProviderId::Rss, ProviderId::Podverse, ProviderId::Youtube]
         );
-        assert_eq!(ProviderId::default_provider(), ProviderId::Youtube);
+        assert_eq!(ProviderId::default_provider(), ProviderId::Rss);
+        assert_eq!(
+            ProviderId::default_for(&[ProviderId::Youtube, ProviderId::Rss]),
+            ProviderId::Rss
+        );
+        assert_eq!(
+            ProviderId::default_for(&[ProviderId::Youtube]),
+            ProviderId::Youtube
+        );
         assert_eq!(ProviderId::Youtube.display_name(), "YouTube Music");
         assert_eq!(ProviderId::Rss.display_name(), "RSS");
         assert_eq!(ProviderId::Podverse.display_name(), "Podverse");

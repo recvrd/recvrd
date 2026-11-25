@@ -16,7 +16,7 @@
 ## What it is
 
 `recvrd` keeps playback, queue and downloads in a long-running daemon. It
-serves YouTube Music, RSS feeds and Podverse channels. A manual offline switch
+serves RSS feeds, Podverse channels and YouTube Music. A manual offline switch
 serves cached content without provider calls. Clients are thin:
 
 - **Web UI** — library, search, queue, now playing, cover art, vim-style keys
