@@ -19,7 +19,9 @@
 - one MPRIS/D-Bus client when enabled.
 
 The daemon binds to `127.0.0.1:8080` by default and shuts down gracefully on
-SIGINT/SIGTERM. State is owned by the daemon, not by an individual client.
+SIGINT/SIGTERM. Shutdown ends open SSE streams and closes remaining
+connections after five seconds. State is owned by the daemon, not by an
+individual client.
 
 ## Components
 
