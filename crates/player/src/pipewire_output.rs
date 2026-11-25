@@ -43,6 +43,9 @@ struct Shared {
     paused: AtomicBool,
     failed: AtomicBool,
     shutdown: AtomicBool,
+    /// The sink has no track source. The decoder thread stops filling
+    /// the ring buffer with mixer silence after this flag is set.
+    source_finished: AtomicBool,
     sink_name: Mutex<Option<String>>,
     produced: AtomicU64,
     consumed: AtomicU64,
@@ -58,6 +61,7 @@ impl Shared {
             paused: AtomicBool::new(false),
             failed: AtomicBool::new(false),
             shutdown: AtomicBool::new(false),
+            source_finished: AtomicBool::new(false),
             sink_name: Mutex::new(
                 known_sink()
                     .lock()
@@ -173,6 +177,11 @@ impl PipeWireOutput {
         self.shared.played_frames.store(0, Ordering::Release);
     }
 
+    /// Allow the decoder thread to fill the ring buffer for a new source.
+    pub(crate) fn reset_source_finished(&self) {
+        self.shared.source_finished.store(false, Ordering::Release);
+    }
+
     pub(crate) fn position(&self) -> Option<Duration> {
         let base = self.shared.base_frames.load(Ordering::Acquire);
         let played = self.shared.played_frames.load(Ordering::Acquire);
@@ -183,8 +192,16 @@ impl PipeWireOutput {
     }
 
     pub(crate) fn is_finished(&self, sink_empty: bool) -> bool {
+        if sink_empty {
+            // The mixer source keeps yielding silence after the track
+            // ends. Stop the decoder thread so the ring buffer can
+            // drain the track tail and report the finish.
+            self.shared.source_finished.store(true, Ordering::Release);
+        }
+        // One sample can stay in the callback's pending slot when the
+        // total sample count is odd. The track is still finished.
         sink_empty
-            && (self.shared.buffered_samples() == 0 || self.shared.failed.load(Ordering::Acquire))
+            && (self.shared.buffered_samples() <= 1 || self.shared.failed.load(Ordering::Acquire))
     }
 
     pub(crate) fn is_failed(&self) -> bool {
@@ -219,10 +236,15 @@ impl StreamData {
             popped += 1;
         }
 
+        // The pending sample was popped from the ring earlier and not
+        // counted as consumed yet. Count it now that it is discarded.
+        if self.pending.take().is_some() {
+            popped += 1;
+        }
+
         if popped > 0 {
             self.shared.consumed.fetch_add(popped, Ordering::Release);
         }
-        self.pending = None;
     }
 }
 
@@ -685,6 +707,13 @@ fn spawn_decoder(
                     continue;
                 }
 
+                if shared.source_finished.load(Ordering::Acquire) {
+                    // The track source ended. Do not fill the ring with
+                    // mixer silence; let the buffered tail drain.
+                    thread::sleep(Duration::from_millis(2));
+                    continue;
+                }
+
                 let Some(sample) = source.next() else {
                     thread::sleep(Duration::from_millis(2));
                     continue;
@@ -764,6 +793,65 @@ mod tests {
 
         assert_eq!(output.shared.buffered_samples(), 6);
         assert!(!output.is_finished(true));
+    }
+
+    #[test]
+    fn an_empty_sink_with_one_pending_sample_is_finished() {
+        let output = shared_output();
+        output.shared.produced.store(11, Ordering::Release);
+        output.shared.consumed.store(10, Ordering::Release);
+
+        assert_eq!(output.shared.buffered_samples(), 1);
+        assert!(output.is_finished(true));
+    }
+
+    #[test]
+    fn draining_counts_the_pending_sample() {
+        let (mut producer, mut data) = stream_data();
+        data.shared.produced.store(3, Ordering::Release);
+        for sample in [0.25, -0.5, 0.75] {
+            producer.push(sample).unwrap();
+        }
+        let mut slice = vec![0; 2 * FRAME_BYTES];
+        write_samples(&mut data, &mut slice);
+
+        assert_eq!(data.shared.buffered_samples(), 1);
+        assert_eq!(data.pending, Some(0.75));
+
+        data.drain();
+
+        assert_eq!(data.shared.buffered_samples(), 0);
+        assert_eq!(data.pending, None);
+    }
+
+    #[test]
+    fn an_empty_sink_marks_the_source_finished() {
+        let output = shared_output();
+        output.shared.produced.store(10, Ordering::Release);
+        output.shared.consumed.store(4, Ordering::Release);
+
+        assert!(!output.is_finished(true));
+        assert!(output.shared.source_finished.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn a_nonempty_sink_keeps_the_source_running() {
+        let output = shared_output();
+        output.shared.produced.store(10, Ordering::Release);
+        output.shared.consumed.store(4, Ordering::Release);
+
+        assert!(!output.is_finished(false));
+        assert!(!output.shared.source_finished.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn reset_source_finished_clears_the_flag() {
+        let output = shared_output();
+        output.shared.source_finished.store(true, Ordering::Release);
+
+        output.reset_source_finished();
+
+        assert!(!output.shared.source_finished.load(Ordering::Acquire));
     }
 
     #[test]

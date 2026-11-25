@@ -59,6 +59,7 @@ impl Player {
             self.output.set_paused(false);
             self.output.flush();
             self.output.reset_position();
+            self.output.reset_source_finished();
         }
     }
 
