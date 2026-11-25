@@ -624,6 +624,7 @@ mod tests {
             PodverseProvider::new(&recvrd_core::PodverseConfig {
                 base_url: Some(base_url),
                 token: None,
+                sync: false,
             })
             .unwrap(),
         );

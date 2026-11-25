@@ -22,6 +22,9 @@ pub struct PodverseConfig {
     pub base_url: Option<String>,
     /// An optional bearer token for the API.
     pub token: Option<String>,
+    /// Sync per-track positions with the Podverse queue. The
+    /// default is off. Sync also needs a token and a membership.
+    pub sync: bool,
 }
 
 impl std::fmt::Debug for PodverseConfig {
@@ -29,6 +32,7 @@ impl std::fmt::Debug for PodverseConfig {
         f.debug_struct("PodverseConfig")
             .field("base_url", &self.base_url)
             .field("token", &self.token.as_ref().map(|_| "<redacted>"))
+            .field("sync", &self.sync)
             .finish()
     }
 }
@@ -225,7 +229,22 @@ token = "secret"
             Some("https://podverse.example.com/api/v2")
         );
         assert_eq!(config.podverse.token.as_deref(), Some("secret"));
+        assert!(!config.podverse.sync);
         assert!(!format!("{:?}", config.podverse).contains("secret"));
+    }
+
+    #[test]
+    fn podverse_sync_is_opt_in() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(
+            &path,
+            "[podverse]\nbase_url = \"https://podverse.example.com/api/v2\"\ntoken = \"secret\"\nsync = true\n",
+        )
+        .unwrap();
+
+        let config = DaemonConfig::load(&path).unwrap();
+        assert!(config.podverse.sync);
     }
 
     #[test]
