@@ -46,6 +46,9 @@ use crate::{artwork::ArtworkCache, cache::CacheService, downloads::DownloadContr
 use provider_rss::RssProvider;
 use provider_youtube::AUTH_EXPIRED_MESSAGE;
 
+/// Longest wait for open connections after a shutdown signal.
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
+
 pub struct AppState<S: AudioSink + Send + 'static> {
     started_at: Instant,
     auth: AuthStatus,
@@ -58,6 +61,8 @@ pub struct AppState<S: AudioSink + Send + 'static> {
     rss: Arc<RssProvider>,
     providers: Vec<ProviderId>,
     settings: Arc<PlaybackSettingsStore>,
+    /// Fires when the daemon starts to stop. SSE streams end on it.
+    shutdown: Option<tokio::sync::watch::Receiver<bool>>,
 }
 
 impl<S: AudioSink + Send + 'static> Clone for AppState<S> {
@@ -74,6 +79,7 @@ impl<S: AudioSink + Send + 'static> Clone for AppState<S> {
             rss: self.rss.clone(),
             providers: self.providers.clone(),
             settings: self.settings.clone(),
+            shutdown: self.shutdown.clone(),
         }
     }
 }
@@ -91,6 +97,7 @@ impl<S: AudioSink + Send + 'static> AppState<S> {
         rss: Arc<RssProvider>,
         providers: Vec<ProviderId>,
         settings: Arc<PlaybackSettingsStore>,
+        shutdown: Option<tokio::sync::watch::Receiver<bool>>,
     ) -> Self {
         Self {
             started_at: Instant::now(),
@@ -104,6 +111,7 @@ impl<S: AudioSink + Send + 'static> AppState<S> {
             rss,
             providers,
             settings,
+            shutdown,
         }
     }
 }
@@ -1507,6 +1515,22 @@ async fn queue_play_next<S: AudioSink + Send + 'static>(
     Ok(Json(api_queue(&playback.queue_snapshot())))
 }
 
+/// Wait until the daemon starts to stop. A missing channel never ends.
+async fn wait_for_shutdown(shutdown: Option<tokio::sync::watch::Receiver<bool>>) {
+    let Some(mut shutdown) = shutdown else {
+        std::future::pending::<()>().await;
+        return;
+    };
+    if *shutdown.borrow() {
+        return;
+    }
+    while shutdown.changed().await.is_ok() {
+        if *shutdown.borrow() {
+            return;
+        }
+    }
+}
+
 async fn events<S: AudioSink + Send + 'static>(
     State(state): State<AppState<S>>,
     headers: HeaderMap,
@@ -1525,6 +1549,7 @@ async fn events<S: AudioSink + Send + 'static>(
     );
     let snapshot_queue = api_queue(&subscription.snapshot.queue);
     let stream_state = state.clone();
+    let shutdown = state.shutdown.clone();
 
     let stream = async_stream::stream! {
         let mut last_sent = if subscription.needs_snapshot {
@@ -1570,6 +1595,7 @@ async fn events<S: AudioSink + Send + 'static>(
         heartbeat.tick().await;
         loop {
             tokio::select! {
+                _ = wait_for_shutdown(shutdown.clone()) => break,
                 result = receiver.recv() => match result {
                     Ok(envelope) => {
                         // The receiver is subscribed before history is read, so an
@@ -1673,15 +1699,35 @@ pub async fn serve<S: AudioSink + Send + 'static>(
     let local_addr = listener.local_addr()?;
     println!("recvrd listening on http://{local_addr}");
 
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let state = AppState::new(
-        auth, music, playback, events, downloads, artwork, cache, rss, providers, settings,
+        auth,
+        music,
+        playback,
+        events,
+        downloads,
+        artwork,
+        cache,
+        rss,
+        providers,
+        settings,
+        Some(shutdown_rx),
     );
-    axum::serve(listener, router(state))
-        .with_graceful_shutdown(shutdown_signal())
-        .await
+    let serve =
+        axum::serve(listener, router(state)).with_graceful_shutdown(shutdown_signal(shutdown_tx));
+    match tokio::time::timeout(SHUTDOWN_TIMEOUT, serve).await {
+        Ok(result) => result,
+        Err(_) => {
+            log::warn!(
+                "recvrd did not stop its HTTP listener within {}s; closing remaining connections",
+                SHUTDOWN_TIMEOUT.as_secs()
+            );
+            Ok(())
+        }
+    }
 }
 
-async fn shutdown_signal() {
+async fn shutdown_signal(shutdown: tokio::sync::watch::Sender<bool>) {
     let ctrl_c = async {
         signal::ctrl_c()
             .await
@@ -1705,6 +1751,7 @@ async fn shutdown_signal() {
     }
 
     log::info!("shutdown signal received");
+    let _ = shutdown.send(true);
 }
 
 fn status_from_parts<S: AudioSink + Send + 'static>(
@@ -2349,6 +2396,7 @@ mod tests {
             rss,
             vec![ProviderId::Youtube, ProviderId::Rss],
             settings,
+            None,
         )
     }
 
@@ -2438,6 +2486,7 @@ mod tests {
             rss,
             providers,
             settings,
+            None,
         )
     }
 
@@ -4282,6 +4331,45 @@ mod tests {
             .unwrap();
         assert_eq!(missing.status(), reqwest::StatusCode::NOT_FOUND);
         server.abort();
+    }
+
+    #[tokio::test]
+    async fn shutdown_ends_an_open_event_stream() {
+        let mut state = test_state();
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        state.shutdown = Some(shutdown_rx.clone());
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let mut shutdown_rx = shutdown_rx;
+            axum::serve(listener, router(state))
+                .with_graceful_shutdown(async move {
+                    let _ = shutdown_rx.changed().await;
+                })
+                .await
+                .unwrap();
+        });
+        let base = format!("http://{addr}");
+        let client = reqwest::Client::new();
+        let response = client
+            .get(format!("{base}/api/events"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let mut stream = Box::pin(response.bytes_stream());
+        let mut buffer = String::new();
+        read_until(&mut stream, &mut buffer, "\n\n").await;
+        assert!(buffer.contains("event: snapshot"));
+
+        shutdown_tx.send(true).unwrap();
+
+        let stopped = tokio::time::timeout(Duration::from_secs(2), server).await;
+        assert!(
+            stopped.is_ok(),
+            "the server must stop with an open SSE stream"
+        );
+        assert!(stopped.unwrap().is_ok(), "the server task must not panic");
     }
 
     #[tokio::test]
