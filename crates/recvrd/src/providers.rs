@@ -492,6 +492,7 @@ pub struct CompositeCoverFetcher {
     youtube: Arc<dyn CoverFetcher>,
     rss: Arc<RssProvider>,
     podverse: Option<Arc<PodverseProvider>>,
+    local: Option<Arc<LocalProvider>>,
 }
 
 impl CompositeCoverFetcher {
@@ -499,11 +500,13 @@ impl CompositeCoverFetcher {
         youtube: Arc<dyn CoverFetcher>,
         rss: Arc<RssProvider>,
         podverse: Option<Arc<PodverseProvider>>,
+        local: Option<Arc<LocalProvider>>,
     ) -> Self {
         Self {
             youtube,
             rss,
             podverse,
+            local,
         }
     }
 }
@@ -515,7 +518,7 @@ impl CoverFetcher for CompositeCoverFetcher {
             ProviderId::Youtube => self.youtube.fetch(key).await,
             ProviderId::Rss => self.rss.fetch(key).await,
             ProviderId::Podverse => self.podverse.as_ref()?.fetch(key).await,
-            ProviderId::Local => None,
+            ProviderId::Local => self.local.as_ref()?.fetch(key).await,
         }
     }
 }

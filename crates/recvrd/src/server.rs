@@ -1077,7 +1077,11 @@ async fn cover<S: AudioSink + Send + 'static>(
         )));
     };
     let key = TrackKey::new(provider, track_id);
-    if state.settings.offline() && key.validate() && state.artwork.cached_path(&key).is_none() {
+    if state.settings.offline()
+        && key.provider != ProviderId::Local
+        && key.validate()
+        && state.artwork.cached_path(&key).is_none()
+    {
         return Err(ApiFailure::offline_unavailable(format!(
             "cover art for {key} is not cached"
         )));

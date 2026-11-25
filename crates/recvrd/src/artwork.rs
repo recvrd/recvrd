@@ -9,7 +9,7 @@ use std::{
     },
 };
 
-use common_structs::TrackKey;
+use common_structs::{ProviderId, TrackKey};
 use recvrd_core::CoverFetcher;
 
 /// Store cover art on disk and limit the cache size.
@@ -66,7 +66,7 @@ impl ArtworkCache {
         if let Some(path) = self.cached_path(key) {
             return Some(path);
         }
-        if self.offline.load(Ordering::SeqCst) {
+        if self.offline.load(Ordering::SeqCst) && key.provider != ProviderId::Local {
             return None;
         }
         let path = self.path(key)?;
@@ -277,6 +277,24 @@ mod tests {
         let second = cache.ensure(&key(ID)).await.unwrap();
         assert_eq!(first, second);
         assert!(cache.ensure(&key("abcdefghij2")).await.is_none());
+        assert_eq!(fetcher.calls(), 1);
+    }
+
+    #[tokio::test]
+    async fn local_covers_load_while_offline() {
+        let dir = tempdir().unwrap();
+        let fetcher = Arc::new(CountingFetcher::with_bytes(vec![7; 16]));
+        let cache = ArtworkCache::with_offline(
+            dir.path().to_path_buf(),
+            0,
+            fetcher.clone(),
+            Arc::new(AtomicBool::new(true)),
+        );
+        let key = TrackKey::new(ProviderId::Local, "0123456789abcdef0123456789abcdef");
+
+        let path = cache.ensure(&key).await.unwrap();
+
+        assert_eq!(std::fs::read(path).unwrap(), vec![7; 16]);
         assert_eq!(fetcher.calls(), 1);
     }
 

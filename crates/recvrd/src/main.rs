@@ -649,6 +649,7 @@ fn run_serve(
                 Arc::new(YoutubeCoverFetcher::new()),
                 rss.clone(),
                 podverse,
+                local,
             )),
             offline.clone(),
         ));

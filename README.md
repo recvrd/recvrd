@@ -162,8 +162,10 @@ absent. It scans `mp3`, `m4a`, `ogg`, `flac`, and `wav` files.
 music_dir = "/home/user/Music"
 ```
 
-`RECVRD_LOCAL_DIR` overrides the file value. The file name is the track
-title. Tag metadata and cover art are not read yet.
+`RECVRD_LOCAL_DIR` overrides the file value. The provider reads the title,
+artist, album, track number, and duration from tags. It uses the file name
+when tags are missing. It serves embedded cover art, or a sidecar `cover`,
+`folder`, `front`, or `album` image.
 
 To enable the Podverse provider, add a `[podverse]` table with the API base
 URL. The provider is hidden from `/api/providers` when the table is absent.
