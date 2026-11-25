@@ -328,7 +328,7 @@ async fn playlists<S: AudioSink + Send + 'static>(
     State(state): State<AppState<S>>,
     Query(query): Query<ProviderQuery>,
 ) -> Result<Json<Vec<Playlist>>, ApiFailure> {
-    let provider = parse_provider(query.provider)?;
+    let provider = parse_provider(query.provider, &state.providers)?;
     if state.settings.offline() {
         return Ok(Json(cached_playlists_as_playlists(&state, provider)));
     }
@@ -468,17 +468,20 @@ fn provider_auth<S: AudioSink + Send + 'static>(
 async fn providers<S: AudioSink + Send + 'static>(
     State(state): State<AppState<S>>,
 ) -> Json<Vec<ProviderInfo>> {
-    Json(
-        state
-            .providers
-            .iter()
-            .map(|provider| {
-                let auth = provider_auth(&state, *provider);
-                let mode = state.settings.mode(*provider);
-                ProviderInfo::new(*provider, auth, mode)
-            })
-            .collect(),
-    )
+    let default = ProviderId::default_for(&state.providers);
+    let mut infos: Vec<ProviderInfo> = state
+        .providers
+        .iter()
+        .map(|provider| {
+            let auth = provider_auth(&state, *provider);
+            let mode = state.settings.mode(*provider);
+            ProviderInfo::new(*provider, auth, mode)
+        })
+        .collect();
+    for info in &mut infos {
+        info.default = info.id == default;
+    }
+    Json(infos)
 }
 
 /// Set the playback mode for one provider.
@@ -510,7 +513,9 @@ async fn set_playback_mode<S: AudioSink + Send + 'static>(
             .map_err(playback_failure)?;
     }
     let auth = provider_auth(&state, provider);
-    Ok(Json(ProviderInfo::new(provider, auth, request.mode)))
+    let mut info = ProviderInfo::new(provider, auth, request.mode);
+    info.default = provider == ProviderId::default_for(&state.providers);
+    Ok(Json(info))
 }
 
 /// List the RSS feeds the daemon follows.
@@ -599,7 +604,7 @@ async fn playlist<S: AudioSink + Send + 'static>(
     AxumPath(id): AxumPath<String>,
     Query(query): Query<ProviderQuery>,
 ) -> Result<Json<PlaylistDetail>, ApiFailure> {
-    let provider = parse_provider(query.provider)?;
+    let provider = parse_provider(query.provider, &state.providers)?;
     if state.settings.offline() {
         return cached_playlist_detail(&state, provider, &id)
             .map(Json)
@@ -890,9 +895,12 @@ struct ProviderQuery {
 
 /// Read the `provider` query parameter. A missing value means the
 /// default provider. An unknown name is a bad request.
-fn parse_provider(value: Option<String>) -> Result<ProviderId, ApiFailure> {
+fn parse_provider(
+    value: Option<String>,
+    providers: &[ProviderId],
+) -> Result<ProviderId, ApiFailure> {
     match value {
-        None => Ok(ProviderId::default_provider()),
+        None => Ok(ProviderId::default_for(providers)),
         Some(name) => name
             .parse::<ProviderId>()
             .map_err(|_| ApiFailure::bad_request(format!("unknown provider {name}"))),
@@ -912,7 +920,7 @@ async fn search<S: AudioSink + Send + 'static>(
     if query.q.trim().is_empty() {
         return Err(ApiFailure::bad_request("search query must not be empty"));
     }
-    let provider = parse_provider(query.provider)?;
+    let provider = parse_provider(query.provider, &state.providers)?;
     if state.settings.offline() {
         let needle = query.q.trim().to_lowercase();
         let tracks: Vec<Track> = state
@@ -1376,7 +1384,7 @@ async fn cached_tracks<S: AudioSink + Send + 'static>(
     State(state): State<AppState<S>>,
     Query(query): Query<ProviderQuery>,
 ) -> Result<Json<Vec<Track>>, ApiFailure> {
-    let provider = parse_provider(query.provider)?;
+    let provider = parse_provider(query.provider, &state.providers)?;
     Ok(Json(
         state
             .cache
@@ -1397,7 +1405,7 @@ async fn cached_playlists<S: AudioSink + Send + 'static>(
     State(state): State<AppState<S>>,
     Query(query): Query<ProviderQuery>,
 ) -> Result<Json<Vec<PlaylistDetail>>, ApiFailure> {
-    let provider = parse_provider(query.provider)?;
+    let provider = parse_provider(query.provider, &state.providers)?;
     Ok(Json(
         state
             .cache
@@ -1768,18 +1776,19 @@ fn status_from_parts<S: AudioSink + Send + 'static>(
     playback: &PlaybackSnapshot,
     queue: &QueueSnapshot,
 ) -> Status {
+    let default_provider = ProviderId::default_for(&state.providers);
     Status {
         name: "recvrd".to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
         status: "ok".to_string(),
         uptime_seconds: state.started_at.elapsed().as_secs(),
-        auth: provider_auth(state, ProviderId::default_provider()),
+        auth: provider_auth(state, default_provider),
         playback: api_playback(playback),
         queue_length: queue.items.len(),
         downloads: api_download_summary(state.downloads.summary()),
         offline: state.settings.offline(),
         providers: state.providers.clone(),
-        default_provider: ProviderId::default_provider(),
+        default_provider,
         audio_sample_rate: state.audio.map(|audio| audio.sample_rate),
         audio_format: state.audio.map(|audio| audio.format.as_str().to_string()),
     }
@@ -2405,7 +2414,7 @@ mod tests {
             artwork,
             cache,
             rss,
-            vec![ProviderId::Youtube, ProviderId::Rss],
+            vec![ProviderId::Rss, ProviderId::Youtube],
             settings,
             None,
             None,
@@ -2457,7 +2466,7 @@ mod tests {
             cache_root,
             music,
             downloads,
-            vec![ProviderId::Youtube, ProviderId::Rss],
+            vec![ProviderId::Rss, ProviderId::Youtube],
         )
     }
 
@@ -2625,8 +2634,8 @@ mod tests {
             .unwrap();
         assert_eq!(status["auth"]["state"], "ok");
         assert_eq!(status["playback"]["state"], "stopped");
-        assert_eq!(status["providers"], serde_json::json!(["youtube", "rss"]));
-        assert_eq!(status["default_provider"], "youtube");
+        assert_eq!(status["providers"], serde_json::json!(["rss", "youtube"]));
+        assert_eq!(status["default_provider"], "rss");
 
         let playlists: serde_json::Value = client
             .get(format!("{base}/api/playlists"))
@@ -2661,7 +2670,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn providers_endpoint_lists_youtube_with_capabilities_and_auth() {
+    async fn providers_endpoint_lists_rss_first_with_capabilities_and_auth() {
         let (base, server) = start_server(test_state()).await;
         let client = reqwest::Client::new();
 
@@ -2675,31 +2684,31 @@ mod tests {
             .unwrap();
         let list = providers.as_array().unwrap();
         assert_eq!(list.len(), 2);
-        assert_eq!(list[0]["id"], "youtube");
-        assert_eq!(list[0]["name"], "YouTube Music");
+        // RSS needs no auth, comes first, and supports no playlist edits.
+        assert_eq!(list[0]["id"], "rss");
+        assert_eq!(list[0]["name"], "RSS");
         assert_eq!(list[0]["default"], true);
         assert_eq!(list[0]["capabilities"]["search"], true);
-        assert_eq!(list[0]["capabilities"]["playlist_edit"], true);
+        assert_eq!(list[0]["capabilities"]["playlist_edit"], false);
+        assert_eq!(list[0]["capabilities"]["playlist_create"], false);
         assert_eq!(list[0]["capabilities"]["downloads"], true);
         assert_eq!(list[0]["auth"]["state"], "ok");
-        assert_eq!(list[0]["auth"]["source"], "/tmp/headers.txt");
-        // RSS needs no auth and supports no playlist edits.
-        assert_eq!(list[1]["id"], "rss");
-        assert_eq!(list[1]["name"], "RSS");
+        assert!(list[0]["auth"]["source"].is_null());
+        assert_eq!(list[1]["id"], "youtube");
+        assert_eq!(list[1]["name"], "YouTube Music");
         assert_eq!(list[1]["default"], false);
         assert_eq!(list[1]["capabilities"]["search"], true);
-        assert_eq!(list[1]["capabilities"]["playlist_edit"], false);
-        assert_eq!(list[1]["capabilities"]["playlist_create"], false);
+        assert_eq!(list[1]["capabilities"]["playlist_edit"], true);
         assert_eq!(list[1]["capabilities"]["downloads"], true);
         assert_eq!(list[1]["auth"]["state"], "ok");
-        assert!(list[1]["auth"]["source"].is_null());
+        assert_eq!(list[1]["auth"]["source"], "/tmp/headers.txt");
         server.abort();
     }
 
     #[tokio::test]
     async fn providers_endpoint_includes_a_configured_podverse() {
         let mut state = test_state();
-        state.providers.push(ProviderId::Podverse);
+        state.providers.insert(1, ProviderId::Podverse);
         let (base, server) = start_server(state).await;
         let client = reqwest::Client::new();
 
@@ -2713,14 +2722,15 @@ mod tests {
             .unwrap();
         let list = providers.as_array().unwrap();
         assert_eq!(list.len(), 3);
-        assert_eq!(list[2]["id"], "podverse");
-        assert_eq!(list[2]["name"], "Podverse");
-        assert_eq!(list[2]["capabilities"]["search"], true);
-        assert_eq!(list[2]["capabilities"]["library"], false);
-        assert_eq!(list[2]["capabilities"]["playlists"], true);
-        assert_eq!(list[2]["capabilities"]["downloads"], true);
-        assert_eq!(list[2]["capabilities"]["playlist_edit"], false);
-        assert_eq!(list[2]["auth"]["state"], "ok");
+        assert_eq!(list[1]["id"], "podverse");
+        assert_eq!(list[1]["name"], "Podverse");
+        assert_eq!(list[1]["capabilities"]["search"], true);
+        assert_eq!(list[1]["capabilities"]["library"], false);
+        assert_eq!(list[1]["capabilities"]["playlists"], true);
+        assert_eq!(list[1]["capabilities"]["downloads"], true);
+        assert_eq!(list[1]["capabilities"]["playlist_edit"], false);
+        assert_eq!(list[1]["auth"]["state"], "ok");
+        assert_eq!(list[2]["id"], "youtube");
 
         let status: serde_json::Value = client
             .get(format!("{base}/api/status"))
@@ -2732,7 +2742,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             status["providers"],
-            serde_json::json!(["youtube", "rss", "podverse"])
+            serde_json::json!(["rss", "podverse", "youtube"])
         );
         server.abort();
     }
@@ -3839,7 +3849,7 @@ mod tests {
         let client = reqwest::Client::new();
 
         let response = client
-            .get(format!("{base}/api/playlists"))
+            .get(format!("{base}/api/playlists?provider=youtube"))
             .send()
             .await
             .unwrap();
@@ -3859,7 +3869,9 @@ mod tests {
             .json()
             .await
             .unwrap();
-        assert_eq!(status["auth"]["state"], "expired");
+        // The default provider is RSS, so the status auth is OK. The
+        // expired YouTube session still appears on its provider entry.
+        assert_eq!(status["auth"]["state"], "ok");
 
         let providers: serde_json::Value = client
             .get(format!("{base}/api/providers"))
@@ -3869,8 +3881,8 @@ mod tests {
             .json()
             .await
             .unwrap();
-        assert_eq!(providers[0]["auth"]["state"], "expired");
-        assert_eq!(providers[1]["auth"]["state"], "ok");
+        assert_eq!(providers[0]["auth"]["state"], "ok");
+        assert_eq!(providers[1]["auth"]["state"], "expired");
         server.abort();
     }
 
@@ -3919,7 +3931,9 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), reqwest::StatusCode::OK);
         let status: Status = response.json().await.unwrap();
-        assert_eq!(status.auth.state, AuthState::Expired);
+        // Public playback works even with an expired YouTube session.
+        // The default provider is RSS, so the status auth is OK.
+        assert_eq!(status.auth.state, AuthState::Ok);
         assert_eq!(status.queue_length, 2);
         server.abort();
     }
@@ -4087,7 +4101,7 @@ mod tests {
             dir.path(),
             music,
             Arc::new(MockDownloads::default()),
-            vec![ProviderId::Youtube, ProviderId::Rss, ProviderId::Podverse],
+            vec![ProviderId::Rss, ProviderId::Podverse, ProviderId::Youtube],
         );
         let (base, server) = start_server(state).await;
         let response = reqwest::Client::new()
@@ -5092,7 +5106,7 @@ mod tests {
             dir.path(),
             music,
             Arc::new(MockDownloads::default()),
-            vec![ProviderId::Youtube, ProviderId::Rss, ProviderId::Podverse],
+            vec![ProviderId::Rss, ProviderId::Podverse, ProviderId::Youtube],
         );
         state.settings.set_offline(true).unwrap();
         let (base, server) = start_server(state).await;
@@ -5162,7 +5176,7 @@ mod tests {
             dir.path(),
             Arc::new(MockMusicApi::default()),
             Arc::new(MockDownloads::default()),
-            vec![ProviderId::Youtube, ProviderId::Rss, ProviderId::Podverse],
+            vec![ProviderId::Rss, ProviderId::Podverse, ProviderId::Youtube],
         );
         state.settings.set_offline(true).unwrap();
         state.playback.lock().await.set_offline(true).await.unwrap();

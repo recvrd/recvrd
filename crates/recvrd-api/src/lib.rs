@@ -767,7 +767,7 @@ mod tests {
     #[test]
     fn provider_info_round_trip() {
         let info = ProviderInfo::new(
-            ProviderId::Youtube,
+            ProviderId::Rss,
             AuthStatus {
                 state: AuthState::Ok,
                 source: Some("headers.txt".to_string()),
@@ -775,10 +775,10 @@ mod tests {
             },
             PlaybackMode::Download,
         );
-        assert_eq!(info.name, "YouTube Music");
+        assert_eq!(info.name, "RSS");
         assert!(info.default);
         assert!(info.capabilities.search);
-        assert!(info.capabilities.playlist_edit);
+        assert!(!info.capabilities.playlist_edit);
         let json = serde_json::to_string(&info).unwrap();
         assert_eq!(serde_json::from_str::<ProviderInfo>(&json).unwrap(), info);
     }

@@ -892,7 +892,7 @@ mod tests {
             .lock()
             .unwrap()
             .push("GET /api/providers".to_string());
-        AxumJson(vec![ProviderInfo::new(
+        let mut info = ProviderInfo::new(
             ProviderId::Youtube,
             AuthStatus {
                 state: AuthState::Ok,
@@ -900,7 +900,10 @@ mod tests {
                 message: None,
             },
             recvrd_api::PlaybackMode::Download,
-        )])
+        );
+        // This mock serves one provider, so it is the default.
+        info.default = true;
+        AxumJson(vec![info])
     }
 
     async fn mock_offline() -> AxumJson<OfflineRequest> {
