@@ -578,7 +578,8 @@ Queue snapshots look like:
 Invalid indices, negative seek positions and empty searches return 400. Volume
 values above 100 are clamped to 100. Pause does nothing when the daemon is
 stopped. Resume starts the current track when the daemon is stopped, at the
-saved position when the daemon restored one.
+saved position when the daemon restored one. Switching tracks saves the
+position of each track. Starting a track again resumes that position.
 
 Playing a playlist or track, and enqueueing a track, automatically queue the
 audio for download, except while offline mode is on. If the file is not
