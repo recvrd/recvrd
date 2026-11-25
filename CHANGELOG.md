@@ -8,6 +8,9 @@
   track at its saved position.
 - Add a Like action for YouTube Music tracks. The web UI track menu sets the
   like state, and the track list shows a liked marker.
+- Add opt-in Last.fm scrobbling for music tracks. The daemon sends a
+  now-playing update and a scrobble after half the track or four minutes.
+  Plays made while offline are queued and sent later.
 
 ### Removed
 

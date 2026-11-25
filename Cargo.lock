@@ -3371,6 +3371,7 @@ dependencies = [
  "flume",
  "futures-util",
  "log",
+ "md5",
  "mime_guess",
  "player",
  "provider-podverse",
