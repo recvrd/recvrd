@@ -21,11 +21,13 @@ mod audio;
 mod cache;
 mod downloads;
 mod lastfm;
+mod listenbrainz;
 mod mcp;
 mod mpris;
 mod music;
 mod podverse_sync;
 mod providers;
+mod scrobble;
 mod server;
 mod streams;
 mod web;
@@ -359,6 +361,18 @@ fn run_serve(
     {
         config.lastfm.session_key = Some(value);
     }
+    if let Some(value) = std::env::var("RECVRD_LISTENBRAINZ_ENABLED")
+        .ok()
+        .or_else(|| std::env::var("YTERMUSICD_LISTENBRAINZ_ENABLED").ok())
+    {
+        config.listenbrainz.enabled = value.eq_ignore_ascii_case("true") || value == "1";
+    }
+    if let Some(value) = std::env::var("RECVRD_LISTENBRAINZ_TOKEN")
+        .ok()
+        .or_else(|| std::env::var("YTERMUSICD_LISTENBRAINZ_TOKEN").ok())
+    {
+        config.listenbrainz.token = Some(value);
+    }
 
     let bind = bind
         .or(config.bind)
@@ -542,10 +556,20 @@ fn run_serve(
             log::warn!("Podverse position sync is on, but no base URL or token is set");
         }
 
-        // Start Last.fm scrobbling when the config enables it.
-        if let Some(sender) = lastfm::start(&config.lastfm, offline.clone()) {
-            let mut service = playback.lock().await;
-            service.set_scrobble_sender(sender);
+        // Start the scrobblers. They share one event stream, and the
+        // daemon creates nothing while both services are off.
+        if config.lastfm.enabled || config.listenbrainz.enabled {
+            let (scrobble_tx, _) = tokio::sync::broadcast::channel(64);
+            let lastfm_on = lastfm::start(&config.lastfm, offline.clone(), scrobble_tx.subscribe());
+            let listenbrainz_on = listenbrainz::start(
+                &config.listenbrainz,
+                offline.clone(),
+                scrobble_tx.subscribe(),
+            );
+            if lastfm_on || listenbrainz_on {
+                let mut service = playback.lock().await;
+                service.set_scrobble_sender(scrobble_tx);
+            }
         }
 
         let downloads = DownloadService::new(

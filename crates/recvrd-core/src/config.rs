@@ -68,6 +68,25 @@ impl std::fmt::Debug for LastfmConfig {
     }
 }
 
+/// ListenBrainz scrobbling configuration.
+#[derive(Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct ListenBrainzConfig {
+    /// Send music plays to ListenBrainz. The default is off.
+    pub enabled: bool,
+    /// The ListenBrainz user token.
+    pub token: Option<String>,
+}
+
+impl std::fmt::Debug for ListenBrainzConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ListenBrainzConfig")
+            .field("enabled", &self.enabled)
+            .field("token", &self.token.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct DaemonConfig {
@@ -92,6 +111,8 @@ pub struct DaemonConfig {
     pub podverse: PodverseConfig,
     /// Last.fm scrobbling configuration.
     pub lastfm: LastfmConfig,
+    /// ListenBrainz scrobbling configuration.
+    pub listenbrainz: ListenBrainzConfig,
 }
 
 impl Default for DaemonConfig {
@@ -108,6 +129,7 @@ impl Default for DaemonConfig {
             cache_limit_mb: 10240,
             podverse: PodverseConfig::default(),
             lastfm: LastfmConfig::default(),
+            listenbrainz: ListenBrainzConfig::default(),
         }
     }
 }
@@ -223,6 +245,7 @@ mod tests {
         assert_eq!(config.headers, None);
         assert_eq!(config.podverse, PodverseConfig::default());
         assert_eq!(config.lastfm, LastfmConfig::default());
+        assert_eq!(config.listenbrainz, ListenBrainzConfig::default());
     }
 
     #[test]
@@ -299,6 +322,22 @@ token = "secret"
         assert!(!debug.contains("secret-value"));
         assert!(!debug.contains("session-value"));
         assert!(!debug.contains("key-value"));
+    }
+
+    #[test]
+    fn listenbrainz_is_opt_in_and_redacts_the_token() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(
+            &path,
+            "[listenbrainz]\nenabled = true\ntoken = \"token-value\"\n",
+        )
+        .unwrap();
+
+        let config = DaemonConfig::load(&path).unwrap();
+        assert!(config.listenbrainz.enabled);
+        assert_eq!(config.listenbrainz.token.as_deref(), Some("token-value"));
+        assert!(!format!("{:?}", config.listenbrainz).contains("token-value"));
     }
 
     #[test]

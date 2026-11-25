@@ -59,6 +59,16 @@ cache_limit_mb = 10240
 #   RECVRD_LASTFM_API_SECRET
 #   RECVRD_LASTFM_SESSION_KEY
 
+# ListenBrainz scrobbling. Off by default. Create a user token at
+# https://listenbrainz.org/settings/ and keep it out of a shared file.
+# [listenbrainz]
+# enabled = true
+# token = "your-user-token"
+
+# Environment overrides:
+#   RECVRD_LISTENBRAINZ_ENABLED
+#   RECVRD_LISTENBRAINZ_TOKEN
+
 # Playback modes are not set here. The daemon stores per-provider choices
 # in $XDG_CONFIG_HOME/recvrd/settings.toml and changes them through
 # PUT /api/providers/{provider}/playback. The defaults are:

@@ -14,7 +14,7 @@ use std::{
     time::{Duration, Instant},
 };
 use thiserror::Error;
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 
 /// Delay before the playback service retries a track after a failed restart.
 const STREAM_RESTART_RETRY: Duration = Duration::from_secs(5);
@@ -237,7 +237,7 @@ pub struct PlaybackService<S: AudioSink> {
     /// Channel for position sync events, when the daemon runs one.
     sync_tx: Option<mpsc::Sender<PositionSyncEvent>>,
     /// Channel for Last.fm events, when the daemon runs a scrobbler.
-    scrobble_tx: Option<mpsc::Sender<ScrobbleEvent>>,
+    scrobble_tx: Option<broadcast::Sender<ScrobbleEvent>>,
     /// True when the current play already sent a scrobble.
     scrobbled: bool,
     restart_at: Option<Instant>,
@@ -314,9 +314,9 @@ impl<S: AudioSink> PlaybackService<S> {
         self.sync_tx = Some(sender);
     }
 
-    /// Attach a channel for Last.fm events. The daemon connects the
-    /// scrobble worker here.
-    pub fn set_scrobble_sender(&mut self, sender: mpsc::Sender<ScrobbleEvent>) {
+    /// Attach a channel for scrobble events. The daemon connects every
+    /// enabled scrobbler to it.
+    pub fn set_scrobble_sender(&mut self, sender: broadcast::Sender<ScrobbleEvent>) {
         self.scrobble_tx = Some(sender);
     }
 
@@ -333,11 +333,11 @@ impl<S: AudioSink> PlaybackService<S> {
         }
     }
 
-    /// Send a Last.fm event. A full or closed channel drops the
-    /// event. Scrobbling never blocks playback.
+    /// Send a scrobble event. No receiver drops the event.
+    /// Scrobbling never blocks playback.
     fn emit_scrobble(&self, event: ScrobbleEvent) {
         if let Some(sender) = &self.scrobble_tx {
-            let _ = sender.try_send(event);
+            let _ = sender.send(event);
         }
     }
 
@@ -350,7 +350,7 @@ impl<S: AudioSink> PlaybackService<S> {
     /// The threshold is half the track or four minutes, whichever
     /// comes first. One play emits at most one scrobble.
     fn maybe_scrobble(&mut self) {
-        if self.scrobbled {
+        if self.scrobble_tx.is_none() || self.scrobbled {
             return;
         }
         let Some(play) = &self.current_play else {
@@ -699,7 +699,7 @@ impl<S: AudioSink> PlaybackService<S> {
             start_position: self.current_position(),
         });
         self.scrobbled = false;
-        if Self::scrobbles(track) {
+        if self.scrobble_tx.is_some() && Self::scrobbles(track) {
             let started_at = self
                 .current_play
                 .as_ref()
@@ -3271,10 +3271,16 @@ mod tests {
         events
     }
 
-    fn drain_scrobble(rx: &mut tokio::sync::mpsc::Receiver<ScrobbleEvent>) -> Vec<ScrobbleEvent> {
+    fn drain_scrobble(
+        rx: &mut tokio::sync::broadcast::Receiver<ScrobbleEvent>,
+    ) -> Vec<ScrobbleEvent> {
         let mut events = Vec::new();
-        while let Ok(event) = rx.try_recv() {
-            events.push(event);
+        loop {
+            match rx.try_recv() {
+                Ok(event) => events.push(event),
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => continue,
+                Err(_) => break,
+            }
         }
         events
     }
@@ -3331,7 +3337,7 @@ mod tests {
     #[tokio::test]
     async fn a_music_play_emits_now_playing() {
         let mut service = service();
-        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+        let (tx, mut rx) = tokio::sync::broadcast::channel(16);
         service.set_scrobble_sender(tx);
         service.play_playlist(tracks(1)).await.unwrap();
 
@@ -3348,7 +3354,7 @@ mod tests {
     #[tokio::test]
     async fn half_the_track_scrobbles_once() {
         let mut service = service();
-        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+        let (tx, mut rx) = tokio::sync::broadcast::channel(16);
         service.set_scrobble_sender(tx);
         service.play_playlist(tracks(1)).await.unwrap();
         drain_scrobble(&mut rx);
@@ -3372,7 +3378,7 @@ mod tests {
     #[tokio::test]
     async fn a_long_track_scrobbles_after_four_minutes() {
         let mut service = service();
-        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+        let (tx, mut rx) = tokio::sync::broadcast::channel(16);
         service.set_scrobble_sender(tx);
         service.play_playlist(long_tracks(1)).await.unwrap();
         drain_scrobble(&mut rx);
@@ -3391,7 +3397,7 @@ mod tests {
     #[tokio::test]
     async fn an_rss_episode_does_not_scrobble() {
         let mut service = service();
-        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+        let (tx, mut rx) = tokio::sync::broadcast::channel(16);
         service.set_scrobble_sender(tx);
         service.play_playlist(vec![rss_track()]).await.unwrap();
         drain_scrobble(&mut rx);
