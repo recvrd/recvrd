@@ -37,6 +37,7 @@ individual client.
 | `crates/provider-youtube` | Current | YouTube Music provider: API client, cover fetcher, downloads |
 | `crates/provider-rss` | Current | RSS provider: feed parser, store, fetcher, downloader |
 | `crates/provider-podverse` | Current | Podverse provider: channel search, item metadata, fetcher, downloader |
+| `crates/provider-local` | Current | Local-files provider: directory scan and read-only playlist |
 | `crates/player` | Current | Audio decoding/playback |
 | `crates/database` | Current | Local download database |
 | `crates/download-manager` | Current | Download queue |

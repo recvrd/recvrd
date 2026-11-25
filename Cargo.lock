@@ -3070,6 +3070,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "provider-local"
+version = "0.7.0"
+dependencies = [
+ "async-trait",
+ "common-structs",
+ "recvrd-api",
+ "sha2",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "provider-podverse"
 version = "0.7.0"
 dependencies = [
@@ -3374,6 +3386,7 @@ dependencies = [
  "md5",
  "mime_guess",
  "player",
+ "provider-local",
  "provider-podverse",
  "provider-rss",
  "provider-youtube",

@@ -254,9 +254,10 @@ An action that needs a provider, or an uncached track, returns 409
 track.
 
 Library and search requests take an optional `provider` parameter. A missing
-value means the default provider. Providers are ordered RSS, Podverse, then
-YouTube Music. RSS is the default because it needs no setup. Podverse appears
-only when a base URL is set. An unknown name returns 400 with
+value means the default provider. Providers are ordered Local files, RSS,
+Podverse, then YouTube Music. The default is the first configured provider.
+Local files need a music directory, and Podverse needs a base URL. RSS is
+always available. An unknown name returns 400 with
 `unknown provider {name}`. Upstream errors name the provider, for example
 `youtube: search failed: ...`.
 

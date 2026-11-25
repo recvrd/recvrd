@@ -15,7 +15,7 @@ pub mod state;
 pub use auth::{Auth, AuthError, AuthState, AuthStatus, LoadedAuth, resolve_auth};
 pub use config::{
     AudioConfig, ConfigError, DaemonConfig, Downloader, LastfmConfig, ListenBrainzConfig,
-    PodverseConfig, is_loopback_bind,
+    LocalConfig, PodverseConfig, is_loopback_bind,
 };
 pub use cover::CoverFetcher;
 pub use events::{CoreEvent, EventBus, EventEnvelope, Snapshot};

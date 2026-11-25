@@ -28,6 +28,7 @@ log = "0.4"
 md5 = "0.8"
 mime_guess = "2"
 player.workspace = true
+provider-local.workspace = true
 provider-podverse.workspace = true
 provider-rss.workspace = true
 provider-youtube.workspace = true

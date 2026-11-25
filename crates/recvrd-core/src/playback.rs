@@ -6,7 +6,9 @@ use crate::{
     state::{PersistedState, STATE_VERSION, StateError, TrackPositions},
 };
 use async_trait::async_trait;
-use common_structs::{PlaybackMode, PlaybackSourceKind, ReadSeek, TrackKey, TrackSource};
+use common_structs::{
+    PlaybackMode, PlaybackSourceKind, ProviderId, ReadSeek, TrackKey, TrackSource,
+};
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
@@ -535,9 +537,22 @@ impl<S: AudioSink> PlaybackService<S> {
         Ok(())
     }
 
+    /// The path of a local-files track, from its source URL.
+    fn local_path(track: &Track) -> Option<PathBuf> {
+        if track.provider != ProviderId::Local {
+            return None;
+        }
+        let source = track.source.as_ref()?;
+        let path = source.url.strip_prefix("file://").unwrap_or(&source.url);
+        Some(PathBuf::from(path))
+    }
+
     /// Check whether a track has a cached audio file. A track counts
     /// as cached only with a valid key and a non-empty audio file.
     fn is_cached(&self, track: &Track) -> bool {
+        if let Some(path) = Self::local_path(track) {
+            return std::fs::metadata(path).is_ok_and(|metadata| metadata.len() > 0);
+        }
         let key = track.key();
         if !key.validate() {
             return false;
@@ -1406,6 +1421,9 @@ impl<S: AudioSink> PlaybackService<S> {
         if self.restart_pending.is_none() {
             self.record_current_play(false);
         }
+        if let Some(path) = Self::local_path(&track) {
+            return self.start_file(track, path);
+        }
         if let Some(path) = track
             .key()
             .existing_audio_file(&self.cache_dir.join("downloads"))
@@ -1725,6 +1743,68 @@ mod tests {
             service.events.snapshot().playback.status,
             PlaybackStatus::Playing
         );
+    }
+
+    #[tokio::test]
+    async fn a_local_track_plays_from_its_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Song.mp3");
+        std::fs::write(&path, b"audio").unwrap();
+        let track = Track {
+            provider: common_structs::ProviderId::Local,
+            track_id: "0123456789abcdef0123456789abcdef".to_string(),
+            title: "Song".to_string(),
+            author: String::new(),
+            album: "Local files".to_string(),
+            duration: String::new(),
+            source: Some(Box::new(common_structs::TrackSource {
+                url: format!("file://{}", path.display()),
+                mime: None,
+                length: None,
+                seekable: true,
+                kind: common_structs::MediaKind::Audio,
+            })),
+            metadata: None,
+            liked: None,
+        };
+        let mut service = service();
+
+        service.play_playlist(vec![track]).await.unwrap();
+
+        assert_eq!(service.sink.plays.len(), 1);
+        assert_eq!(service.sink.plays[0].1, path);
+        assert_eq!(service.sink.sources, vec![PlaybackSourceKind::File]);
+    }
+
+    #[tokio::test]
+    async fn a_local_track_plays_in_offline_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Song.mp3");
+        std::fs::write(&path, b"audio").unwrap();
+        let track = Track {
+            provider: common_structs::ProviderId::Local,
+            track_id: "0123456789abcdef0123456789abcdef".to_string(),
+            title: "Song".to_string(),
+            author: String::new(),
+            album: "Local files".to_string(),
+            duration: String::new(),
+            source: Some(Box::new(common_structs::TrackSource {
+                url: format!("file://{}", path.display()),
+                mime: None,
+                length: None,
+                seekable: true,
+                kind: common_structs::MediaKind::Audio,
+            })),
+            metadata: None,
+            liked: None,
+        };
+        let mut service = service();
+        service.set_offline(true).await.unwrap();
+
+        service.play_playlist(vec![track]).await.unwrap();
+
+        assert_eq!(service.sink.plays.len(), 1);
+        assert_eq!(service.sink.plays[0].1, path);
     }
 
     #[tokio::test]

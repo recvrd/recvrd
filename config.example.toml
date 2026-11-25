@@ -39,6 +39,14 @@ cover_cache_mb = 100
 # Eviction removes the oldest complete downloads first.
 cache_limit_mb = 10240
 
+# Local files. The provider scans this directory for mp3, m4a, ogg, flac,
+# and wav files. The provider is hidden when music_dir is empty.
+# [local]
+# music_dir = "/home/user/Music"
+
+# Environment override:
+#   RECVRD_LOCAL_DIR
+
 # Podverse provider. The provider is disabled when base_url is empty.
 # Set the URL to the API base, including the API version. Do not put a
 # secret in this file when other users can read it.

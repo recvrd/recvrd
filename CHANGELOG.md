@@ -16,6 +16,8 @@
   minutes. Plays made while offline are queued and sent later.
 - Add a configurable PipeWire sample rate and format. The default stays
   48 kHz f32, and `/api/status` reports the output format.
+- Add a local-files provider. Set `local.music_dir` to play audio files from
+  that directory. Local files come first in the provider order.
 
 ### Removed
 
