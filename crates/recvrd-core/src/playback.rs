@@ -1,7 +1,7 @@
 use crate::{
     events::{CoreEvent, EventBus, Snapshot},
     history::{HISTORY_MIN_PLAY_SECS, History, HistoryEntry, now_unix},
-    model::{PlaybackSnapshot, PlaybackStatus, Queue, RepeatMode, Track},
+    model::{AudioOutput, PlaybackSnapshot, PlaybackStatus, Queue, RepeatMode, Track},
     settings::PlaybackSettingsStore,
     state::{PersistedState, STATE_VERSION, StateError, TrackPositions},
 };
@@ -114,6 +114,11 @@ pub trait AudioSink {
 
     /// The last known playback position of the sink, when it knows it.
     fn position(&self) -> Option<Duration> {
+        None
+    }
+
+    /// The output sample rate and format, when the sink reports them.
+    fn output_format(&self) -> Option<AudioOutput> {
         None
     }
 }
@@ -249,6 +254,8 @@ pub struct PlaybackService<S: AudioSink> {
     history_path: Option<PathBuf>,
     /// The play in progress, if any.
     current_play: Option<CurrentPlay>,
+    /// The output sample rate and format, when the sink reports them.
+    audio: Option<AudioOutput>,
 }
 
 impl<S: AudioSink> PlaybackService<S> {
@@ -277,6 +284,7 @@ impl<S: AudioSink> PlaybackService<S> {
             playback: PlaybackSnapshot::default(),
             queue: queue.snapshot(),
         });
+        let audio = sink.output_format();
         Self {
             queue,
             status: PlaybackStatus::Stopped,
@@ -305,7 +313,13 @@ impl<S: AudioSink> PlaybackService<S> {
             history: History::new(),
             history_path: None,
             current_play: None,
+            audio,
         }
+    }
+
+    /// The output sample rate and format, when the sink reports them.
+    pub fn audio_output(&self) -> Option<AudioOutput> {
+        self.audio
     }
 
     /// Attach a channel for position sync events. The daemon

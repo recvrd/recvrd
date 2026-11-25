@@ -68,6 +68,13 @@ pub struct QueueSnapshot {
     pub shuffle: bool,
 }
 
+/// The output format of the audio sink.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AudioOutput {
+    pub sample_rate: u32,
+    pub format: common_structs::SampleFormat,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct PlaybackSnapshot {
     pub status: PlaybackStatus,

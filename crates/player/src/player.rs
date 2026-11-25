@@ -24,7 +24,11 @@ pub struct Player {
 
 impl Player {
     pub fn new(error_sender: Sender<PlayError>, options: PlayerOptions) -> Result<Self, PlayError> {
-        let (output, mixer, sink) = Output::create(error_sender.clone())?;
+        let (output, mixer, sink) = Output::create(
+            error_sender.clone(),
+            options.sample_rate(),
+            options.format(),
+        )?;
 
         sink.set_volume(options.initial_volume_f32());
 
@@ -39,7 +43,11 @@ impl Player {
     }
 
     pub fn update(&self) -> Result<Self, PlayError> {
-        let (output, mixer, sink) = Output::create(self.error_sender.clone())?;
+        let (output, mixer, sink) = Output::create(
+            self.error_sender.clone(),
+            self.options.sample_rate(),
+            self.options.format(),
+        )?;
 
         sink.set_volume(self.data.volume_f32());
 

@@ -14,8 +14,8 @@ pub mod state;
 
 pub use auth::{Auth, AuthError, AuthState, AuthStatus, LoadedAuth, resolve_auth};
 pub use config::{
-    ConfigError, DaemonConfig, Downloader, LastfmConfig, ListenBrainzConfig, PodverseConfig,
-    is_loopback_bind,
+    AudioConfig, ConfigError, DaemonConfig, Downloader, LastfmConfig, ListenBrainzConfig,
+    PodverseConfig, is_loopback_bind,
 };
 pub use cover::CoverFetcher;
 pub use events::{CoreEvent, EventBus, EventEnvelope, Snapshot};
@@ -23,7 +23,8 @@ pub use history::{
     HISTORY_MAX_ENTRIES, HISTORY_MIN_PLAY_SECS, HISTORY_RETENTION_SECS, History, HistoryEntry,
 };
 pub use model::{
-    PlaybackSnapshot, PlaybackStatus, Queue, QueueItem, QueueSnapshot, RepeatMode, Track,
+    AudioOutput, PlaybackSnapshot, PlaybackStatus, Queue, QueueItem, QueueSnapshot, RepeatMode,
+    Track,
 };
 pub use paths::{Paths, PathsError};
 pub use playback::{
