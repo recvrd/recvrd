@@ -18,6 +18,8 @@
   48 kHz f32, and `/api/status` reports the output format.
 - Add a local-files provider. Set `local.music_dir` to play audio files from
   that directory. Local files come first in the provider order.
+- Read tag metadata and cover art for local files. The file name and folder
+  remain the fallback.
 
 ### Removed
 

@@ -82,7 +82,7 @@ impl ProviderCapabilities {
                 playlist_edit: false,
                 track_like: false,
                 downloads: false,
-                covers: false,
+                covers: true,
             },
         }
     }

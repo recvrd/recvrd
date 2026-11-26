@@ -8,7 +8,9 @@ description = "Local files provider for recvrd"
 [dependencies]
 async-trait = "0.1"
 common-structs.workspace = true
+lofty = "0.25"
 recvrd-api.workspace = true
+recvrd-core.workspace = true
 sha2 = "0.11"
 
 [dev-dependencies]
