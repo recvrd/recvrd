@@ -18,7 +18,7 @@ use lofty::{
 };
 use recvrd_api::{
     CreatePlaylistRequest, MusicApi, Playlist, PlaylistDetail, PlaylistEditError, SearchResults,
-    Track, UpdatePlaylistRequest,
+    Track, TrackDetail, UpdatePlaylistRequest,
 };
 use recvrd_core::CoverFetcher;
 use sha2::{Digest, Sha256};
@@ -292,6 +292,19 @@ impl MusicApi for LocalProvider {
         })
     }
 
+    async fn track_detail(&self, provider: ProviderId, id: &str) -> Result<TrackDetail, String> {
+        check_provider(provider)?;
+        let track = self
+            .scan()
+            .into_iter()
+            .find(|track| track.track_id == id)
+            .ok_or_else(|| format!("local track {id} not found"))?;
+        Ok(TrackDetail {
+            track,
+            description: None,
+        })
+    }
+
     async fn search(&self, provider: ProviderId, query: &str) -> Result<SearchResults, String> {
         check_provider(provider)?;
         let query = query.to_lowercase();
@@ -424,6 +437,21 @@ mod tests {
         fs::write(dir.path().join(".hidden.mp3"), b"audio").unwrap();
         let provider = LocalProvider::new(dir.path());
         (dir, provider)
+    }
+
+    #[tokio::test]
+    async fn track_detail_returns_a_scanned_track() {
+        let (_dir, provider) = provider();
+        let tracks = provider
+            .playlist(ProviderId::Local, LOCAL_PLAYLIST_ID)
+            .await
+            .unwrap();
+        let detail = provider
+            .track_detail(ProviderId::Local, &tracks[0].track_id)
+            .await
+            .unwrap();
+        assert_eq!(detail.track.track_id, tracks[0].track_id);
+        assert_eq!(detail.track.title, tracks[0].title);
     }
 
     #[tokio::test]

@@ -255,6 +255,91 @@ pub struct TrackDetail {
     pub description: Option<String>,
 }
 
+/// Technical facts for one track.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct TrackStats {
+    pub track: Track,
+    /// The provider source with the URL query removed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<TrackSource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<TrackFileStats>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio: Option<TrackAudioStats>,
+    pub playback: TrackPlaybackStats,
+    pub history: TrackHistoryStats,
+}
+
+/// The local file behind one track.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct TrackFileStats {
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sidecar_path: Option<String>,
+    #[ts(type = "number")]
+    pub size_bytes: u64,
+    #[ts(type = "number | null")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modified_unix: Option<u64>,
+    pub cached: bool,
+}
+
+/// Audio header facts for one file.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS, Default)]
+#[ts(export)]
+pub struct TrackAudioStats {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codec: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bitrate_kbps: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sample_rate: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channels: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bits_per_sample: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_secs: Option<f64>,
+}
+
+/// Playback facts for one track.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct TrackPlaybackStats {
+    pub mode: PlaybackMode,
+    pub state: PlaybackState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_kind: Option<PlaybackSourceKind>,
+    pub position_secs: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub saved_position_secs: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue_index: Option<usize>,
+}
+
+/// Listen history for one track.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct TrackHistoryStats {
+    pub play_count: u32,
+    #[ts(type = "number | null")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_played_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_completed: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_played_secs: Option<f64>,
+}
+
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]

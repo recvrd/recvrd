@@ -22,6 +22,10 @@
   remain the fallback.
 - Add Queue next and Queue last actions. Queue next inserts a track after the
   current track. Queue last appends it. The web UI, TUI and MCP offer both.
+- Add a Geek stats track action and `GET /api/tracks/{provider}/{track_id}/stats`.
+  The track menu and full player open it. It shows the provider key, source,
+  local file, audio header, playback mode and listen history. URL queries and
+  tokens are removed.
 
 ### Removed
 

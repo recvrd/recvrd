@@ -13,6 +13,7 @@ function props(tracks = [makeTrack('v1'), makeTrack('v2')]) {
     onplay: vi.fn(),
     onqueue: vi.fn(),
     onqueuenext: vi.fn(),
+    ongeekstats: vi.fn(),
     onretry: vi.fn(),
   };
 }
@@ -69,6 +70,10 @@ describe('TrackTable', () => {
     await fireEvent.contextMenu(rows[0]);
     await fireEvent.click(screen.getByRole('menuitem', { name: 'Queue last' }));
     expect(actions.onqueue).toHaveBeenCalledWith(actions.tracks[0]);
+
+    await fireEvent.contextMenu(rows[0]);
+    await fireEvent.click(screen.getByRole('menuitem', { name: 'Geek stats' }));
+    expect(actions.ongeekstats).toHaveBeenCalledWith(actions.tracks[0]);
   });
 
   it('adds playlist actions to the context menu', async () => {

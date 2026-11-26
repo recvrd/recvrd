@@ -354,6 +354,7 @@
           onplay={(track) => store.playTrack(track)}
           onqueue={(track) => store.queueTrack(track)}
           onqueuenext={(track) => store.queueNextTrack(track)}
+          ongeekstats={(track) => store.openGeekStats(track)}
           onretry={(track) => store.retryDownload(track)}
           onlike={store.canLikeTracks
             ? (track) => store.setTrackLike(track, track.liked !== true)

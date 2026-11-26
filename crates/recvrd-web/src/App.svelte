@@ -9,6 +9,7 @@
   import AuthBanner from './lib/components/AuthBanner.svelte';
   import ConnectionBanner from './lib/components/ConnectionBanner.svelte';
   import FullPlayer from './lib/components/FullPlayer.svelte';
+  import GeekStatsDialog from './lib/components/GeekStatsDialog.svelte';
   import HelpOverlay from './lib/components/HelpOverlay.svelte';
   import HistoryView from './lib/components/HistoryView.svelte';
   import LibraryView from './lib/components/LibraryView.svelte';
@@ -201,6 +202,7 @@
 
   <NowPlaying {store} />
   <FullPlayer {store} />
+  <GeekStatsDialog {store} />
   <SearchPalette {store} />
   <PlaylistPicker {store} />
   <OfflineHelp {store} />

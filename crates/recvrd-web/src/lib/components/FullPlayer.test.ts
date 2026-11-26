@@ -29,6 +29,15 @@ function makeStore() {
 }
 
 describe('FullPlayer', () => {
+  it('opens geek stats for the current track', async () => {
+    const { api, store } = makeStore();
+    render(FullPlayer, { props: { store } });
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Geek stats' }));
+    expect(api.trackStats).toHaveBeenCalledWith('youtube', 'v1');
+    expect(store.geekStatsOpen).toBe(true);
+  });
+
   it('renders the track, cover art and queue position', () => {
     const { store } = makeStore();
     const { container } = render(FullPlayer, { props: { store } });
