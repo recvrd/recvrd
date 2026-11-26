@@ -178,3 +178,23 @@ current queue. `.part` files and active downloads are never removed.
   same environment to see the actionable auth/config error.
 - **Port conflict**: set `RECVRD_PORT` in the environment file or change
   `--port` in `ExecStart`.
+
+## Docker
+
+The Nix flake stays the primary build. Docker serves users without Nix.
+
+### Deploy
+
+Copy `.env.example` to `.env`. Copy `recvrd.env.example` to `recvrd.env` when you need secrets. Put `headers.txt` in `./config`. Set `MUSIC_DIR` in `.env` to your music library. Run `docker compose up --build -d`. Open `http://127.0.0.1:8080`. Check the status with `curl http://127.0.0.1:8080/api/status`.
+
+Compose publishes the port on loopback only. The daemon binds `0.0.0.0` inside the container. The daemon trusts local clients. Use a reverse proxy with authentication for remote access. See the reverse proxy section above.
+
+Compose stores daemon state in named volumes. The config directory is a bind mount at `./config`. The music directory is a read-only bind mount. The daemon runs as your host user and group. Set `UID` and `GID` in `.env` to match them.
+
+### Develop
+
+Run `docker compose -f compose.yaml -f compose.dev.yaml up --build`. The daemon runs from the source mount with `cargo run`. The web service runs the Vite dev server on port 5173. The web service shares the daemon network. The Vite proxy sends `/api` to the daemon. Open `http://127.0.0.1:5173` for the dev UI. Restart the daemon container to reload Rust changes.
+
+### Local audio
+
+The deploy compose file mounts no audio socket. The daemon still serves the web UI and the API without audio. Playback needs the host PipeWire socket. Add an override file with the PipeWire and D-Bus mounts from `compose.dev.yaml`. Set `DBUS_SESSION_BUS_ADDRESS` to the bus path in that file. MPRIS logs a warning without D-Bus. The daemon continues without it.

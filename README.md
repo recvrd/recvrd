@@ -53,7 +53,8 @@ ordered backlog.
 ## Quickstart
 
 Requirements: Nix with flakes (recommended), or Rust 1.99+, Node 22+ and the
-native libraries listed in the [dev shell](flake.nix).
+native libraries listed in the [dev shell](flake.nix). Docker users can use
+[compose.yaml](compose.yaml) instead. See [docs/deployment.md](docs/deployment.md).
 
 ```sh
 git clone git@github.com:recvrd/recvrd.git

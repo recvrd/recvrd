@@ -1,0 +1,39 @@
+# Deploy the daemon with Compose.
+# Copy .env.example to .env before the first run.
+# Copy recvrd.env.example to recvrd.env to set secrets.
+# Put headers.txt in ./config. The daemon reads it from there.
+# The daemon binds 0.0.0.0 inside the container.
+# Compose publishes the port on loopback only.
+# The daemon trusts local clients. Do not expose the port without a proxy.
+# Local audio needs the PipeWire socket. See docs/deployment.md.
+services:
+  recvrd:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: recvrd:latest
+    container_name: recvrd
+    restart: unless-stopped
+    user: "${UID:-1000}:${GID:-1000}"
+    ports:
+      - "127.0.0.1:${RECVRD_PORT:-8080}:8080"
+    environment:
+      RECVRD_BIND: 0.0.0.0
+      RECVRD_PORT: 8080
+      RUST_LOG: ${RUST_LOG:-info}
+      RECVRD_LOCAL_DIR: /music
+      XDG_RUNTIME_DIR: /run/user/${UID:-1000}
+    env_file:
+      - path: recvrd.env
+        required: false
+    volumes:
+      - ./config:/home/recvrd/.config/recvrd
+      - recvrd-cache:/home/recvrd/.cache/recvrd
+      - recvrd-state:/home/recvrd/.local/state/recvrd
+      - recvrd-data:/home/recvrd/.local/share/recvrd
+      - ${MUSIC_DIR:-./music}:/music:ro
+
+volumes:
+  recvrd-cache:
+  recvrd-state:
+  recvrd-data:
