@@ -65,11 +65,7 @@
 
           buildInputs =
             with pkgs;
-            [
-              openssl
-              sqlite
-            ]
-            ++ lib.optionals pkgs.stdenv.hostPlatform.isLinux [
+            lib.optionals stdenv.hostPlatform.isLinux [
               pipewire
               dbus
             ];
@@ -325,11 +321,7 @@
           inherit (pkgs) lib;
 
           pkgConfigPaths =
-            [
-              "${pkgs.openssl.dev}/lib/pkgconfig"
-              "${pkgs.sqlite.dev}/lib/pkgconfig"
-            ]
-            ++ lib.optionals pkgs.stdenv.hostPlatform.isLinux [
+            lib.optionals pkgs.stdenv.hostPlatform.isLinux [
               "${pkgs.pipewire.dev}/lib/pkgconfig"
               "${pkgs.dbus.dev}/lib/pkgconfig"
             ];
@@ -338,11 +330,9 @@
           default = pkgs.mkShell {
             packages = with pkgs; [
               cargo
-              cargo-nextest
               clippy
               curl
               ffmpeg
-              jq
               just
               nodejs_22
               rustc
@@ -352,11 +342,7 @@
 
             buildInputs =
               with pkgs;
-              [
-                openssl
-                sqlite
-              ]
-              ++ lib.optionals pkgs.stdenv.hostPlatform.isLinux [
+              lib.optionals stdenv.hostPlatform.isLinux [
                 pipewire
                 dbus
               ];
