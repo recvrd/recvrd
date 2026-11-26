@@ -124,7 +124,7 @@ impl FromStr for ProviderId {
 /// YouTube tracks use `mp4`. RSS enclosures use the extension of
 /// the enclosure. The download manager and the playback service
 /// both use this list, so they agree on the file for a track.
-pub const AUDIO_EXTENSIONS: [&str; 5] = ["mp4", "mp3", "m4a", "ogg", "flac"];
+pub const AUDIO_EXTENSIONS: [&str; 6] = ["mp4", "mp3", "m4a", "ogg", "flac", "wav"];
 
 /// Error for a provider name that has no variant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -22,6 +22,7 @@ import type { SearchResults } from '@api/SearchResults';
 import type { Status } from '@api/Status';
 import type { Track } from '@api/Track';
 import type { TrackDetail } from '@api/TrackDetail';
+import type { TrackStats } from '@api/TrackStats';
 import type { UpdatePlaylistRequest } from '@api/UpdatePlaylistRequest';
 
 export class ApiError extends Error {
@@ -52,6 +53,7 @@ export interface RecvrdApi {
   movePlaylistTrack(id: string, from: number, to: number): Promise<Track[]>;
   search(query: string, provider?: ProviderId): Promise<SearchResults>;
   trackDetail(provider: ProviderId, trackId: string): Promise<TrackDetail>;
+  trackStats(provider: ProviderId, trackId: string): Promise<TrackStats>;
   setTrackLike(provider: ProviderId, trackId: string, liked: boolean): Promise<OkResponse>;
   queue(): Promise<Queue>;
   history(): Promise<HistoryEntry[]>;
@@ -204,6 +206,10 @@ export function createApi(baseUrl = ''): RecvrdApi {
     trackDetail: (provider, trackId) =>
       request<TrackDetail>(
         `/api/tracks/${encodeURIComponent(provider)}/${encodeURIComponent(trackId)}`,
+      ),
+    trackStats: (provider, trackId) =>
+      request<TrackStats>(
+        `/api/tracks/${encodeURIComponent(provider)}/${encodeURIComponent(trackId)}/stats`,
       ),
     setTrackLike: (provider, trackId, liked) =>
       request<OkResponse>(

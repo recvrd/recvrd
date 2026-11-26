@@ -275,26 +275,7 @@ pub fn get_video_from_album(value: &Value) -> Option<YoutubeMusicVideoRef> {
         .get("playlistItemData")
         .and_then(|x| x.get("videoId"))
         .and_then(Value::as_str)?;
-    let title: Vec<String> = value
-        .get("flexColumns")?
-        .as_array()?
-        .iter()
-        .flat_map(|x| {
-            x.get("musicResponsiveListItemFlexColumnRenderer")
-                .and_then(|x| x.get("text"))
-                .and_then(|x| get_text(x, false, false))
-        })
-        .collect();
-    Some(YoutubeMusicVideoRef {
-        title: title.first()?.clone(),
-        author: String::new(),
-        album: String::new(),
-        video_id: video_id.to_string(),
-        duration: String::new(),
-        provider: ProviderId::Youtube,
-        set_video_id: get_set_video_id(value),
-        like_status: get_like_status(value),
-    })
+    video_from_flex(value, video_id.to_string(), false)
 }
 
 /// Tries to extract the text from a json value.
@@ -365,24 +346,82 @@ fn get_set_video_id(value: &Value) -> Option<String> {
 /// Tries to extract a video from a json value.
 /// Quite flexible to reduce odds of API change breaking this.
 pub(crate) fn get_video(value: &Value) -> Option<YoutubeMusicVideoRef> {
-    // Extract the text part (title, author, album) from a json value.
-    let mut texts = value
-        .as_object()?
-        .get("flexColumns")?
-        .as_array()?
-        .iter()
-        .flat_map(|x| {
-            x.as_object()
-                .and_then(|x| x.values().next())
-                .and_then(|x| get_text(x, true, true))
-        });
+    video_from_flex(value, get_videoid(value)?, true)
+}
 
+/// Read one flex column, including `simpleText`.
+fn flex_column_text(value: &Value) -> Option<String> {
+    let renderer = value.as_object()?.values().next()?;
+    let text = renderer.get("text")?;
+    if let Some(simple) = text.get("simpleText").and_then(Value::as_str) {
+        return Some(simple.to_string());
+    }
+    get_text(text, false, true)
+}
+
+/// Read every flex column text in order.
+fn flex_column_texts(value: &Value) -> Option<Vec<String>> {
+    Some(
+        value
+            .get("flexColumns")?
+            .as_array()?
+            .iter()
+            .filter_map(flex_column_text)
+            .collect(),
+    )
+}
+
+/// Read every fixed column text in order.
+fn fixed_column_texts(value: &Value) -> Vec<String> {
+    value
+        .get("fixedColumns")
+        .and_then(Value::as_array)
+        .map(|columns| columns.iter().filter_map(flex_column_text).collect())
+        .unwrap_or_default()
+}
+
+/// True for a duration such as `3:45` or `1:02:03`.
+fn is_duration(text: &str) -> bool {
+    let parts: Vec<_> = text.split(':').collect();
+    (parts.len() == 2 || parts.len() == 3)
+        && parts
+            .iter()
+            .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
+}
+
+/// Build a track from the flex columns of one playlist or album item.
+fn video_from_flex(
+    value: &Value,
+    video_id: String,
+    require_author: bool,
+) -> Option<YoutubeMusicVideoRef> {
+    let texts = flex_column_texts(value)?;
+    let title = texts.first()?.clone();
+    let author = match texts.get(1) {
+        Some(author) => author.clone(),
+        None if require_author => return None,
+        None => String::new(),
+    };
+    let mut album = String::new();
+    let mut duration = String::new();
+    for text in texts.iter().skip(2) {
+        if is_duration(text) && duration.is_empty() {
+            duration = text.clone();
+        } else if album.is_empty() {
+            album = text.clone();
+        }
+    }
+    for text in fixed_column_texts(value) {
+        if is_duration(&text) && duration.is_empty() {
+            duration = text;
+        }
+    }
     Some(YoutubeMusicVideoRef {
-        video_id: get_videoid(value)?,
-        title: texts.next()?,
-        author: texts.next()?,
-        album: texts.next().unwrap_or_default(),
-        duration: String::new(),
+        title,
+        author,
+        album,
+        video_id,
+        duration,
         provider: ProviderId::Youtube,
         set_video_id: get_set_video_id(value),
         like_status: get_like_status(value),
@@ -451,6 +490,100 @@ mod tests {
         assert_eq!(video.author, "Artist");
         assert_eq!(video.album, "Album");
         assert_eq!(video.set_video_id, None);
+    }
+
+    #[test]
+    fn extracts_a_playlist_item_duration() {
+        let value = json!({
+            "playlistItemData": {"videoId": "vid123"},
+            "flexColumns": [
+                { "musicResponsiveListItemFlexColumnRenderer": {
+                    "text": { "runs": ["Song"] }
+                }},
+                { "musicResponsiveListItemFlexColumnRenderer": {
+                    "text": { "runs": ["Artist"] }
+                }},
+                { "musicResponsiveListItemFlexColumnRenderer": {
+                    "text": { "simpleText": "3:45" }
+                }}
+            ]
+        });
+        let video = get_video(&value).expect("video");
+        assert_eq!(video.title, "Song");
+        assert_eq!(video.author, "Artist");
+        assert_eq!(video.album, "");
+        assert_eq!(video.duration, "3:45");
+    }
+
+    #[test]
+    fn extracts_album_and_duration_from_four_columns() {
+        let value = json!({
+            "playlistItemData": {"videoId": "vid123"},
+            "flexColumns": [
+                { "musicResponsiveListItemFlexColumnRenderer": {
+                    "text": { "runs": ["Song"] }
+                }},
+                { "musicResponsiveListItemFlexColumnRenderer": {
+                    "text": { "runs": ["Artist"] }
+                }},
+                { "musicResponsiveListItemFlexColumnRenderer": {
+                    "text": { "runs": ["Album"] }
+                }},
+                { "musicResponsiveListItemFlexColumnRenderer": {
+                    "text": { "simpleText": "3:45" }
+                }}
+            ]
+        });
+        let video = get_video(&value).expect("video");
+        assert_eq!(video.album, "Album");
+        assert_eq!(video.duration, "3:45");
+    }
+
+    #[test]
+    fn extracts_a_fixed_column_duration() {
+        let value = json!({
+            "playlistItemData": {"videoId": "vid123"},
+            "flexColumns": [
+                { "musicResponsiveListItemFlexColumnRenderer": {
+                    "text": { "runs": ["Song"] }
+                }},
+                { "musicResponsiveListItemFlexColumnRenderer": {
+                    "text": { "runs": ["Artist"] }
+                }},
+                { "musicResponsiveListItemFlexColumnRenderer": {
+                    "text": { "runs": ["Album"] }
+                }}
+            ],
+            "fixedColumns": [
+                { "musicResponsiveListItemFixedColumnRenderer": {
+                    "text": { "simpleText": "3:45" }
+                }}
+            ]
+        });
+        let video = get_video(&value).expect("video");
+        assert_eq!(video.album, "Album");
+        assert_eq!(video.duration, "3:45");
+    }
+
+    #[test]
+    fn extracts_an_album_track_duration() {
+        let value = json!({
+            "playlistItemData": { "videoId": "albumvid" },
+            "flexColumns": [
+                { "musicResponsiveListItemFlexColumnRenderer": {
+                    "text": { "runs": ["Album Song"] }
+                }},
+                { "musicResponsiveListItemFlexColumnRenderer": {
+                    "text": { "runs": ["Artist"] }
+                }},
+                { "musicResponsiveListItemFlexColumnRenderer": {
+                    "text": { "simpleText": "3:45" }
+                }}
+            ]
+        });
+        let video = get_video_from_album(&value).expect("video");
+        assert_eq!(video.title, "Album Song");
+        assert_eq!(video.duration, "3:45");
     }
 
     #[test]

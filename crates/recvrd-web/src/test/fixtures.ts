@@ -11,6 +11,7 @@ import type { SearchResults } from '@api/SearchResults';
 import type { Status } from '@api/Status';
 import type { Track } from '@api/Track';
 import type { TrackDetail } from '@api/TrackDetail';
+import type { TrackStats } from '@api/TrackStats';
 import type { RecvrdApi } from '../lib/api';
 import type { EventSourceLike } from '../lib/sse';
 
@@ -71,6 +72,53 @@ export function makeTrackDetail(
   return {
     track,
     description: `Description for ${track.title}`,
+    ...overrides,
+  };
+}
+
+export function makeTrackStats(
+  track: Track = makeTrack('v1'),
+  overrides: Partial<TrackStats> = {},
+): TrackStats {
+  return {
+    track,
+    source: {
+      url: 'https://example.com/song.mp3',
+      mime: 'audio/mpeg',
+      length: 1024,
+      seekable: true,
+      kind: 'audio',
+    },
+    file: {
+      path: '/tmp/song.mp3',
+      sidecar_path: '/tmp/song.json',
+      size_bytes: 1024,
+      modified_unix: 1_700_000_000,
+      cached: true,
+    },
+    audio: {
+      container: 'mp3',
+      codec: 'mp3',
+      bitrate_kbps: 192,
+      sample_rate: 44_100,
+      channels: 2,
+      bits_per_sample: 16,
+      duration_secs: 180,
+    },
+    playback: {
+      mode: 'download',
+      state: 'stopped',
+      source_kind: 'file',
+      position_secs: 12.5,
+      saved_position_secs: 42,
+      queue_index: 0,
+    },
+    history: {
+      play_count: 3,
+      last_played_at: 1_700_000_000,
+      last_completed: true,
+      last_played_secs: 180,
+    },
     ...overrides,
   };
 }
@@ -193,6 +241,9 @@ export function makeApi(
           },
         }),
       ),
+    ),
+    trackStats: vi.fn(async (provider, trackId) =>
+      makeTrackStats(makeTrack(trackId, { provider })),
     ),
     setTrackLike: vi.fn(async () => ({ ok: true })),
     createPlaylist: vi.fn(async (request) => {

@@ -80,6 +80,7 @@ prompt. A session that expires during pagination ends the load with
 | POST | `/api/playlists/{id}/tracks/move` | Move a track (`{from,to}`) |
 | GET | `/api/search?provider=...&q=...` | Track and playlist search |
 | GET | `/api/tracks/{provider}/{track_id}` | Full track detail and description |
+| GET | `/api/tracks/{provider}/{track_id}/stats` | File, audio, playback and history facts. URL queries and tokens are removed. |
 | GET | `/api/tracks/{provider}/{track_id}/cover` | Cached cover art |
 | PUT | `/api/tracks/{provider}/{track_id}/like` | Set the track like state (`{liked}`) |
 | GET | `/api/queue` | Queue snapshot |
@@ -110,6 +111,7 @@ prompt. A session that expires during pagination ends the load with
 | DELETE | `/api/rss/feeds/{id}` | Remove an RSS feed and its episodes |
 | POST | `/api/rss/feeds/{id}/refresh` | Refresh one RSS feed |
 | GET | `/api/events` | SSE snapshot and live events |
+| GET | `/api/visualizer/events` | SSE spectrum frames for the full-player visualizer |
 
 Command endpoints return the updated `Status` or `Queue` so clients can render
 immediately; they do not need to wait for the matching SSE event.
@@ -727,6 +729,24 @@ curl -N 'http://127.0.0.1:8080/api/events?last_event_id=2'
 - If a client cannot keep up, the daemon drops the oldest events for that
   connection and logs a warning. The daemon then sends a fresh `snapshot` with
   the newest id, so the client resynchronises without a reconnect.
+
+## Visualizer: `GET /api/visualizer/events`
+
+This endpoint streams 64 spectrum bands at about 30 frames per second:
+
+```sh
+curl -N http://127.0.0.1:8080/api/visualizer/events
+```
+
+Each frame uses `event: visualizer` and this JSON body:
+
+```json
+{"bands":[0,12,40,120],"peak":120}
+```
+
+The endpoint needs a PipeWire output. It returns `404` on other platforms and
+before the output starts. The daemon does no spectrum work while no client
+listens.
 
 Keepalive comments are also sent every 15 seconds so proxies and idle
 connections do not time out. `EventSource` does not deliver comments to

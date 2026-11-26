@@ -10,6 +10,7 @@ use std::{
     collections::HashMap,
     fs,
     path::{Path, PathBuf},
+    sync::{Arc, Mutex},
     time::SystemTime,
 };
 
@@ -38,6 +39,7 @@ pub struct CachedPlaylist {
 pub struct CacheService {
     downloads_dir: PathBuf,
     covers_dir: PathBuf,
+    durations: Arc<Mutex<HashMap<TrackKey, String>>>,
 }
 
 impl CacheService {
@@ -47,6 +49,7 @@ impl CacheService {
         Self {
             downloads_dir,
             covers_dir,
+            durations: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -138,6 +141,20 @@ impl CacheService {
         }
     }
 
+    /// The audio file for one track, when it exists.
+    pub fn audio_path(&self, provider: ProviderId, track_id: &str) -> Option<PathBuf> {
+        TrackKey::new(provider, track_id).existing_audio_file(&self.downloads_dir)
+    }
+
+    /// The metadata sidecar for one track, when it exists.
+    pub fn sidecar_path(&self, provider: ProviderId, track_id: &str) -> Option<PathBuf> {
+        let path = self
+            .downloads_dir
+            .join(provider.as_str())
+            .join(format!("{track_id}.json"));
+        path.is_file().then_some(path)
+    }
+
     /// True when a non-empty audio file exists for the track. An
     /// invalid key is never cached. A sidecar alone does not count:
     /// playback needs the audio file.
@@ -156,9 +173,100 @@ impl CacheService {
     /// Set the `cached` flag on every track in the list, from disk.
     /// Tracks without a local audio file keep a false flag.
     pub fn annotate_tracks(&self, tracks: &mut [recvrd_api::Track]) {
+        let durations = self
+            .durations
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         for track in tracks {
             track.cached = track.provider == ProviderId::Local || self.is_cached(&track.key());
+            if track.duration.is_empty()
+                && let Some(duration) = durations.get(&track.key())
+            {
+                track.duration = duration.clone();
+            }
         }
+    }
+
+    /// Probe cached files that have no duration and write the
+    /// duration back to their sidecar.
+    ///
+    /// Return every known cached duration, keyed by track. A
+    /// missing file, an unreadable sidecar, or a probe failure is
+    /// skipped and keeps the empty duration.
+    pub fn backfill_durations(&self) -> HashMap<TrackKey, String> {
+        let mut durations = HashMap::new();
+        let mut probed = 0;
+        let Ok(providers) = fs::read_dir(&self.downloads_dir) else {
+            return durations;
+        };
+        for provider_entry in providers.flatten() {
+            if !provider_entry.path().is_dir() {
+                continue;
+            }
+            let Some(provider) = provider_entry
+                .file_name()
+                .to_str()
+                .and_then(|name| name.parse::<ProviderId>().ok())
+            else {
+                continue;
+            };
+            let Ok(entries) = fs::read_dir(provider_entry.path()) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().is_some_and(|ext| ext != "json") {
+                    continue;
+                }
+                let Some(stem) = path.file_stem().and_then(|name| name.to_str()) else {
+                    continue;
+                };
+                let key = TrackKey::new(provider, stem);
+                if !key.validate() {
+                    continue;
+                }
+                let Ok(text) = fs::read_to_string(&path) else {
+                    continue;
+                };
+                let Ok(mut track) = serde_json::from_str::<Track>(&text) else {
+                    continue;
+                };
+                if track.provider != provider || track.track_id != stem {
+                    continue;
+                }
+                if !track.duration.is_empty() {
+                    durations.insert(key, track.duration);
+                    continue;
+                }
+                let Some(audio) = key.existing_audio_file(&self.downloads_dir) else {
+                    continue;
+                };
+                let Ok(facts) = player::probe_audio(&audio) else {
+                    continue;
+                };
+                let Some(seconds) = facts.duration_secs else {
+                    continue;
+                };
+                let duration = format_seconds(seconds);
+                if duration.is_empty() {
+                    continue;
+                }
+                track.duration = duration.clone();
+                if let Ok(json) = serde_json::to_string(&track) {
+                    let _ = fs::write(&path, json);
+                }
+                durations.insert(key, duration);
+                probed += 1;
+            }
+        }
+        if probed > 0 {
+            log::info!("filled {probed} cached track durations from audio files");
+        }
+        *self
+            .durations
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = durations.clone();
+        durations
     }
 
     /// Evict the oldest complete downloads until the download cache
@@ -282,6 +390,22 @@ impl CacheService {
 
 /// Sum the bytes and file count of every regular file below `dir`.
 /// A missing directory sums to zero. Symlinks are not followed.
+/// Format a duration in seconds as `M:SS` or `H:MM:SS`.
+fn format_seconds(seconds: f64) -> String {
+    let total = seconds.round().max(0.0) as u64;
+    if total == 0 {
+        return String::new();
+    }
+    let hours = total / 3600;
+    let minutes = (total % 3600) / 60;
+    let seconds = total % 60;
+    if hours > 0 {
+        format!("{hours}:{minutes:02}:{seconds:02}")
+    } else {
+        format!("{minutes}:{seconds:02}")
+    }
+}
+
 fn sum_tree(dir: &Path) -> (u64, u64) {
     let mut bytes = 0;
     let mut files = 0;
@@ -417,6 +541,26 @@ mod tests {
 
     fn service(dir: &Path) -> CacheService {
         CacheService::new(dir.join("downloads"), dir.join("covers"))
+    }
+
+    fn write_wav(path: &Path, seconds: u32) {
+        let rate = 8_000u32;
+        let data_len = rate * seconds * 2;
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"RIFF");
+        bytes.extend_from_slice(&(36 + data_len).to_le_bytes());
+        bytes.extend_from_slice(b"WAVEfmt ");
+        bytes.extend_from_slice(&16u32.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&rate.to_le_bytes());
+        bytes.extend_from_slice(&(rate * 2).to_le_bytes());
+        bytes.extend_from_slice(&2u16.to_le_bytes());
+        bytes.extend_from_slice(&16u16.to_le_bytes());
+        bytes.extend_from_slice(b"data");
+        bytes.extend_from_slice(&data_len.to_le_bytes());
+        bytes.resize(bytes.len() + data_len as usize, 0);
+        write_file(path, &bytes);
     }
 
     fn seed(dir: &Path) {
@@ -595,6 +739,63 @@ mod tests {
         cache.annotate_tracks(&mut tracks);
         assert!(tracks[0].cached);
         assert!(!tracks[1].cached);
+    }
+
+    #[test]
+    fn backfills_a_missing_duration_from_the_audio_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let track = Track {
+            provider: ProviderId::Youtube,
+            track_id: ID.to_string(),
+            title: "Song".to_string(),
+            author: "Artist".to_string(),
+            album: "Album".to_string(),
+            duration: String::new(),
+            source: None,
+            metadata: None,
+            liked: None,
+        };
+        write_wav(&dir.path().join(format!("downloads/youtube/{ID}.wav")), 1);
+        write_file(
+            &dir.path().join(format!("downloads/youtube/{ID}.json")),
+            serde_json::to_string(&track).unwrap().as_bytes(),
+        );
+        let cache = service(dir.path());
+
+        let durations = cache.backfill_durations();
+        assert_eq!(durations.get(&key(ID)).map(String::as_str), Some("0:01"));
+        let updated: Track = serde_json::from_str(
+            &fs::read_to_string(dir.path().join(format!("downloads/youtube/{ID}.json"))).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(updated.duration, "0:01");
+
+        let mut tracks = vec![recvrd_api::Track {
+            provider: ProviderId::Youtube,
+            track_id: ID.to_string(),
+            duration: String::new(),
+            ..Default::default()
+        }];
+        cache.annotate_tracks(&mut tracks);
+        assert_eq!(tracks[0].duration, "0:01");
+    }
+
+    #[test]
+    fn backfill_skips_a_sidecar_without_audio() {
+        let dir = tempfile::tempdir().unwrap();
+        let track = Track {
+            provider: ProviderId::Youtube,
+            track_id: ID.to_string(),
+            title: "Song".to_string(),
+            duration: String::new(),
+            ..Default::default()
+        };
+        write_file(
+            &dir.path().join(format!("downloads/youtube/{ID}.json")),
+            serde_json::to_string(&track).unwrap().as_bytes(),
+        );
+        let durations = service(dir.path()).backfill_durations();
+        assert!(durations.is_empty());
     }
 
     #[test]

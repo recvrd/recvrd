@@ -7,6 +7,7 @@ import {
   LEGACY_PROVIDER_KEY,
   PLAYER_LAYOUT_KEY,
   PROVIDER_KEY,
+  VISUALIZER_KEY,
   readPlayerLayout,
   readProvider,
   removeQueueItem,
@@ -1040,6 +1041,29 @@ describe('AppStore', () => {
     store.dispose();
   });
 
+  it('loads geek stats for a track', async () => {
+    const { api, store } = setup();
+    const track = makeTrack('v9');
+    await store.openGeekStats(track);
+    expect(api.trackStats).toHaveBeenCalledWith('youtube', 'v9');
+    expect(store.geekStatsOpen).toBe(true);
+    expect(store.geekStats?.track.track_id).toBe('v9');
+    store.closeGeekStats();
+    expect(store.geekStatsOpen).toBe(false);
+    store.dispose();
+  });
+
+  it('toggles and stores the visualizer choice', () => {
+    const { store } = setup();
+    store.visualizerOn = false;
+    store.toggleVisualizer();
+    expect(store.visualizerOn).toBe(true);
+    expect(localStorage.getItem(VISUALIZER_KEY)).toBe('on');
+    store.toggleVisualizer();
+    expect(store.visualizerOn).toBe(false);
+    expect(localStorage.getItem(VISUALIZER_KEY)).toBe('off');
+    store.dispose();
+  });
   it('opens a playlist from the location hash', async () => {
     window.history.replaceState(null, '', '/#/playlist/p1');
     const { api, store } = setup();

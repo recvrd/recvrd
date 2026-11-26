@@ -16,6 +16,7 @@ import type { SearchResults } from '@api/SearchResults';
 import type { Status } from '@api/Status';
 import type { Track } from '@api/Track';
 import type { TrackDetail } from '@api/TrackDetail';
+import type { TrackStats } from '@api/TrackStats';
 import { ApiError, createApi, describeError, durationSeconds, formatBytes, type RecvrdApi } from './api';
 import { EventStream, type ConnectionState, type EventSourceLike } from './sse';
 
@@ -38,6 +39,7 @@ export type FocusPane = 'sidebar' | 'main';
 
 export const PLAYER_LAYOUT_KEY = 'recvrd.player-layout';
 export const LEGACY_PLAYER_LAYOUT_KEY = 'ytermusicd.player-layout';
+export const VISUALIZER_KEY = 'recvrd.visualizer';
 export const PROVIDER_KEY = 'recvrd.provider';
 export const LEGACY_PROVIDER_KEY = 'ytermusicd.provider';
 
@@ -174,6 +176,11 @@ export class AppStore {
   volume = $state(50);
   playerLayout = $state<PlayerLayout>('compact');
   fullPlayerOpen = $state(false);
+  geekStatsOpen = $state(false);
+  geekStatsLoading = $state(false);
+  geekStats = $state<TrackStats | null>(null);
+  geekStatsTrack = $state<Track | null>(null);
+  visualizerOn = $state(readStored(VISUALIZER_KEY, VISUALIZER_KEY) === 'on');
   offlineHelpOpen = $state(false);
   trackDetail = $state<TrackDetail | null>(null);
   trackDetailKey = $state<string | null>(null);
@@ -1290,6 +1297,36 @@ export class AppStore {
     this.fullPlayerOpen = !this.fullPlayerOpen;
   }
 
+  async openGeekStats(track: Track): Promise<void> {
+    this.geekStatsOpen = true;
+    this.geekStatsLoading = true;
+    this.geekStats = null;
+    this.geekStatsTrack = track;
+    try {
+      this.geekStats = await this.api.trackStats(track.provider, track.track_id);
+    } catch (error) {
+      this.report(error);
+      this.geekStatsOpen = false;
+    } finally {
+      this.geekStatsLoading = false;
+    }
+  }
+
+  closeGeekStats(): void {
+    this.geekStatsOpen = false;
+    this.geekStatsLoading = false;
+    this.geekStats = null;
+    this.geekStatsTrack = null;
+  }
+
+  toggleVisualizer(): void {
+    this.visualizerOn = !this.visualizerOn;
+    try {
+      globalThis.localStorage?.setItem(VISUALIZER_KEY, this.visualizerOn ? 'on' : 'off');
+    } catch {
+      // Storage can be denied.
+    }
+  }
   setPlayerLayout(layout: PlayerLayout): void {
     this.playerLayout = layout;
     try {

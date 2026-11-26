@@ -51,7 +51,9 @@ artifacts contain the real app.
 - **Now playing** shows the current track, cover art, controls, seek, volume,
   playback source and download state.
 - **Full player** shows the large cover, track metadata, links and the full
-  description when the provider serves one.
+  description when the provider serves one. A visualizer toggle shows a live
+  64-band spectrum from the daemon. The choice is stored in `localStorage`
+  under `recvrd.visualizer`.
 
 The top bar has a provider selector. It lists every provider from
 `GET /api/providers`. The choice is stored in `localStorage` under
@@ -191,6 +193,10 @@ The app loads no network fonts and uses no CDN.
 
 The track menu offers **Queue next** and **Queue last**. Queue next inserts the
 track after the current track. Queue last appends it.
+
+**Geek stats** in the track menu or the full player opens the technical facts
+for one track. It shows the provider key, source, local file, audio header,
+playback mode and listen history. URL queries and tokens are removed.
 
 Shortcuts do not run while an input has focus. The `?` overlay shows the same
 table.

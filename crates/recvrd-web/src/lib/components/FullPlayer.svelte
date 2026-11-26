@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { AppStore } from '../store.svelte';
   import { coverUrl, durationSeconds, formatDuration, trackMetadataFacts } from '../api';
+  import Visualizer from './Visualizer.svelte';
 
   let { store }: { store: AppStore } = $props();
 
@@ -32,6 +33,10 @@
     scrub = null;
     void store.seek(value);
   }
+
+  function openGeekStats(): void {
+    if (track) void store.openGeekStats(track);
+  }
 </script>
 
 {#if store.fullPlayerOpen}
@@ -46,14 +51,34 @@
 
     <header class="full-header">
       <span class="prompt">$ now_playing</span>
-      <button
-        class="close"
-        aria-label="Close full player"
-        title="Close full player"
-        onclick={() => store.closeFullPlayer()}
-      >
-        ×
-      </button>
+      <div class="header-actions">
+        <button
+          class="visualizer-toggle"
+          aria-label="Toggle visualizer"
+          aria-pressed={store.visualizerOn}
+          title="Toggle visualizer"
+          onclick={() => store.toggleVisualizer()}
+        >
+          ▥
+        </button>
+        <button
+          class="stats"
+          aria-label="Geek stats"
+          title="Geek stats"
+          disabled={!track}
+          onclick={openGeekStats}
+        >
+          stats
+        </button>
+        <button
+          class="close"
+          aria-label="Close full player"
+          title="Close full player"
+          onclick={() => store.closeFullPlayer()}
+        >
+          ×
+        </button>
+      </div>
     </header>
 
     <div class="stage">
@@ -120,6 +145,10 @@
         {/if}
       </div>
     </div>
+
+    {#if store.visualizerOn}
+      <Visualizer />
+    {/if}
 
     <div class="timeline">
       <span class="time">{formatDuration(position)}</span>
@@ -259,6 +288,31 @@
     padding: 0.25rem 0.7rem;
     font-size: 1.2rem;
     line-height: 1;
+  }
+
+  .header-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+  }
+
+  .visualizer-toggle {
+    padding: 0.25rem 0.5rem;
+    border-color: var(--border);
+    color: var(--fg-muted);
+    line-height: 1;
+  }
+
+  .visualizer-toggle[aria-pressed='true'] {
+    border-color: var(--accent-2);
+    color: var(--accent-2);
+  }
+
+  .stats {
+    padding: 0.25rem 0.5rem;
+    font-size: 0.7rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
   }
 
   .stage {

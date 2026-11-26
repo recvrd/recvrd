@@ -14,6 +14,7 @@
     onplay,
     onqueue,
     onqueuenext,
+    ongeekstats,
     onretry,
     onlike,
     onremove,
@@ -31,6 +32,7 @@
     onplay: (track: Track) => void;
     onqueue: (track: Track) => void;
     onqueuenext: (track: Track) => void;
+    ongeekstats: (track: Track) => void;
     onretry: (track: Track) => void;
     onlike?: (track: Track) => void;
     onremove?: (index: number) => void;
@@ -83,6 +85,7 @@
       { label: 'Play now', action: () => onplay(menu!.track) },
       { label: 'Queue next', action: () => onqueuenext(menu!.track) },
       { label: 'Queue last', action: () => onqueue(menu!.track) },
+      { label: 'Geek stats', action: () => ongeekstats(menu!.track) },
       {
         label: 'Retry download',
         disabled: downloadStatus(menu.track).state !== 'failed',

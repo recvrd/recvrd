@@ -25,10 +25,31 @@ function makeStore() {
   });
   store.queue = makeQueue([track, makeTrack('v2')], { current: 0 });
   store.fullPlayerOpen = true;
+  store.visualizerOn = false;
   return { api, store, track };
 }
 
 describe('FullPlayer', () => {
+  it('toggles the visualizer', async () => {
+    const { store } = makeStore();
+    render(FullPlayer, { props: { store } });
+    const toggle = screen.getByRole('button', { name: 'Toggle visualizer' });
+
+    expect(toggle).toHaveAttribute('aria-pressed', 'false');
+    await fireEvent.click(toggle);
+    expect(store.visualizerOn).toBe(true);
+    expect(toggle).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it('opens geek stats for the current track', async () => {
+    const { api, store } = makeStore();
+    render(FullPlayer, { props: { store } });
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Geek stats' }));
+    expect(api.trackStats).toHaveBeenCalledWith('youtube', 'v1');
+    expect(store.geekStatsOpen).toBe(true);
+  });
+
   it('renders the track, cover art and queue position', () => {
     const { store } = makeStore();
     const { container } = render(FullPlayer, { props: { store } });
