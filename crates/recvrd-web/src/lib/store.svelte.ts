@@ -9,6 +9,7 @@ import type { PlaylistDetail } from '@api/PlaylistDetail';
 import type { ProviderId } from '@api/ProviderId';
 import type { ProviderInfo } from '@api/ProviderInfo';
 import type { Queue } from '@api/Queue';
+import type { QueuePosition } from '@api/QueuePosition';
 import type { RepeatMode } from '@api/RepeatMode';
 import type { RssFeed } from '@api/RssFeed';
 import type { SearchResults } from '@api/SearchResults';
@@ -826,13 +827,22 @@ export class AppStore {
     }
   }
 
-  async queueTrack(track: Track): Promise<void> {
+  async queueTrack(track: Track, position?: QueuePosition): Promise<void> {
     try {
-      this.queue = await this.api.queueAdd(track);
-      this.notify('info', `Queued “${track.title}”.`);
+      this.queue = await this.api.queueAdd(track, position);
+      this.notify(
+        'info',
+        position === 'next'
+          ? `Queued “${track.title}” next.`
+          : `Queued “${track.title}”.`,
+      );
     } catch (error) {
       this.report(error);
     }
+  }
+
+  async queueNextTrack(track: Track): Promise<void> {
+    await this.queueTrack(track, 'next');
   }
 
   async queueSelected(): Promise<void> {

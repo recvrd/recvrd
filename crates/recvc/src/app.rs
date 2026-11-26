@@ -103,6 +103,8 @@ pub enum ContextAction {
     PlayTrack(Track),
     /// Add a track to the queue.
     QueueTrack(Track),
+    /// Add a track after the current track.
+    QueueTrackNext(Track),
     /// Add a track to a playlist.
     AddTrackToPlaylist(Track),
     /// Open a playlist.
@@ -1214,6 +1216,10 @@ impl App {
                 self.show_toast(ToastLevel::Info, format!("Queued {}.", track.title));
                 vec![Command::QueueTrack(track)]
             }
+            ContextAction::QueueTrackNext(track) => {
+                self.show_toast(ToastLevel::Info, format!("Queued {} next.", track.title));
+                vec![Command::QueueNext(track)]
+            }
             ContextAction::AddTrackToPlaylist(track) => {
                 self.overlay = Some(Overlay::PickPlaylist(PickPlaylistModal {
                     track,
@@ -1452,7 +1458,11 @@ impl App {
                             action: ContextAction::PlayTrack(track.clone()),
                         },
                         ContextItem {
-                            label: "Add to queue".to_string(),
+                            label: "Queue next".to_string(),
+                            action: ContextAction::QueueTrackNext(track.clone()),
+                        },
+                        ContextItem {
+                            label: "Queue last".to_string(),
                             action: ContextAction::QueueTrack(track.clone()),
                         },
                         ContextItem {
@@ -2103,6 +2113,18 @@ mod tests {
             row,
             modifiers: KeyModifiers::NONE,
         }
+    }
+
+    #[test]
+    fn context_actions_queue_next_and_last() {
+        let mut app = App::new("http://localhost");
+        let next = track("v9");
+        let commands = app.run_context_action(ContextAction::QueueTrackNext(next.clone()));
+        assert!(matches!(commands.as_slice(), [Command::QueueNext(track)] if track == &next));
+
+        let last = track("v10");
+        let commands = app.run_context_action(ContextAction::QueueTrack(last.clone()));
+        assert!(matches!(commands.as_slice(), [Command::QueueTrack(track)] if track == &last));
     }
 
     #[test]

@@ -64,6 +64,10 @@
     if (entry.kind === 'track') void store.queueTrack(entry.track);
   }
 
+  function queueNext(entry: SearchEntry): void {
+    if (entry.kind === 'track') void store.queueNextTrack(entry.track);
+  }
+
   function onInputKeydown(event: KeyboardEvent): void {
     switch (event.key) {
       case 'ArrowDown':
@@ -188,7 +192,15 @@
               {#if entry.kind === 'track' && store.searchMode !== 'add-to-playlist'}
                 <button
                   class="queue"
-                  title="Add to queue"
+                  title="Queue next"
+                  aria-label={`Queue ${entry.track.title} next`}
+                  onclick={() => queueNext(entry)}
+                >
+                  + next
+                </button>
+                <button
+                  class="queue"
+                  title="Queue last"
                   aria-label={`Add ${entry.track.title} to the queue`}
                   onclick={() => queue(entry)}
                 >

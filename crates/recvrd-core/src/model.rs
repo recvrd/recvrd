@@ -231,6 +231,42 @@ impl Queue {
         }
     }
 
+    /// Insert a track after the current track. Keep the current item.
+    pub fn enqueue_next(&mut self, track: Track) {
+        let item = QueueItem {
+            track,
+            download: MusicDownloadStatus::NotDownloaded,
+        };
+        let index = match self.current {
+            Some(current) => current + 1,
+            None => 0,
+        };
+        // Keep the unshuffled order in step: insert after the current
+        // track there, or at the front when nothing is current.
+        let original_index = match self.current {
+            Some(current) => {
+                let current_key = self.items.get(current).map(|item| item.track.key());
+                self.original.as_ref().and_then(|original| {
+                    current_key.and_then(|key| {
+                        original
+                            .iter()
+                            .position(|entry| entry.track.key() == key)
+                            .map(|position| position + 1)
+                    })
+                })
+            }
+            None => Some(0),
+        };
+        self.items.insert(index, item.clone());
+        if let Some(original) = &mut self.original {
+            let at = original_index.unwrap_or(original.len());
+            original.insert(at.min(original.len()), item);
+        }
+        if self.current.is_none() {
+            self.current = Some(0);
+        }
+    }
+
     /// Insert a track after the current track and make it current.
     pub fn play_now(&mut self, track: Track) {
         let item = QueueItem {
@@ -538,6 +574,45 @@ mod tests {
         assert_eq!(queue.len(), 3);
         assert_eq!(queue.current_index(), Some(1));
         assert_eq!(queue.current_track().unwrap().track_id, "video-2");
+    }
+
+    #[test]
+    fn enqueue_next_inserts_after_the_current_track() {
+        let mut queue = Queue::new();
+        let tracks = tracks(4);
+        queue.replace(tracks[..3].to_vec());
+        queue.set_current(Some(1));
+        queue.enqueue_next(tracks[3].clone());
+        assert_eq!(queue.len(), 4);
+        assert_eq!(queue.current_index(), Some(1));
+        assert_eq!(queue.current_track().unwrap().track_id, "video-1");
+        let ids: Vec<_> = queue
+            .items()
+            .iter()
+            .map(|item| item.track.track_id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["video-0", "video-1", "video-3", "video-2"]);
+    }
+
+    #[test]
+    fn enqueue_next_starts_an_empty_queue() {
+        let mut queue = Queue::new();
+        let mut items = tracks(1);
+        queue.enqueue_next(items.remove(0));
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue.current_index(), Some(0));
+    }
+
+    #[test]
+    fn enqueue_next_uses_the_front_without_a_current_track() {
+        let mut queue = Queue::new();
+        let tracks = tracks(3);
+        queue.replace(tracks[..2].to_vec());
+        queue.set_current(None);
+        queue.enqueue_next(tracks[2].clone());
+        assert_eq!(queue.current_index(), Some(0));
+        assert_eq!(queue.items()[0].track.track_id, "video-2");
+        assert_eq!(queue.items()[1].track.track_id, "video-0");
     }
 
     #[test]

@@ -62,7 +62,7 @@ your-mcp-client --server "recvrd mcp"
 | `move_playlist_track` | `playlist_id`, `from`, `to` | Updated track list |
 | `play_playlist` | `playlist_id`, `provider` (default `youtube`) | Updated status |
 | `play_track` | `track` | Updated status |
-| `queue_add` | `track` | Updated queue |
+| `queue_add` | `track`, `position` (`next` or `last`, default `last`) | Updated queue |
 | `now_playing` | none | Status with current playback |
 | `pause` | none | Updated status |
 | `resume` | none | Updated status |

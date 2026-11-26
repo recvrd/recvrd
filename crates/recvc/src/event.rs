@@ -110,6 +110,8 @@ pub enum Command {
     PlayTrack(Track),
     /// Add one track to the queue.
     QueueTrack(Track),
+    /// Add one track after the current track.
+    QueueNext(Track),
     /// Pause playback.
     Pause,
     /// Resume playback.

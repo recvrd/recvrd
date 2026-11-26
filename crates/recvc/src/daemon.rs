@@ -165,6 +165,9 @@ async fn execute(
         )]),
         Command::PlayTrack(track) => Ok(vec![DaemonEvent::Status(client.play_track(track).await?)]),
         Command::QueueTrack(track) => Ok(vec![DaemonEvent::Queue(client.queue_add(track).await?)]),
+        Command::QueueNext(track) => Ok(vec![DaemonEvent::Queue(
+            client.queue_add_next(track).await?,
+        )]),
         Command::Pause => Ok(vec![DaemonEvent::Status(client.pause().await?)]),
         Command::Resume => Ok(vec![DaemonEvent::Status(client.resume().await?)]),
         Command::Next => Ok(vec![DaemonEvent::Status(client.next().await?)]),

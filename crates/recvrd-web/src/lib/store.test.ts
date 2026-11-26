@@ -1025,8 +1025,18 @@ describe('AppStore', () => {
     await store.init();
     const track = makeTrack('v9');
     await store.queueTrack(track);
-    expect(api.queueAdd).toHaveBeenCalledWith(track);
+    expect(api.queueAdd).toHaveBeenCalledWith(track, undefined);
     expect(store.toasts.at(-1)?.message).toContain('Queued');
+    store.dispose();
+  });
+
+  it('queues tracks next', async () => {
+    const { api, store } = setup();
+    await store.init();
+    const track = makeTrack('v9');
+    await store.queueNextTrack(track);
+    expect(api.queueAdd).toHaveBeenCalledWith(track, 'next');
+    expect(store.toasts.at(-1)?.message).toContain('next');
     store.dispose();
   });
 

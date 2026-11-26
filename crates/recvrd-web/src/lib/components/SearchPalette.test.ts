@@ -59,7 +59,18 @@ describe('SearchPalette', () => {
     await fireEvent.click(
       screen.getByRole('button', { name: 'Add Track v1 to the queue' }),
     );
-    expect(api.queueAdd).toHaveBeenCalledWith(makeTrack('v1'));
+    expect(api.queueAdd).toHaveBeenCalledWith(makeTrack('v1'), undefined);
+    expect(store.searchOpen).toBe(true);
+  });
+
+  it('queues a track next without closing the palette', async () => {
+    const { api, store } = makeStore();
+    render(SearchPalette, { props: { store } });
+
+    await fireEvent.click(
+      screen.getByRole('button', { name: 'Queue Track v1 next' }),
+    );
+    expect(api.queueAdd).toHaveBeenCalledWith(makeTrack('v1'), 'next');
     expect(store.searchOpen).toBe(true);
   });
 
@@ -77,6 +88,9 @@ describe('SearchPalette', () => {
     expect(screen.queryByText('Playlist p1')).not.toBeInTheDocument();
     expect(
       screen.queryByRole('button', { name: 'Add Track v1 to the queue' }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Queue Track v1 next' }),
     ).not.toBeInTheDocument();
 
     const input = screen.getByRole('searchbox');

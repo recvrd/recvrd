@@ -180,7 +180,7 @@ The app loads no network fonts and uses no CDN.
 | `/` or `Ctrl+K` | Open search |
 | `Enter` | Play the selected item |
 | `Space` | Play or pause |
-| `x` | Queue the selected track |
+| `x` | Queue the selected track last |
 | `d` `d` | Remove the selected queue item |
 | `?` | Open help |
 | `Esc` | Close a panel |
@@ -188,6 +188,9 @@ The app loads no network fonts and uses no CDN.
 | Double click | Play a track |
 | Right click | Open the track menu |
 | Drag | Move a queue item |
+
+The track menu offers **Queue next** and **Queue last**. Queue next inserts the
+track after the current track. Queue last appends it.
 
 Shortcuts do not run while an input has focus. The `?` overlay shows the same
 table.

@@ -15,6 +15,7 @@ import type { ProviderCapabilities } from '@api/ProviderCapabilities';
 import type { ProviderId } from '@api/ProviderId';
 import type { ProviderInfo } from '@api/ProviderInfo';
 import type { Queue } from '@api/Queue';
+import type { QueuePosition } from '@api/QueuePosition';
 import type { RepeatMode } from '@api/RepeatMode';
 import type { RssFeed } from '@api/RssFeed';
 import type { SearchResults } from '@api/SearchResults';
@@ -56,7 +57,7 @@ export interface RecvrdApi {
   history(): Promise<HistoryEntry[]>;
   playPlaylist(playlistId: string, provider?: ProviderId): Promise<Status>;
   playTrack(track: Track): Promise<Status>;
-  queueAdd(track: Track): Promise<Queue>;
+  queueAdd(track: Track, position?: QueuePosition): Promise<Queue>;
   queueRemove(index: number): Promise<Queue>;
   queueReorder(from: number, to: number): Promise<Queue>;
   queuePlayNext(index: number): Promise<Queue>;
@@ -220,7 +221,7 @@ export function createApi(baseUrl = ''): RecvrdApi {
     playPlaylist: (playlistId, provider: ProviderId = 'youtube') =>
       post<Status>('/api/play/playlist', { playlist_id: playlistId, provider }),
     playTrack: (track) => post<Status>('/api/play/track', { track }),
-    queueAdd: (track) => post<Queue>('/api/queue', { track }),
+    queueAdd: (track, position) => post<Queue>('/api/queue', { track, position }),
     queueRemove: (index) => post<Queue>('/api/queue/remove', { index }),
     queueReorder: (from, to) => post<Queue>('/api/queue/reorder', { from, to }),
     queuePlayNext: (index) => post<Queue>('/api/queue/play-next', { index }),

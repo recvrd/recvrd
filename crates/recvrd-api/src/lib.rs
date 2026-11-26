@@ -580,11 +580,27 @@ pub struct PlayTrackRequest {
     pub track: Track,
 }
 
+/// Where to insert a queued track.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "snake_case")]
+pub enum QueuePosition {
+    /// Insert after the current track.
+    Next,
+    /// Append to the end of the queue.
+    #[default]
+    Last,
+}
+
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct QueueRequest {
     pub track: Track,
+    /// Where to insert the track. The default is `last`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub position: Option<QueuePosition>,
 }
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]

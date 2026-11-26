@@ -12,6 +12,7 @@ function props(tracks = [makeTrack('v1'), makeTrack('v2')]) {
     onselect: vi.fn(),
     onplay: vi.fn(),
     onqueue: vi.fn(),
+    onqueuenext: vi.fn(),
     onretry: vi.fn(),
   };
 }
@@ -62,7 +63,11 @@ describe('TrackTable', () => {
 
     await fireEvent.contextMenu(rows[0]);
     expect(screen.getByRole('menu')).toBeInTheDocument();
-    await fireEvent.click(screen.getByRole('menuitem', { name: 'Add to queue' }));
+    await fireEvent.click(screen.getByRole('menuitem', { name: 'Queue next' }));
+    expect(actions.onqueuenext).toHaveBeenCalledWith(actions.tracks[0]);
+
+    await fireEvent.contextMenu(rows[0]);
+    await fireEvent.click(screen.getByRole('menuitem', { name: 'Queue last' }));
     expect(actions.onqueue).toHaveBeenCalledWith(actions.tracks[0]);
   });
 

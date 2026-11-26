@@ -8,10 +8,10 @@ use futures_util::{Stream, StreamExt};
 use recvrd_api::{
     AddPlaylistTracksRequest, AddRssFeedRequest, CreatePlaylistRequest, ErrorEnvelope, Event,
     MovePlaylistTrackRequest, OfflineRequest, OkResponse, PlayNextRequest, PlayPlaylistRequest,
-    PlayTrackRequest, Playlist, PlaylistDetail, ProviderId, ProviderInfo, Queue, QueueRequest,
-    RemovePlaylistTracksRequest, RemoveQueueRequest, ReorderQueueRequest, RepeatRequest,
-    RetryDownloadRequest, RssFeed, SearchResults, SeekRequest, ShuffleRequest, Status, Track,
-    TrackDetail, TrackKey, UpdatePlaylistRequest, VolumeRequest,
+    PlayTrackRequest, Playlist, PlaylistDetail, ProviderId, ProviderInfo, Queue, QueuePosition,
+    QueueRequest, RemovePlaylistTracksRequest, RemoveQueueRequest, ReorderQueueRequest,
+    RepeatRequest, RetryDownloadRequest, RssFeed, SearchResults, SeekRequest, ShuffleRequest,
+    Status, Track, TrackDetail, TrackKey, UpdatePlaylistRequest, VolumeRequest,
 };
 use reqwest::header::ACCEPT;
 use std::fmt;
@@ -417,7 +417,22 @@ impl DaemonClient {
 
     /// Add one track to the queue.
     pub async fn queue_add(&self, track: Track) -> Result<Queue, DaemonError> {
-        self.post("/api/queue", &QueueRequest { track }).await
+        self.queue_add_at(track, None).await
+    }
+
+    /// Add one track after the current track.
+    pub async fn queue_add_next(&self, track: Track) -> Result<Queue, DaemonError> {
+        self.queue_add_at(track, Some(QueuePosition::Next)).await
+    }
+
+    /// Add one track at a queue position.
+    pub async fn queue_add_at(
+        &self,
+        track: Track,
+        position: Option<QueuePosition>,
+    ) -> Result<Queue, DaemonError> {
+        self.post("/api/queue", &QueueRequest { track, position })
+            .await
     }
 
     /// Remove one queue item.
