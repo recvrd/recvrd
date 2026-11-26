@@ -926,47 +926,9 @@ async fn search<S: AudioSink + Send + 'static>(
         return Err(ApiFailure::bad_request("search query must not be empty"));
     }
     let provider = parse_provider(query.provider, &state.providers)?;
+    let cached = cached_search_results(&state, provider, &query.q);
     if state.settings.offline() {
-        let needle = query.q.trim().to_lowercase();
-        let tracks: Vec<Track> = state
-            .cache
-            .cached_tracks(provider)
-            .into_iter()
-            .filter(|track| {
-                track.title.to_lowercase().contains(&needle)
-                    || track.author.to_lowercase().contains(&needle)
-                    || track.album.to_lowercase().contains(&needle)
-            })
-            .map(|track| {
-                let mut track = api_track(&track);
-                track.cached = true;
-                track
-            })
-            .collect();
-        let playlists: Vec<Playlist> = state
-            .cache
-            .cached_playlists(provider)
-            .into_iter()
-            .filter(|group| group.name.to_lowercase().contains(&needle))
-            .map(|group| {
-                let first = group.tracks.first();
-                Playlist {
-                    id: group.id,
-                    name: group.name,
-                    subtitle: String::new(),
-                    image_url: first
-                        .and_then(|track| track.metadata.as_ref())
-                        .and_then(|metadata| metadata.image_url.clone()),
-                    author: None,
-                    description: None,
-                    feed_url: first
-                        .and_then(|track| track.metadata.as_ref())
-                        .and_then(|metadata| metadata.feed_url.clone()),
-                    item_count: Some(group.tracks.len() as u32),
-                }
-            })
-            .collect();
-        return Ok(Json(SearchResults { tracks, playlists }));
+        return Ok(Json(cached));
     }
     let mut results = state
         .music
@@ -974,7 +936,65 @@ async fn search<S: AudioSink + Send + 'static>(
         .await
         .map_err(|error| ApiFailure::upstream(format!("{provider}: {error}")))?;
     state.cache.annotate_tracks(&mut results.tracks);
-    Ok(Json(results))
+    Ok(Json(merge_cached_search_results(results, cached)))
+}
+
+/// Search the download cache for one provider.
+fn cached_search_results<S: AudioSink + Send + 'static>(
+    state: &AppState<S>,
+    provider: ProviderId,
+    query: &str,
+) -> SearchResults {
+    let needle = query.trim().to_lowercase();
+    let tracks = state
+        .cache
+        .cached_tracks(provider)
+        .into_iter()
+        .filter(|track| {
+            track.title.to_lowercase().contains(&needle)
+                || track.author.to_lowercase().contains(&needle)
+                || track.album.to_lowercase().contains(&needle)
+        })
+        .map(|track| {
+            let mut track = api_track(&track);
+            track.cached = true;
+            track
+        })
+        .collect();
+    let playlists = cached_playlists_as_playlists(state, provider)
+        .into_iter()
+        .filter(|playlist| playlist.name.to_lowercase().contains(&needle))
+        .collect();
+    SearchResults { tracks, playlists }
+}
+
+/// Add cached matches to the provider results. Keep one copy of each
+/// track and playlist.
+fn merge_cached_search_results(mut results: SearchResults, cached: SearchResults) -> SearchResults {
+    let mut track_keys: HashSet<(ProviderId, String)> = results
+        .tracks
+        .iter()
+        .map(|track| (track.provider, track.track_id.clone()))
+        .collect();
+    results.tracks.extend(
+        cached
+            .tracks
+            .into_iter()
+            .filter(|track| track_keys.insert((track.provider, track.track_id.clone()))),
+    );
+
+    let mut playlist_ids: HashSet<String> = results
+        .playlists
+        .iter()
+        .map(|playlist| playlist.id.clone())
+        .collect();
+    results.playlists.extend(
+        cached
+            .playlists
+            .into_iter()
+            .filter(|playlist| playlist_ids.insert(playlist.id.clone())),
+    );
+    results
 }
 
 /// Load the full detail for one track.
@@ -4151,6 +4171,106 @@ mod tests {
         assert_eq!(tracks.len(), 2);
         assert_eq!(tracks[0]["cached"], true);
         assert!(tracks[1].get("cached").is_none());
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn online_search_includes_cached_tracks() {
+        let dir = tempfile::tempdir().unwrap();
+        seed_podverse_cache(dir.path());
+        let music = Arc::new(MockMusicApi {
+            search: Some(SearchResults {
+                tracks: vec![],
+                playlists: vec![],
+            }),
+            ..Default::default()
+        });
+        let state = test_state_in_with(dir.path(), music, Arc::new(MockDownloads::default()));
+        let (base, server) = start_server(state).await;
+        let response = reqwest::Client::new()
+            .get(format!("{base}/api/search?provider=podverse&q=Alpha"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let body: serde_json::Value = response.json().await.unwrap();
+        let tracks = body["tracks"].as_array().unwrap();
+        assert_eq!(tracks.len(), 1);
+        assert_eq!(tracks[0]["provider"], "podverse");
+        assert_eq!(tracks[0]["track_id"], "1002");
+        assert_eq!(tracks[0]["title"], "Alpha song");
+        assert_eq!(tracks[0]["cached"], true);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn online_search_does_not_duplicate_cached_tracks() {
+        let dir = tempfile::tempdir().unwrap();
+        seed_podverse_cache(dir.path());
+        let music = Arc::new(MockMusicApi {
+            search: Some(SearchResults {
+                tracks: vec![Track {
+                    provider: ProviderId::Podverse,
+                    track_id: "1002".to_string(),
+                    title: "Alpha song".to_string(),
+                    artist: "Artist".to_string(),
+                    album: "Channel One".to_string(),
+                    duration: "3:00".to_string(),
+                    ..Default::default()
+                }],
+                playlists: vec![],
+            }),
+            ..Default::default()
+        });
+        let state = test_state_in_with(dir.path(), music, Arc::new(MockDownloads::default()));
+        let (base, server) = start_server(state).await;
+        let body: serde_json::Value = reqwest::Client::new()
+            .get(format!("{base}/api/search?provider=podverse&q=Alpha"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let tracks = body["tracks"].as_array().unwrap();
+        assert_eq!(tracks.len(), 1);
+        assert_eq!(tracks[0]["track_id"], "1002");
+        assert_eq!(tracks[0]["cached"], true);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn online_search_includes_cached_playlists() {
+        let dir = tempfile::tempdir().unwrap();
+        seed_podverse_cache(dir.path());
+        let music = Arc::new(MockMusicApi {
+            search: Some(SearchResults {
+                tracks: vec![],
+                playlists: vec![Playlist {
+                    id: "42".to_string(),
+                    name: "Channel One".to_string(),
+                    ..Default::default()
+                }],
+            }),
+            ..Default::default()
+        });
+        let state = test_state_in_with(dir.path(), music, Arc::new(MockDownloads::default()));
+        let (base, server) = start_server(state).await;
+        let body: serde_json::Value = reqwest::Client::new()
+            .get(format!("{base}/api/search?provider=podverse&q=Channel"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let playlists = body["playlists"].as_array().unwrap();
+        assert_eq!(playlists.len(), 2);
+        assert_eq!(playlists[0]["id"], "42");
+        assert_eq!(playlists[0]["name"], "Channel One");
+        assert_eq!(playlists[1]["id"], "43");
+        assert_eq!(playlists[1]["name"], "Channel Two");
+        assert_eq!(playlists[1]["item_count"], 1);
         server.abort();
     }
 
