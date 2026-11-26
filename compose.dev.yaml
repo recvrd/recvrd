@@ -1,7 +1,7 @@
 # Develop the daemon with Compose.
 # This file overrides compose.yaml. Use both files together.
 # The daemon runs from the source mount with cargo run.
-# The web service runs the Vite dev server.
+# The web service builds the embedded UI and runs the Vite dev server.
 # The web service shares the daemon network.
 # The Vite proxy sends /api to 127.0.0.1:8080 in that network.
 # The daemon binds 0.0.0.0 inside the container.
@@ -14,30 +14,46 @@ services:
       context: .
       dockerfile: Dockerfile
       target: dev
-    entrypoint: ["cargo", "run", "-p", "recvrd", "--"]
+    image: recvrd:dev
+    entrypoint: ["cargo", "run", "-p", "recvrd", "--bin", "recvrd", "--"]
     command: ["serve"]
-    ports:
+    depends_on:
+      web-init:
+        condition: service_completed_successfully
+    ports: !override
       - "127.0.0.1:5173:5173"
     environment:
       DBUS_SESSION_BUS_ADDRESS: unix:path=/run/user/${UID:-1000}/bus
     volumes:
       - .:/app
-      - recvrd-cargo-target:/app/target
-      - recvrd-cargo-registry:/usr/local/cargo/registry
-      - ${XDG_RUNTIME_DIR:-/run/user/1000}/pipewire-0:/run/user/${UID:-1000}/pipewire-0:ro
-      - ${XDG_RUNTIME_DIR:-/run/user/1000}/bus:/run/user/${UID:-1000}/bus:ro
+      - recvrd-cargo-target:/cargo-target
+      - recvrd-cargo-home:/home/recvrd/.cargo
+      - recvrd-web-dist:/app/crates/recvrd-web/dist
+      - ${XDG_RUNTIME_DIR:-/run/user/${UID:-1000}}/pipewire-0:/run/user/${UID:-1000}/pipewire-0:ro
+      - ${XDG_RUNTIME_DIR:-/run/user/${UID:-1000}}/bus:/run/user/${UID:-1000}/bus:ro
+  web-init:
+    image: busybox
+    user: "0:0"
+    volumes:
+      - .:/repo
+    command: sh -c "mkdir -p /repo/crates/recvrd-web/dist /repo/crates/recvrd-web/node_modules && chown ${UID:-1000}:${GID:-1000} /repo/crates/recvrd-web/dist /repo/crates/recvrd-web/node_modules"
   web:
     image: node:22-bookworm-slim
     working_dir: /repo/crates/recvrd-web
     network_mode: service:recvrd
     depends_on:
-      - recvrd
+      recvrd:
+        condition: service_started
+      web-init:
+        condition: service_completed_successfully
     volumes:
       - .:/repo
       - web-node-modules:/repo/crates/recvrd-web/node_modules
-    command: sh -c "npm ci && npm run dev -- --host 0.0.0.0 --port 5173"
+      - recvrd-web-dist:/repo/crates/recvrd-web/dist
+    command: sh -c "npm ci && npm run build && npm run dev -- --host 0.0.0.0 --port 5173"
 
 volumes:
   recvrd-cargo-target:
-  recvrd-cargo-registry:
+  recvrd-cargo-home:
+  recvrd-web-dist:
   web-node-modules:

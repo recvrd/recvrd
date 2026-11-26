@@ -1,4 +1,4 @@
-# Build the recvrd daemon and the web UI in separate stages.
+# Build the web UI, the daemon, and the terminal client in separate stages.
 # The runtime stage carries the daemon, yt-dlp, and ffmpeg only.
 # It carries no Rust toolchain, no Node toolchain, and no source code.
 # TLS uses rustls. The runtime needs ca-certificates, not libssl.
@@ -12,12 +12,44 @@ RUN npm ci
 COPY crates/recvrd-web/ ./
 RUN npm run build
 
-# Stage 2: build the Rust daemon and the terminal client.
+# Stage 2: fetch the standalone yt-dlp binary for the target architecture.
+# The standalone asset needs no Python. The Python zipapp does.
+FROM debian:bookworm-slim AS ytdlp
+ARG TARGETARCH
+ARG YT_DLP_VERSION=2026.11.23
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && arch="${TARGETARCH}" \
+    && if [ -z "$arch" ]; then arch="$(dpkg --print-architecture)"; fi \
+    && case "$arch" in \
+         amd64) asset="yt-dlp_linux" ;; \
+         arm64) asset="yt-dlp_linux_aarch64" ;; \
+         *) echo "unsupported architecture: $arch" >&2; exit 1 ;; \
+       esac \
+    && curl -fsSL -o "/tmp/$asset" "https://github.com/yt-dlp/yt-dlp/releases/download/${YT_DLP_VERSION}/$asset" \
+    && curl -fsSL -o /tmp/SHA2-256SUMS "https://github.com/yt-dlp/yt-dlp/releases/download/${YT_DLP_VERSION}/SHA2-256SUMS" \
+    && cd /tmp \
+    && grep " $asset$" SHA2-256SUMS | sha256sum -c - \
+    && install -m 0755 "$asset" /usr/local/bin/yt-dlp \
+    && /usr/local/bin/yt-dlp --version
+
+# Stage 3: copy the PipeWire client configuration.
+# The library package omits client.conf and the context fails without it.
+FROM debian:bookworm-slim AS pipewire-config
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    pipewire-bin \
+    && rm -rf /var/lib/apt/lists/*
+
+# Stage 4: build the Rust daemon and the terminal client.
 FROM rust:1.99-bookworm AS build
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
     pkg-config \
     libclang-dev \
     libpipewire-0.3-dev \
+    libpipewire-0.3-modules \
     libdbus-1-dev \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
@@ -26,39 +58,62 @@ COPY crates ./crates
 COPY --from=web /app/dist ./crates/recvrd-web/dist
 RUN cargo build --locked --release -p recvrd -p recvc
 
-# Stage 3: run the daemon in a development container.
-# This stage adds Node from the web stage, so it can rebuild the web UI.
+# Stage 5: run the daemon in a development container.
+# This stage adds Node, yt-dlp, and ffmpeg to build the web UI and download tracks.
 # Compose uses this stage for development only.
 FROM build AS dev
+ARG UID=1000
+ARG GID=1000
 COPY --from=web /usr/local /usr/local
+COPY --from=ytdlp /usr/local/bin/yt-dlp /usr/local/bin/yt-dlp
+COPY --from=pipewire-config /usr/share/pipewire/client.conf /usr/share/pipewire/client.conf
+RUN groupadd --non-unique --gid "$GID" recvrd \
+    && useradd --non-unique --uid "$UID" --gid recvrd --home-dir /home/recvrd --no-create-home --shell /usr/sbin/nologin recvrd \
+    && install -d -o recvrd -g recvrd -m 0755 \
+         /home/recvrd \
+         /home/recvrd/.cargo \
+         /home/recvrd/.config/recvrd \
+         /home/recvrd/.cache/recvrd \
+         /home/recvrd/.local/state/recvrd \
+         /home/recvrd/.local/share/recvrd \
+         /cargo-target \
+    && install -d -o recvrd -g recvrd -m 0700 "/run/user/$UID"
+ENV HOME=/home/recvrd
+ENV CARGO_HOME=/home/recvrd/.cargo
+ENV CARGO_TARGET_DIR=/cargo-target
 WORKDIR /app
-ENTRYPOINT ["cargo", "run", "-p", "recvrd", "--"]
+ENTRYPOINT ["cargo", "run", "-p", "recvrd", "--bin", "recvrd", "--"]
 CMD ["serve"]
 
-# Stage 4: run the daemon.
+# Stage 6: run the daemon.
 FROM debian:bookworm-slim AS runtime
-ARG YT_DLP_VERSION=2026.11.23
+ARG UID=1000
+ARG GID=1000
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
     ffmpeg \
     libdbus-1-3 \
     libpipewire-0.3-0 \
+    libpipewire-0.3-modules \
     && rm -rf /var/lib/apt/lists/* \
-    && curl -fsSL -o /tmp/yt-dlp "https://github.com/yt-dlp/yt-dlp/releases/download/${YT_DLP_VERSION}/yt-dlp" \
-    && curl -fsSL -o /tmp/SHA2-256SUMS "https://github.com/yt-dlp/yt-dlp/releases/download/${YT_DLP_VERSION}/SHA2-256SUMS" \
-    && cd /tmp && grep ' yt-dlp$' SHA2-256SUMS | sha256sum -c - \
-    && install -m 0755 /tmp/yt-dlp /usr/local/bin/yt-dlp \
-    && rm /tmp/yt-dlp /tmp/SHA2-256SUMS \
-    && groupadd -r recvrd --gid 1000 \
-    && useradd -r -m -g recvrd --uid 1000 --home-dir /home/recvrd --shell /usr/sbin/nologin recvrd \
-    && mkdir -p /home/recvrd/.config/recvrd /home/recvrd/.cache/recvrd /home/recvrd/.local/state/recvrd /home/recvrd/.local/share/recvrd \
-    && chown -R recvrd:recvrd /home/recvrd
+    && groupadd --non-unique --gid "$GID" recvrd \
+    && useradd --non-unique --uid "$UID" --gid recvrd --home-dir /home/recvrd --no-create-home --shell /usr/sbin/nologin recvrd \
+    && install -d -o recvrd -g recvrd -m 0755 \
+         /home/recvrd \
+         /home/recvrd/.config/recvrd \
+         /home/recvrd/.cache/recvrd \
+         /home/recvrd/.local/state/recvrd \
+         /home/recvrd/.local/share/recvrd \
+    && install -d -o recvrd -g recvrd -m 0700 "/run/user/$UID"
+COPY --from=ytdlp /usr/local/bin/yt-dlp /usr/local/bin/yt-dlp
+COPY --from=pipewire-config /usr/share/pipewire/client.conf /usr/share/pipewire/client.conf
 COPY --from=build /app/target/release/recvrd /usr/local/bin/recvrd
 COPY --from=build /app/target/release/ytermusicd /usr/local/bin/ytermusicd
 COPY --from=build /app/target/release/recvc /usr/local/bin/recvc
 COPY --from=build /app/target/release/ytmc /usr/local/bin/ytmc
 COPY config.example.toml /usr/local/share/doc/recvrd/config.example.toml
+ENV HOME=/home/recvrd
 USER recvrd
 WORKDIR /home/recvrd
 EXPOSE 8080

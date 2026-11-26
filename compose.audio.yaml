@@ -1,0 +1,10 @@
+# Add local audio and MPRIS to the deploy stack.
+# Use both files together: docker compose -f compose.yaml -f compose.audio.yaml up -d
+# The mounts do nothing on a host without PipeWire or D-Bus.
+services:
+  recvrd:
+    environment:
+      DBUS_SESSION_BUS_ADDRESS: unix:path=/run/user/${UID:-1000}/bus
+    volumes:
+      - ${XDG_RUNTIME_DIR:-/run/user/${UID:-1000}}/pipewire-0:/run/user/${UID:-1000}/pipewire-0:ro
+      - ${XDG_RUNTIME_DIR:-/run/user/${UID:-1000}}/bus:/run/user/${UID:-1000}/bus:ro

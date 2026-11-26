@@ -11,6 +11,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        UID: ${UID:-1000}
+        GID: ${GID:-1000}
     image: recvrd:latest
     container_name: recvrd
     restart: unless-stopped
