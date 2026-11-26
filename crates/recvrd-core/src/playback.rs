@@ -1124,6 +1124,18 @@ impl<S: AudioSink> PlaybackService<S> {
         self.publish_queue();
     }
 
+    /// Fill empty queue durations from cached files.
+    pub fn fill_missing_durations(
+        &mut self,
+        durations: &std::collections::HashMap<TrackKey, String>,
+    ) -> bool {
+        let changed = self.queue.fill_missing_durations(durations);
+        if changed {
+            self.publish_all();
+        }
+        changed
+    }
+
     pub async fn remove(&mut self, index: usize) -> Result<(), PlaybackError> {
         let was_current = self.queue.current_index() == Some(index);
         if let Some(removed) = self.queue.remove(index) {

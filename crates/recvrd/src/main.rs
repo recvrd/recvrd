@@ -623,6 +623,18 @@ fn run_serve(
                 );
             }
         }
+        let backfill_cache = cache.clone();
+        let durations = tokio::task::spawn_blocking(move || backfill_cache.backfill_durations())
+            .await
+            .unwrap_or_default();
+        if !durations.is_empty() {
+            let mut service = playback.lock().await;
+            if service.fill_missing_durations(&durations)
+                && let Err(error) = service.save_state(&state_path)
+            {
+                log::warn!("could not save playback state: {error}");
+            }
+        }
         downloads.spawn(playback.clone(), cache.clone(), cache_limit_bytes);
         let restored_tracks: Vec<recvrd_core::Track> = if offline.load(Ordering::SeqCst) {
             Vec::new()

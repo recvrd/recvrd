@@ -2,6 +2,7 @@ use common_structs::{
     MusicDownloadStatus, PlaybackSourceKind, ProviderId, TrackKey, TrackMetadata, TrackSource,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 /// A playable track independent of the YouTube Music API client.
 /// `provider` defaults to YouTube and `track_id` accepts the old
@@ -140,6 +141,21 @@ impl Queue {
 
     pub fn items(&self) -> &[QueueItem] {
         &self.items
+    }
+
+    /// Fill an empty track duration from a keyed duration map.
+    /// Return true when a track changed.
+    pub fn fill_missing_durations(&mut self, durations: &HashMap<TrackKey, String>) -> bool {
+        let mut changed = false;
+        for item in &mut self.items {
+            if item.track.duration.is_empty()
+                && let Some(duration) = durations.get(&item.track.key())
+            {
+                item.track.duration = duration.clone();
+                changed = true;
+            }
+        }
+        changed
     }
 
     pub fn current_index(&self) -> Option<usize> {
@@ -613,6 +629,22 @@ mod tests {
         assert_eq!(queue.current_index(), Some(0));
         assert_eq!(queue.items()[0].track.track_id, "video-2");
         assert_eq!(queue.items()[1].track.track_id, "video-0");
+    }
+
+    #[test]
+    fn fill_missing_durations_updates_empty_tracks() {
+        let mut queue = Queue::new();
+        let mut items = tracks(2);
+        items[0].duration.clear();
+        queue.replace(items);
+        let key = queue.items()[0].track.key();
+        let mut durations = HashMap::new();
+        durations.insert(key, "4:05".to_string());
+
+        assert!(queue.fill_missing_durations(&durations));
+        assert_eq!(queue.items()[0].track.duration, "4:05");
+        assert_eq!(queue.items()[1].track.duration, "3:00");
+        assert!(!queue.fill_missing_durations(&durations));
     }
 
     #[test]
