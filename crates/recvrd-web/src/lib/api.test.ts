@@ -8,7 +8,7 @@ import {
   formatDuration,
   formatPlayedAt,
 } from './api';
-import { makeStatus, makeTrack } from '../test/fixtures';
+import { makeStatus, makeTrack, makeTrackStats } from '../test/fixtures';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -292,6 +292,21 @@ describe('api client', () => {
       method: 'POST',
       body: JSON.stringify({ track, position: 'next' }),
     });
+  });
+
+  it('requests track stats', async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      new Response(JSON.stringify(makeTrackStats()), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const api = createApi();
+
+    const stats = await api.trackStats('youtube', 'v1');
+    expect(stats.track.track_id).toBe('v1');
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/tracks/youtube/v1/stats');
   });
 
   it('reads cache sizes', async () => {

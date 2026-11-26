@@ -32,6 +32,10 @@
     scrub = null;
     void store.seek(value);
   }
+
+  function openGeekStats(): void {
+    if (track) void store.openGeekStats(track);
+  }
 </script>
 
 {#if store.fullPlayerOpen}
@@ -46,14 +50,25 @@
 
     <header class="full-header">
       <span class="prompt">$ now_playing</span>
-      <button
-        class="close"
-        aria-label="Close full player"
-        title="Close full player"
-        onclick={() => store.closeFullPlayer()}
-      >
-        ×
-      </button>
+      <div class="header-actions">
+        <button
+          class="stats"
+          aria-label="Geek stats"
+          title="Geek stats"
+          disabled={!track}
+          onclick={openGeekStats}
+        >
+          stats
+        </button>
+        <button
+          class="close"
+          aria-label="Close full player"
+          title="Close full player"
+          onclick={() => store.closeFullPlayer()}
+        >
+          ×
+        </button>
+      </div>
     </header>
 
     <div class="stage">
@@ -259,6 +274,19 @@
     padding: 0.25rem 0.7rem;
     font-size: 1.2rem;
     line-height: 1;
+  }
+
+  .header-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+  }
+
+  .stats {
+    padding: 0.25rem 0.5rem;
+    font-size: 0.7rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
   }
 
   .stage {

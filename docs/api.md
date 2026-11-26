@@ -80,6 +80,7 @@ prompt. A session that expires during pagination ends the load with
 | POST | `/api/playlists/{id}/tracks/move` | Move a track (`{from,to}`) |
 | GET | `/api/search?provider=...&q=...` | Track and playlist search |
 | GET | `/api/tracks/{provider}/{track_id}` | Full track detail and description |
+| GET | `/api/tracks/{provider}/{track_id}/stats` | File, audio, playback and history facts. URL queries and tokens are removed. |
 | GET | `/api/tracks/{provider}/{track_id}/cover` | Cached cover art |
 | PUT | `/api/tracks/{provider}/{track_id}/like` | Set the track like state (`{liked}`) |
 | GET | `/api/queue` | Queue snapshot |

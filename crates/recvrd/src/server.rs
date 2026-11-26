@@ -19,8 +19,9 @@ use recvrd_api::{
     PlaylistEditError, ProviderInfo, Queue as ApiQueue, QueueItem as ApiQueueItem, QueuePosition,
     QueueRequest, RemovePlaylistTracksRequest, RemoveQueueRequest, ReorderQueueRequest,
     RepeatMode as ApiRepeatMode, RepeatRequest, RetryDownloadRequest, RssFeed, SearchResults,
-    SeekRequest, SetTrackLikeRequest, ShuffleRequest, Status, Track, TrackDetail,
-    UpdatePlaylistRequest, VolumeRequest,
+    SeekRequest, SetTrackLikeRequest, ShuffleRequest, Status, Track, TrackAudioStats, TrackDetail,
+    TrackFileStats, TrackHistoryStats, TrackPlaybackStats, TrackStats, UpdatePlaylistRequest,
+    VolumeRequest,
 };
 use recvrd_core::{
     AudioOutput, AudioSink, AuthState as CoreAuthState, AuthStatus, CoreEvent, EventBus,
@@ -229,6 +230,7 @@ pub fn router<S: AudioSink + Send + 'static>(state: AppState<S>) -> Router {
         .route("/api/playlists/{id}/tracks/move", post(move_playlist_track))
         .route("/api/search", get(search))
         .route("/api/tracks/{provider}/{track_id}", get(track_detail))
+        .route("/api/tracks/{provider}/{track_id}/stats", get(track_stats))
         .route(
             "/api/tracks/{provider}/{track_id}/like",
             put(set_track_like),
@@ -1052,6 +1054,185 @@ async fn track_detail<S: AudioSink + Send + 'static>(
         .cache
         .annotate_tracks(std::slice::from_mut(&mut detail.track));
     Ok(Json(detail))
+}
+
+/// Technical facts for one track.
+async fn track_stats<S: AudioSink + Send + 'static>(
+    State(state): State<AppState<S>>,
+    AxumPath((provider, track_id)): AxumPath<(String, String)>,
+) -> Result<Json<TrackStats>, ApiFailure> {
+    let Ok(provider) = provider.parse::<ProviderId>() else {
+        return Err(ApiFailure::not_found(format!(
+            "unknown provider {provider}"
+        )));
+    };
+    if !state.providers.contains(&provider) {
+        return Err(ApiFailure::not_found(format!(
+            "provider {provider} is not configured"
+        )));
+    }
+    let key = TrackKey::new(provider, track_id.clone());
+    if !key.validate() {
+        return Err(ApiFailure::bad_request(format!("invalid track ID {key}")));
+    }
+
+    let track = if let Some(track) = state
+        .cache
+        .cached_tracks(provider)
+        .into_iter()
+        .find(|track| track.track_id == track_id)
+    {
+        let mut track = api_track(&track);
+        track.cached = true;
+        track
+    } else {
+        if state.settings.offline() {
+            return Err(ApiFailure::offline_unavailable(format!(
+                "track {provider}:{track_id} is not cached"
+            )));
+        }
+        state
+            .music
+            .track_detail(provider, &track_id)
+            .await
+            .map_err(|error| {
+                let lower = error.to_ascii_lowercase();
+                if lower.contains("not found")
+                    || lower.contains("not supported")
+                    || lower.contains("not synced")
+                {
+                    ApiFailure::not_found(format!("{provider}: {error}"))
+                } else {
+                    ApiFailure::upstream(format!("{provider}: {error}"))
+                }
+            })?
+            .track
+    };
+
+    let file = stats_file(&state, &track);
+    let audio = match file.as_ref() {
+        Some(file) => {
+            let path = std::path::PathBuf::from(&file.path);
+            match tokio::task::spawn_blocking(move || player::probe_audio(&path)).await {
+                Ok(Ok(facts)) => Some(TrackAudioStats {
+                    container: facts.container,
+                    codec: facts.codec,
+                    bitrate_kbps: facts.bitrate_kbps,
+                    sample_rate: facts.sample_rate,
+                    channels: facts.channels,
+                    bits_per_sample: facts.bits_per_sample,
+                    duration_secs: facts.duration_secs,
+                }),
+                _ => None,
+            }
+        }
+        None => None,
+    };
+    let source = track.source.as_deref().map(|source| {
+        let mut source = source.clone();
+        source.url = redact_url(&source.url);
+        source
+    });
+
+    let (playback, history) = {
+        let playback = state.playback.lock().await;
+        let snapshot = playback.snapshot();
+        let queue = playback.queue_snapshot();
+        let is_current = snapshot
+            .current
+            .as_ref()
+            .is_some_and(|current| current.key() == key);
+        let queue_index = queue.items.iter().position(|item| item.track.key() == key);
+        let entries: Vec<_> = playback
+            .history()
+            .into_iter()
+            .filter(|entry| entry.provider == provider && entry.track_id == track_id)
+            .collect();
+        let last = entries.first();
+        let playback_stats = TrackPlaybackStats {
+            mode: state.settings.mode(provider),
+            state: match snapshot.status {
+                PlaybackStatus::Stopped => PlaybackState::Stopped,
+                PlaybackStatus::Playing => PlaybackState::Playing,
+                PlaybackStatus::Paused => PlaybackState::Paused,
+            },
+            source_kind: if is_current {
+                snapshot.source_kind
+            } else {
+                None
+            },
+            position_secs: if is_current {
+                snapshot.position_secs
+            } else {
+                0.0
+            },
+            saved_position_secs: playback
+                .saved_position(&key)
+                .map(|position| position.as_secs_f64()),
+            queue_index,
+        };
+        let history = TrackHistoryStats {
+            play_count: entries.len() as u32,
+            last_played_at: last.map(|entry| entry.started_at),
+            last_completed: last.map(|entry| entry.completed),
+            last_played_secs: last.map(|entry| entry.played_secs),
+        };
+        (playback_stats, history)
+    };
+
+    Ok(Json(TrackStats {
+        track,
+        source,
+        file,
+        audio,
+        playback,
+        history,
+    }))
+}
+
+/// The local file behind one track.
+fn stats_file<S: AudioSink + Send + 'static>(
+    state: &AppState<S>,
+    track: &Track,
+) -> Option<TrackFileStats> {
+    let key = TrackKey::new(track.provider, track.track_id.clone());
+    let (path, sidecar, cached) = if track.provider == ProviderId::Local {
+        let source = track.source.as_ref()?;
+        let path = source.url.strip_prefix("file://").unwrap_or(&source.url);
+        (std::path::PathBuf::from(path), None, true)
+    } else {
+        let path = state.cache.audio_path(track.provider, &track.track_id)?;
+        let sidecar = state.cache.sidecar_path(track.provider, &track.track_id);
+        (path, sidecar, state.cache.is_cached(&key))
+    };
+    let metadata = std::fs::metadata(&path).ok()?;
+    let modified_unix = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_secs());
+    Some(TrackFileStats {
+        path: path.display().to_string(),
+        sidecar_path: sidecar.map(|path| path.display().to_string()),
+        size_bytes: metadata.len(),
+        modified_unix,
+        cached,
+    })
+}
+
+/// Remove a URL query and fragment. Keep a local file URL.
+fn redact_url(raw: &str) -> String {
+    if let Ok(mut url) = url::Url::parse(raw) {
+        if url.scheme() == "file" {
+            return raw.to_string();
+        }
+        url.set_query(None);
+        url.set_fragment(None);
+        let _ = url.set_username("");
+        let _ = url.set_password(None);
+        return url.to_string();
+    }
+    raw.split('?').next().unwrap_or(raw).to_string()
 }
 
 /// Set the like state of one track. The provider must report the
@@ -2122,7 +2303,7 @@ mod tests {
             provider: ProviderId,
             _id: &str,
         ) -> Result<TrackDetail, String> {
-            if provider != ProviderId::Podverse {
+            if provider != ProviderId::Podverse && provider != ProviderId::Local {
                 return Err("track detail is not supported".to_string());
             }
             self.track_detail
@@ -3284,6 +3465,25 @@ mod tests {
         );
     }
 
+    fn write_wav(path: &Path) {
+        let data_len = 800u32 * 2;
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"RIFF");
+        bytes.extend_from_slice(&(36 + data_len).to_le_bytes());
+        bytes.extend_from_slice(b"WAVEfmt ");
+        bytes.extend_from_slice(&16u32.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&8000u32.to_le_bytes());
+        bytes.extend_from_slice(&16000u32.to_le_bytes());
+        bytes.extend_from_slice(&2u16.to_le_bytes());
+        bytes.extend_from_slice(&16u16.to_le_bytes());
+        bytes.extend_from_slice(b"data");
+        bytes.extend_from_slice(&data_len.to_le_bytes());
+        bytes.resize(bytes.len() + data_len as usize, 0);
+        write_cache_file(path, &bytes);
+    }
+
     fn seed_podverse_cache(root: &Path) {
         seed_podverse_track(root, "1001", "Beta song", "42", "Channel One");
         seed_podverse_track(root, "1002", "Alpha song", "42", "Channel One");
@@ -4360,6 +4560,135 @@ mod tests {
         assert_eq!(response.status(), reqwest::StatusCode::OK);
         let body: serde_json::Value = response.json().await.unwrap();
         assert_eq!(body["track"]["cached"], true);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn track_stats_reports_a_cached_file() {
+        let dir = tempfile::tempdir().unwrap();
+        seed_podverse_cache(dir.path());
+        let (base, server) = start_server(test_state_in_with_providers(
+            dir.path(),
+            Arc::new(MockMusicApi::default()),
+            Arc::new(MockDownloads::default()),
+            vec![ProviderId::Rss, ProviderId::Podverse, ProviderId::Youtube],
+        ))
+        .await;
+        let response = reqwest::Client::new()
+            .get(format!("{base}/api/tracks/podverse/1002/stats"))
+            .send()
+            .await
+            .unwrap();
+        let status = response.status();
+        let text = response.text().await.unwrap();
+        assert_eq!(status, reqwest::StatusCode::OK, "{text}");
+        let body: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(body["track"]["title"], "Alpha song");
+        assert_eq!(body["file"]["cached"], true);
+        assert_eq!(body["file"]["size_bytes"], 10);
+        assert!(body["file"]["path"].as_str().unwrap().ends_with("1002.mp3"));
+        assert_eq!(body["history"]["play_count"], 0);
+        assert!(body["playback"]["mode"].is_string());
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn track_stats_probes_a_local_audio_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("song.wav");
+        write_wav(&path);
+        let music = Arc::new(MockMusicApi {
+            track_detail: Some(Ok(TrackDetail {
+                track: Track {
+                    provider: ProviderId::Local,
+                    track_id: "0123456789abcdef0123456789abcdef".to_string(),
+                    title: "Wav song".to_string(),
+                    artist: "Artist".to_string(),
+                    album: "Local files".to_string(),
+                    duration: "0:01".to_string(),
+                    source: Some(Box::new(common_structs::TrackSource {
+                        url: format!("file://{}", path.display()),
+                        mime: Some("audio/wav".to_string()),
+                        length: None,
+                        seekable: true,
+                        kind: common_structs::MediaKind::Audio,
+                    })),
+                    ..Default::default()
+                },
+                description: None,
+            })),
+            ..Default::default()
+        });
+        let state = test_state_in_with_providers(
+            dir.path(),
+            music,
+            Arc::new(MockDownloads::default()),
+            vec![ProviderId::Local],
+        );
+        let (base, server) = start_server(state).await;
+        let body: serde_json::Value = reqwest::Client::new()
+            .get(format!(
+                "{base}/api/tracks/local/0123456789abcdef0123456789abcdef/stats"
+            ))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(body["file"]["cached"], true);
+        assert_eq!(body["audio"]["container"], "wav");
+        assert_eq!(body["audio"]["sample_rate"], 8000);
+        assert_eq!(body["audio"]["channels"], 1);
+        assert_eq!(body["audio"]["bits_per_sample"], 16);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn track_stats_redacts_a_source_url() {
+        let dir = tempfile::tempdir().unwrap();
+        let track = CoreTrack {
+            provider: ProviderId::Podverse,
+            track_id: "3003".to_string(),
+            title: "Remote".to_string(),
+            author: "Artist".to_string(),
+            album: "Channel One".to_string(),
+            duration: "3:00".to_string(),
+            source: Some(Box::new(common_structs::TrackSource {
+                url: "https://example.com/song.mp3?token=secret".to_string(),
+                mime: Some("audio/mpeg".to_string()),
+                length: Some(10),
+                seekable: true,
+                kind: common_structs::MediaKind::Audio,
+            })),
+            metadata: None,
+            liked: None,
+        };
+        write_cache_file(
+            &dir.path().join("downloads/podverse/3003.mp3"),
+            b"audio-data",
+        );
+        write_cache_file(
+            &dir.path().join("downloads/podverse/3003.json"),
+            serde_json::to_string(&track).unwrap().as_bytes(),
+        );
+        let (base, server) = start_server(test_state_in_with_providers(
+            dir.path(),
+            Arc::new(MockMusicApi::default()),
+            Arc::new(MockDownloads::default()),
+            vec![ProviderId::Rss, ProviderId::Podverse, ProviderId::Youtube],
+        ))
+        .await;
+        let body: serde_json::Value = reqwest::Client::new()
+            .get(format!("{base}/api/tracks/podverse/3003/stats"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(body["source"]["url"], "https://example.com/song.mp3");
+        assert_eq!(body["file"]["cached"], true);
         server.abort();
     }
 

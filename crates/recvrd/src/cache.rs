@@ -138,6 +138,20 @@ impl CacheService {
         }
     }
 
+    /// The audio file for one track, when it exists.
+    pub fn audio_path(&self, provider: ProviderId, track_id: &str) -> Option<PathBuf> {
+        TrackKey::new(provider, track_id).existing_audio_file(&self.downloads_dir)
+    }
+
+    /// The metadata sidecar for one track, when it exists.
+    pub fn sidecar_path(&self, provider: ProviderId, track_id: &str) -> Option<PathBuf> {
+        let path = self
+            .downloads_dir
+            .join(provider.as_str())
+            .join(format!("{track_id}.json"));
+        path.is_file().then_some(path)
+    }
+
     /// True when a non-empty audio file exists for the track. An
     /// invalid key is never cached. A sidecar alone does not count:
     /// playback needs the audio file.
