@@ -1746,19 +1746,38 @@ pub async fn serve<S: AudioSink + Send + 'static>(
         rss,
         providers,
         settings,
-        Some(shutdown_rx),
+        Some(shutdown_rx.clone()),
         audio,
     );
-    let serve =
-        axum::serve(listener, router(state)).with_graceful_shutdown(shutdown_signal(shutdown_tx));
-    match tokio::time::timeout(SHUTDOWN_TIMEOUT, serve).await {
-        Ok(result) => result,
-        Err(_) => {
-            log::warn!(
-                "recvrd did not stop its HTTP listener within {}s; closing remaining connections",
-                SHUTDOWN_TIMEOUT.as_secs()
-            );
-            Ok(())
+    let serve = axum::serve(listener, router(state))
+        .with_graceful_shutdown(wait_for_shutdown(Some(shutdown_rx)));
+    serve_until_shutdown(serve, shutdown_signal(shutdown_tx)).await
+}
+
+/// Serve HTTP until a shutdown signal arrives.
+///
+/// After the signal, wait at most `SHUTDOWN_TIMEOUT` for open connections
+/// to close.
+async fn serve_until_shutdown<F, S>(serve: F, shutdown: S) -> io::Result<()>
+where
+    F: std::future::IntoFuture<Output = io::Result<()>>,
+    S: std::future::Future<Output = ()>,
+{
+    let serve = std::future::IntoFuture::into_future(serve);
+    tokio::pin!(serve);
+    tokio::select! {
+        result = serve.as_mut() => result,
+        _ = shutdown => {
+            match tokio::time::timeout(SHUTDOWN_TIMEOUT, serve.as_mut()).await {
+                Ok(result) => result,
+                Err(_) => {
+                    log::warn!(
+                        "recvrd did not stop its HTTP listener within {}s; closing remaining connections",
+                        SHUTDOWN_TIMEOUT.as_secs()
+                    );
+                    Ok(())
+                }
+            }
         }
     }
 }
@@ -4477,6 +4496,42 @@ mod tests {
             "the server must stop with an open SSE stream"
         );
         assert!(stopped.unwrap().is_ok(), "the server task must not panic");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn server_keeps_running_without_a_shutdown_signal() {
+        let server = tokio::spawn(serve_until_shutdown(
+            std::future::pending::<io::Result<()>>(),
+            std::future::pending::<()>(),
+        ));
+
+        tokio::task::yield_now().await;
+        tokio::time::advance(SHUTDOWN_TIMEOUT + Duration::from_secs(1)).await;
+        tokio::task::yield_now().await;
+
+        assert!(
+            !server.is_finished(),
+            "the daemon must not stop without a shutdown signal"
+        );
+        server.abort();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn shutdown_gives_open_connections_a_bounded_wait() {
+        let (signal_tx, signal_rx) = tokio::sync::oneshot::channel::<()>();
+        let server = tokio::spawn(serve_until_shutdown(
+            std::future::pending::<io::Result<()>>(),
+            async move {
+                let _ = signal_rx.await;
+            },
+        ));
+
+        signal_tx.send(()).unwrap();
+        tokio::task::yield_now().await;
+        tokio::time::advance(SHUTDOWN_TIMEOUT + Duration::from_secs(1)).await;
+
+        let result = server.await.unwrap();
+        assert!(result.is_ok());
     }
 
     #[tokio::test]
