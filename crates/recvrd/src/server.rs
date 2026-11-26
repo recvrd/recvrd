@@ -21,7 +21,7 @@ use recvrd_api::{
     RepeatMode as ApiRepeatMode, RepeatRequest, RetryDownloadRequest, RssFeed, SearchResults,
     SeekRequest, SetTrackLikeRequest, ShuffleRequest, Status, Track, TrackAudioStats, TrackDetail,
     TrackFileStats, TrackHistoryStats, TrackPlaybackStats, TrackStats, UpdatePlaylistRequest,
-    VolumeRequest,
+    VisualizerFrame, VolumeRequest,
 };
 use recvrd_core::{
     AudioOutput, AudioSink, AuthState as CoreAuthState, AuthStatus, CoreEvent, EventBus,
@@ -262,6 +262,7 @@ pub fn router<S: AudioSink + Send + 'static>(state: AppState<S>) -> Router {
         .route("/api/rss/feeds/{id}", delete(remove_rss_feed))
         .route("/api/rss/feeds/{id}/refresh", post(refresh_rss_feed))
         .route("/api/events", get(events))
+        .route("/api/visualizer/events", get(visualizer_events))
         .fallback(crate::web::static_handler)
         .with_state(state)
 }
@@ -1897,6 +1898,41 @@ async fn events<S: AudioSink + Send + 'static>(
         )],
         sse,
     )
+}
+
+/// Stream audio spectrum frames for the full player.
+async fn visualizer_events<S: AudioSink + Send + 'static>(
+    State(state): State<AppState<S>>,
+) -> Result<
+    Sse<impl futures_util::Stream<Item = Result<SseEvent, Infallible>> + Send + 'static>,
+    ApiFailure,
+> {
+    if player::visualizer_frame().is_none() {
+        return Err(ApiFailure::not_found("the visualizer is not available"));
+    }
+    let shutdown = state.shutdown.clone();
+    let guard = player::VisualizerGuard::new();
+    let stream = async_stream::stream! {
+        let _guard = guard;
+        let mut ticker = tokio::time::interval(Duration::from_millis(33));
+        loop {
+            tokio::select! {
+                _ = ticker.tick() => {
+                    let Some(frame) = player::visualizer_frame() else { break; };
+                    let data = serde_json::to_string(&VisualizerFrame {
+                        bands: frame.bands,
+                        peak: frame.peak,
+                    })
+                    .unwrap_or_default();
+                    yield Ok::<SseEvent, Infallible>(
+                        SseEvent::default().event("visualizer").data(data),
+                    );
+                }
+                _ = wait_for_shutdown(shutdown.clone()) => break,
+            }
+        }
+    };
+    Ok(Sse::new(stream))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -4997,6 +5033,18 @@ mod tests {
             "the server must stop with an open SSE stream"
         );
         assert!(stopped.unwrap().is_ok(), "the server task must not panic");
+    }
+
+    #[tokio::test]
+    async fn visualizer_events_requires_a_pipewire_output() {
+        let (base, server) = start_server(test_state()).await;
+        let response = reqwest::Client::new()
+            .get(format!("{base}/api/visualizer/events"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::NOT_FOUND);
+        server.abort();
     }
 
     #[tokio::test(start_paused = true)]

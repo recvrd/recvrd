@@ -39,6 +39,7 @@ export type FocusPane = 'sidebar' | 'main';
 
 export const PLAYER_LAYOUT_KEY = 'recvrd.player-layout';
 export const LEGACY_PLAYER_LAYOUT_KEY = 'ytermusicd.player-layout';
+export const VISUALIZER_KEY = 'recvrd.visualizer';
 export const PROVIDER_KEY = 'recvrd.provider';
 export const LEGACY_PROVIDER_KEY = 'ytermusicd.provider';
 
@@ -179,6 +180,7 @@ export class AppStore {
   geekStatsLoading = $state(false);
   geekStats = $state<TrackStats | null>(null);
   geekStatsTrack = $state<Track | null>(null);
+  visualizerOn = $state(readStored(VISUALIZER_KEY, VISUALIZER_KEY) === 'on');
   offlineHelpOpen = $state(false);
   trackDetail = $state<TrackDetail | null>(null);
   trackDetailKey = $state<string | null>(null);
@@ -1317,6 +1319,14 @@ export class AppStore {
     this.geekStatsTrack = null;
   }
 
+  toggleVisualizer(): void {
+    this.visualizerOn = !this.visualizerOn;
+    try {
+      globalThis.localStorage?.setItem(VISUALIZER_KEY, this.visualizerOn ? 'on' : 'off');
+    } catch {
+      // Storage can be denied.
+    }
+  }
   setPlayerLayout(layout: PlayerLayout): void {
     this.playerLayout = layout;
     try {

@@ -26,6 +26,9 @@
   The track menu and full player open it. It shows the provider key, source,
   local file, audio header, playback mode and listen history. URL queries and
   tokens are removed.
+- Add a full-player visualizer. The daemon streams 64 spectrum bands from the
+  PipeWire output at `/api/visualizer/events`. The web toggle is off by default
+  and stored in `localStorage`.
 
 ### Removed
 

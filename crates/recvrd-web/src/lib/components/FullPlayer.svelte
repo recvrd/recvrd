@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { AppStore } from '../store.svelte';
   import { coverUrl, durationSeconds, formatDuration, trackMetadataFacts } from '../api';
+  import Visualizer from './Visualizer.svelte';
 
   let { store }: { store: AppStore } = $props();
 
@@ -51,6 +52,15 @@
     <header class="full-header">
       <span class="prompt">$ now_playing</span>
       <div class="header-actions">
+        <button
+          class="visualizer-toggle"
+          aria-label="Toggle visualizer"
+          aria-pressed={store.visualizerOn}
+          title="Toggle visualizer"
+          onclick={() => store.toggleVisualizer()}
+        >
+          ▥
+        </button>
         <button
           class="stats"
           aria-label="Geek stats"
@@ -135,6 +145,10 @@
         {/if}
       </div>
     </div>
+
+    {#if store.visualizerOn}
+      <Visualizer />
+    {/if}
 
     <div class="timeline">
       <span class="time">{formatDuration(position)}</span>
@@ -280,6 +294,18 @@
     display: flex;
     align-items: center;
     gap: 0.4rem;
+  }
+
+  .visualizer-toggle {
+    padding: 0.25rem 0.5rem;
+    border-color: var(--border);
+    color: var(--fg-muted);
+    line-height: 1;
+  }
+
+  .visualizer-toggle[aria-pressed='true'] {
+    border-color: var(--accent-2);
+    color: var(--accent-2);
   }
 
   .stats {
