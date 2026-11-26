@@ -83,6 +83,53 @@ describe('NowPlaying', () => {
     expect(screen.getByText('40%')).toBeInTheDocument();
   });
 
+  it('shows one cached badge for a downloaded track that plays from a file', async () => {
+    const api = makeApi();
+    const store = new AppStore(api);
+    const track = makeTrack('v1');
+    store.status = makeStatus({
+      playback: {
+        state: 'playing',
+        current: track,
+        position_secs: 10,
+        volume: 50,
+        repeat: 'off',
+        shuffle: false,
+        source_kind: 'file',
+      },
+    });
+    store.queue = makeQueue([track], {
+      items: [{ track, download: downloadStatus('downloaded') }],
+    });
+    render(NowPlaying, { props: { store } });
+
+    expect(screen.getAllByText('cached')).toHaveLength(1);
+  });
+
+  it('shows both badges for a downloaded track that streams', async () => {
+    const api = makeApi();
+    const store = new AppStore(api);
+    const track = makeTrack('v1');
+    store.status = makeStatus({
+      playback: {
+        state: 'playing',
+        current: track,
+        position_secs: 10,
+        volume: 50,
+        repeat: 'off',
+        shuffle: false,
+        source_kind: 'stream',
+      },
+    });
+    store.queue = makeQueue([track], {
+      items: [{ track, download: downloadStatus('downloaded') }],
+    });
+    render(NowPlaying, { props: { store } });
+
+    expect(screen.getByText('streaming')).toBeInTheDocument();
+    expect(screen.getByText('cached')).toBeInTheDocument();
+  });
+
   it('opens the full player', async () => {
     const { store } = makeStore();
     render(NowPlaying, { props: { store } });

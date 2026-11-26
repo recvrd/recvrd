@@ -20,6 +20,10 @@
         ? 'cached'
         : null,
   );
+  // Hide the download badge when it repeats the source badge.
+  const showDownloadBadge = $derived(
+    download !== null && downloadLabel(download) !== sourceLabel,
+  );
 
   function commitSeek(value: number): void {
     scrub = null;
@@ -86,7 +90,7 @@
             <button class="retry" onclick={() => store.retryDownload(track)}>
               Download failed — retry
             </button>
-          {:else if download}
+          {:else if download && showDownloadBadge}
             <span class="badge {download.state}">{downloadLabel(download)}</span>
           {/if}
         </div>
