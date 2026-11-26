@@ -51,7 +51,9 @@ artifacts contain the real app.
 - **Now playing** shows the current track, cover art, controls, seek, volume,
   playback source and download state.
 - **Full player** shows the large cover, track metadata, links and the full
-  description when the provider serves one.
+  description when the provider serves one. A visualizer toggle shows a live
+  64-band spectrum from the daemon. The choice is stored in `localStorage`
+  under `recvrd.visualizer`.
 
 The top bar has a provider selector. It lists every provider from
 `GET /api/providers`. The choice is stored in `localStorage` under

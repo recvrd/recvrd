@@ -18,6 +18,9 @@ pub use player_options::PlayerOptions;
 mod probe;
 pub use probe::{AudioFacts, probe_audio};
 
+mod visualizer;
+pub use visualizer::{VisualizerFrame, VisualizerGuard, visualizer_frame};
+
 mod player_data;
 pub(crate) use player_data::{CurrentSource, PlayerData};
 

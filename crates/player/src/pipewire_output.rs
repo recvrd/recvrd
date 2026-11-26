@@ -19,7 +19,7 @@ use rodio::Sink;
 use rodio::mixer::{Mixer, MixerSource};
 use rtrb::{Consumer, Producer, PushError, RingBuffer};
 
-use crate::{PlayError, StreamErrorLog, StreamErrorThrottle};
+use crate::{PlayError, StreamErrorLog, StreamErrorThrottle, visualizer};
 use common_structs::SampleFormat;
 
 /// The output channels. The mixer converts every source to stereo.
@@ -269,6 +269,7 @@ struct StreamData {
     error_sender: flume::Sender<PlayError>,
     error_throttle: Arc<Mutex<StreamErrorThrottle>>,
     consumer: Consumer<f32>,
+    visualizer: Option<Producer<f32>>,
     flush: u64,
     pending: Option<f32>,
     scratch: Vec<f32>,
@@ -414,12 +415,15 @@ fn run(
 
     let ring_samples = shared.sample_rate as usize * CHANNELS * RING_SECONDS;
     let (producer, consumer) = RingBuffer::new(ring_samples);
+    let (visualizer_producer, visualizer_consumer) = RingBuffer::new(16_384);
+    visualizer::install(visualizer::start(visualizer_consumer, shared.sample_rate));
     let error_throttle = Arc::new(Mutex::new(StreamErrorThrottle::new()));
     let stream_data = StreamData {
         shared: shared.clone(),
         error_sender,
         error_throttle,
         consumer,
+        visualizer: Some(visualizer_producer),
         flush: 0,
         pending: None,
         scratch: vec![0.0; ring_samples],
@@ -712,6 +716,14 @@ fn write_samples(data: &mut StreamData, slice: &mut [u8]) -> (bool, bool, usize)
     };
 
     let frames_to_write = written_samples / CHANNELS;
+
+    if let Some(visualizer) = &mut data.visualizer {
+        for frame in 0..frames_to_write {
+            let left = data.scratch[frame * CHANNELS].clamp(-1.0, 1.0);
+            let right = data.scratch[frame * CHANNELS + 1].clamp(-1.0, 1.0);
+            let _ = visualizer.push((left + right) * 0.5);
+        }
+    }
 
     for frame in 0..max_frames {
         let offset = frame * frame_bytes;
@@ -1134,6 +1146,7 @@ mod tests {
             error_sender,
             error_throttle: Arc::new(Mutex::new(StreamErrorThrottle::new())),
             consumer,
+            visualizer: None,
             flush: 0,
             pending: None,
             scratch: vec![0.0; 16],
@@ -1186,6 +1199,7 @@ mod tests {
             error_sender: flume::unbounded().0,
             error_throttle: Arc::new(Mutex::new(StreamErrorThrottle::new())),
             consumer,
+            visualizer: None,
             flush: 0,
             pending: None,
             scratch: vec![0.0; 16],

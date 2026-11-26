@@ -783,6 +783,15 @@ pub enum EventKind {
     LibraryChanged,
 }
 
+/// One audio spectrum frame for the visualizer.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS, Default)]
+#[ts(export)]
+pub struct VisualizerFrame {
+    pub bands: Vec<u8>,
+    pub peak: u8,
+}
+
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export)]
