@@ -183,8 +183,11 @@ current queue. `.part` files and active downloads are never removed.
 
 The Nix flake stays the primary build. Docker serves users without Nix.
 
-The image builds for `amd64` and `arm64`. The build fetches the standalone
-`yt-dlp` asset for the target architecture. The asset needs no Python.
+The Dockerfile supports `amd64` and `arm64`. It selects the standalone `yt-dlp`
+asset for the target architecture. The asset needs no Python. CI builds the
+runtime image for `amd64` and the arm64 `yt-dlp` stage.
+
+The Compose files need Docker Compose v2.24 or later.
 
 ### Deploy
 
@@ -198,6 +201,9 @@ The build sets the image user from `UID` and `GID`. Rebuild the image after you
 change them. A named volume keeps the owner that it had at its first start.
 Remove the volumes after a user change, or correct their owner with `chown`.
 
+Set `YT_DLP_VERSION` in `.env` to update yt-dlp. Rebuild the image after the
+change. The default value is the release that the Dockerfile pins.
+
 Compose publishes the port on loopback only. The daemon binds `0.0.0.0` inside
 the container. The daemon trusts local clients. Use a reverse proxy with
 authentication for remote access. See the reverse proxy section above.
@@ -210,17 +216,19 @@ mount at `./config`. The music directory is a read-only bind mount.
 Run `docker compose -f compose.yaml -f compose.dev.yaml up --build`. The daemon
 runs from the source mount with `cargo run`. The web service builds the web UI
 to a shared volume and runs the Vite dev server on port 5173. The web service
-shares the daemon network. The Vite proxy sends `/api` to the daemon. Open
-`http://127.0.0.1:5173` for the dev UI. The dev stack publishes only port 5173.
-Restart the daemon container to reload Rust changes.
+shares the daemon network. The Vite proxy sends `/api` to the daemon. The web
+service starts after the daemon is healthy. Open `http://127.0.0.1:5173` for the
+dev UI. The dev API is at `http://127.0.0.1:18080`. Set `RECVRD_DEV_API_PORT`
+to change the API port. Restart the daemon container to reload Rust changes.
 
 The dev image carries `yt-dlp`, `ffmpeg`, and Node. The shared web volume keeps
 the embedded UI available while the source mount hides the image copy.
 
 ### Local audio
 
-The deploy compose file mounts no audio socket. The daemon serves the web UI and
-the API without audio. Playback needs the host PipeWire socket. Run
-`docker compose -f compose.yaml -f compose.audio.yaml up -d` to add the PipeWire
-and D-Bus mounts. MPRIS logs a warning without D-Bus. The daemon continues
-without it.
+The deploy and dev compose files mount no audio socket by default. The daemon
+serves the web UI and the API without audio. Playback needs the host PipeWire
+socket. Run `docker compose -f compose.yaml -f compose.audio.yaml up -d` for the
+deploy stack. Add `-f compose.dev.yaml` for the dev stack. The audio override
+mounts the PipeWire and D-Bus sockets. It does not create them. MPRIS logs a
+warning without D-Bus. The daemon continues without it.

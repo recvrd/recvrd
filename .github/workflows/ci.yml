@@ -157,7 +157,9 @@ jobs:
           context: .
           target: runtime
           load: true
-          tags: recvrd:test
+          tags: |
+            recvrd:test
+            recvrd:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -181,8 +183,33 @@ jobs:
       - name: Smoke test the development image
         run: |
           docker run --rm --entrypoint sh recvrd:dev-test -c '
-            for tool in yt-dlp ffmpeg node npm cargo; do
+            for tool in yt-dlp ffmpeg node npm cargo curl; do
               command -v "$tool"
             done
             test -f /app/crates/recvrd-web/dist/index.html
           '
+
+      - name: Check the Compose files
+        run: |
+          docker compose -f compose.yaml config -q
+          docker compose -f compose.yaml -f compose.dev.yaml config -q
+          docker compose -f compose.yaml -f compose.audio.yaml config -q
+
+      - name: Smoke test the Compose deployment
+        run: |
+          mkdir -p config
+          printf 'Cookie: SAPISID=test; __Secure-3PAPISID=test\nUser-Agent: Mozilla/5.0\n' > config/headers.txt
+          chmod 777 config
+          RECVRD_PORT=18080 docker compose up -d --no-build
+          for _ in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:18080/api/status >/dev/null; then
+              break
+            fi
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:18080/api/status
+          curl -fsS http://127.0.0.1:18080/ | grep -q 'id="app"'
+
+      - name: Stop the Compose deployment
+        if: always()
+        run: docker compose down -v

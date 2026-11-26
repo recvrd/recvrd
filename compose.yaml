@@ -14,6 +14,7 @@ services:
       args:
         UID: ${UID:-1000}
         GID: ${GID:-1000}
+        YT_DLP_VERSION: ${YT_DLP_VERSION:-2026.11.23}
     image: recvrd:latest
     container_name: recvrd
     restart: unless-stopped

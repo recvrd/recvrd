@@ -1,5 +1,5 @@
 # Build the web UI, the daemon, and the terminal client in separate stages.
-# The runtime stage carries the daemon, yt-dlp, and ffmpeg only.
+# The runtime stage carries the binaries, yt-dlp, ffmpeg, and the runtime libraries.
 # It carries no Rust toolchain, no Node toolchain, and no source code.
 # TLS uses rustls. The runtime needs ca-certificates, not libssl.
 # Storage uses flat files. The runtime needs no SQLite library.
@@ -45,11 +45,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Stage 4: build the Rust daemon and the terminal client.
 FROM rust:1.99-bookworm AS build
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ffmpeg \
     pkg-config \
     libclang-dev \
     libpipewire-0.3-dev \
-    libpipewire-0.3-modules \
     libdbus-1-dev \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
@@ -67,7 +65,12 @@ ARG GID=1000
 COPY --from=web /usr/local /usr/local
 COPY --from=ytdlp /usr/local/bin/yt-dlp /usr/local/bin/yt-dlp
 COPY --from=pipewire-config /usr/share/pipewire/client.conf /usr/share/pipewire/client.conf
-RUN groupadd --non-unique --gid "$GID" recvrd \
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    ffmpeg \
+    libpipewire-0.3-modules \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --non-unique --gid "$GID" recvrd \
     && useradd --non-unique --uid "$UID" --gid recvrd --home-dir /home/recvrd --no-create-home --shell /usr/sbin/nologin recvrd \
     && install -d -o recvrd -g recvrd -m 0755 \
          /home/recvrd \
@@ -82,6 +85,8 @@ ENV HOME=/home/recvrd
 ENV CARGO_HOME=/home/recvrd/.cargo
 ENV CARGO_TARGET_DIR=/cargo-target
 WORKDIR /app
+HEALTHCHECK --interval=30s --timeout=5s --start-period=600s --retries=3 \
+    CMD curl -fsS "http://127.0.0.1:${RECVRD_PORT:-8080}/api/status"
 ENTRYPOINT ["cargo", "run", "-p", "recvrd", "--bin", "recvrd", "--"]
 CMD ["serve"]
 
