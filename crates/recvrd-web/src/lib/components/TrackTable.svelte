@@ -13,6 +13,7 @@
     onselect,
     onplay,
     onqueue,
+    onqueuenext,
     onretry,
     onlike,
     onremove,
@@ -29,6 +30,7 @@
     onselect: (index: number) => void;
     onplay: (track: Track) => void;
     onqueue: (track: Track) => void;
+    onqueuenext: (track: Track) => void;
     onretry: (track: Track) => void;
     onlike?: (track: Track) => void;
     onremove?: (index: number) => void;
@@ -79,7 +81,8 @@
     if (!menu) return [];
     const items: MenuItem[] = [
       { label: 'Play now', action: () => onplay(menu!.track) },
-      { label: 'Add to queue', action: () => onqueue(menu!.track) },
+      { label: 'Queue next', action: () => onqueuenext(menu!.track) },
+      { label: 'Queue last', action: () => onqueue(menu!.track) },
       {
         label: 'Retry download',
         disabled: downloadStatus(menu.track).state !== 'failed',

@@ -83,7 +83,7 @@ prompt. A session that expires during pagination ends the load with
 | GET | `/api/tracks/{provider}/{track_id}/cover` | Cached cover art |
 | PUT | `/api/tracks/{provider}/{track_id}/like` | Set the track like state (`{liked}`) |
 | GET | `/api/queue` | Queue snapshot |
-| POST | `/api/queue` | Enqueue a track (alias: `/api/queue/add`) |
+| POST | `/api/queue` | Add a track (`{track, position}`; position is `next` or `last`, default `last`; alias: `/api/queue/add`) |
 | DELETE | `/api/queue` | Clear the queue |
 | POST | `/api/queue/reorder` | Move an item (`{from,to}`) |
 | POST | `/api/queue/remove` | Remove an item (`{index}`) |
@@ -596,6 +596,9 @@ curl http://127.0.0.1:8080/api/queue
 curl -X POST http://127.0.0.1:8080/api/queue \
   -H 'content-type: application/json' \
   -d '{"track":{"provider":"youtube","track_id":"abc123","title":"Song","artist":"Artist","album":"Album","duration":"3:24"}}'
+curl -X POST http://127.0.0.1:8080/api/queue \
+  -H 'content-type: application/json' \
+  -d '{"track":{"provider":"youtube","track_id":"abc123","title":"Song","artist":"Artist","album":"Album","duration":"3:24"},"position":"next"}'
 curl -X POST http://127.0.0.1:8080/api/queue/play-next \
   -H 'content-type: application/json' -d '{"index":4}'
 curl -X POST http://127.0.0.1:8080/api/queue/reorder \

@@ -16,8 +16,8 @@ use recvrd_api::{
     HistoryEntry as ApiHistoryEntry, MovePlaylistTrackRequest, MusicApi, OfflineRequest,
     OkResponse, PlayNextRequest, PlayPlaylistRequest, PlayTrackRequest, PlaybackModeRequest,
     PlaybackSnapshot as ApiPlaybackSnapshot, PlaybackState, Playlist, PlaylistDetail,
-    PlaylistEditError, ProviderInfo, Queue as ApiQueue, QueueItem as ApiQueueItem, QueueRequest,
-    RemovePlaylistTracksRequest, RemoveQueueRequest, ReorderQueueRequest,
+    PlaylistEditError, ProviderInfo, Queue as ApiQueue, QueueItem as ApiQueueItem, QueuePosition,
+    QueueRequest, RemovePlaylistTracksRequest, RemoveQueueRequest, ReorderQueueRequest,
     RepeatMode as ApiRepeatMode, RepeatRequest, RetryDownloadRequest, RssFeed, SearchResults,
     SeekRequest, SetTrackLikeRequest, ShuffleRequest, Status, Track, TrackDetail,
     UpdatePlaylistRequest, VolumeRequest,
@@ -1267,6 +1267,7 @@ async fn queue_add<S: AudioSink + Send + 'static>(
     if !key.validate() {
         return Err(ApiFailure::bad_request(format!("invalid track ID {key}")));
     }
+    let position = request.position.unwrap_or_default();
     let track = core_track(request.track);
     let mode = state.settings.mode(track.provider);
     if !state.settings.offline()
@@ -1276,7 +1277,10 @@ async fn queue_add<S: AudioSink + Send + 'static>(
         state.downloads.queue_tracks(std::slice::from_ref(&track));
     }
     let mut playback = state.playback.lock().await;
-    playback.enqueue(track);
+    match position {
+        QueuePosition::Next => playback.enqueue_next(track),
+        QueuePosition::Last => playback.enqueue(track),
+    }
     Ok(Json(api_queue(&playback.queue_snapshot())))
 }
 
@@ -3129,7 +3133,10 @@ mod tests {
         rss_track.provider = ProviderId::Rss;
         client
             .post(format!("{base}/api/queue"))
-            .json(&QueueRequest { track: rss_track })
+            .json(&QueueRequest {
+                track: rss_track,
+                position: None,
+            })
             .send()
             .await
             .unwrap();
@@ -3154,6 +3161,7 @@ mod tests {
             .post(format!("{base}/api/queue"))
             .json(&QueueRequest {
                 track: podverse_track,
+                position: None,
             })
             .send()
             .await
@@ -3644,6 +3652,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn queue_next_inserts_after_the_current_track() {
+        let (base, server) = start_server(test_state()).await;
+        let client = reqwest::Client::new();
+        for id in ["aaaaaaaaaaa", "bbbbbbbbbbb", "ccccccccccc"] {
+            client
+                .post(format!("{base}/api/queue"))
+                .json(&QueueRequest {
+                    track: track(id),
+                    position: None,
+                })
+                .send()
+                .await
+                .unwrap();
+        }
+        let body: serde_json::Value = client
+            .post(format!("{base}/api/queue"))
+            .json(&QueueRequest {
+                track: track("ddddddddddd"),
+                position: Some(QueuePosition::Next),
+            })
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let ids: Vec<_> = body["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["track"]["track_id"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            ids,
+            vec!["aaaaaaaaaaa", "ddddddddddd", "bbbbbbbbbbb", "ccccccccccc"]
+        );
+        assert_eq!(body["current"], 0);
+        server.abort();
+    }
+
+    #[tokio::test]
     async fn queue_mutations() {
         let (base, server) = start_server(test_state()).await;
         let client = reqwest::Client::new();
@@ -3660,6 +3709,7 @@ mod tests {
             .post(format!("{base}/api/queue"))
             .json(&QueueRequest {
                 track: track("9bZkp7q19f0"),
+                position: None,
             })
             .send()
             .await
@@ -3816,6 +3866,7 @@ mod tests {
                 .post(format!("{base}/api/queue"))
                 .json(&QueueRequest {
                     track: track(track_id),
+                    position: None,
                 })
                 .send()
                 .await
@@ -4521,6 +4572,7 @@ mod tests {
             .post(format!("{base}/api/queue"))
             .json(&QueueRequest {
                 track: track("9bZkp7q19f0"),
+                position: None,
             })
             .send()
             .await
@@ -5263,6 +5315,7 @@ mod tests {
             .post(format!("{base}/api/queue"))
             .json(&QueueRequest {
                 track: track("dQw4w9WgXcQ"),
+                position: None,
             })
             .send()
             .await

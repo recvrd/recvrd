@@ -276,6 +276,24 @@ describe('api client', () => {
     });
   });
 
+  it('sends the position when queueing next', async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      new Response(JSON.stringify({ items: [], current: null, repeat: 'off', shuffle: false }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const track = makeTrack('v9');
+    const api = createApi();
+
+    await api.queueAdd(track, 'next');
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({
+      method: 'POST',
+      body: JSON.stringify({ track, position: 'next' }),
+    });
+  });
+
   it('reads cache sizes', async () => {
     const sizes = {
       downloads_bytes: 2048,

@@ -20,6 +20,8 @@
   that directory. Local files come first in the provider order.
 - Read tag metadata and cover art for local files. The file name and folder
   remain the fallback.
+- Add Queue next and Queue last actions. Queue next inserts a track after the
+  current track. Queue last appends it. The web UI, TUI and MCP offer both.
 
 ### Removed
 

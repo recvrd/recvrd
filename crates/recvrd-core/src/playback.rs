@@ -1119,6 +1119,11 @@ impl<S: AudioSink> PlaybackService<S> {
         self.publish_queue();
     }
 
+    pub fn enqueue_next(&mut self, track: Track) {
+        self.queue.enqueue_next(track);
+        self.publish_queue();
+    }
+
     pub async fn remove(&mut self, index: usize) -> Result<(), PlaybackError> {
         let was_current = self.queue.current_index() == Some(index);
         if let Some(removed) = self.queue.remove(index) {

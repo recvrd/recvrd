@@ -1,7 +1,7 @@
 use recvrd_api::{
     CreatePlaylistRequest, DownloadSummary, OkResponse, PlaybackMode, Playlist, PlaylistDetail,
-    PlaylistPrivacy, ProviderId, ProviderInfo, Queue, QueueItem, RepeatMode, RssFeed,
-    SearchResults, Status, Track, TrackDetail, TrackKey, UpdatePlaylistRequest,
+    PlaylistPrivacy, ProviderId, ProviderInfo, Queue, QueueItem, QueuePosition, RepeatMode,
+    RssFeed, SearchResults, Status, Track, TrackDetail, TrackKey, UpdatePlaylistRequest,
 };
 use recvrd_client::DaemonClient;
 use rmcp::{
@@ -133,6 +133,15 @@ pub struct MovePlaylistTrackArgs {
 pub struct TrackArgs {
     /// Track object from search or get_playlist.
     pub track: Track,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct QueueAddArgs {
+    /// Track object from search or get_playlist.
+    pub track: Track,
+    /// Where to insert the track. Default: last.
+    #[serde(default)]
+    pub position: Option<QueuePosition>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -442,13 +451,13 @@ impl McpServer {
     }
 
     /// Add a track to the queue.
-    #[tool(description = "Add a track to the queue")]
+    #[tool(description = "Add a track to the queue. Use position next or last.")]
     async fn queue_add(
         &self,
-        Parameters(args): Parameters<TrackArgs>,
+        Parameters(args): Parameters<QueueAddArgs>,
     ) -> Result<Json<Queue>, McpError> {
         self.client
-            .queue_add(args.track)
+            .queue_add_at(args.track, args.position)
             .await
             .map(Json)
             .map_err(to_mcp)
@@ -1522,7 +1531,10 @@ mod tests {
         assert_eq!(played.playback.state, PlaybackState::Playing);
 
         let Json(queued) = server
-            .queue_add(Parameters(TrackArgs { track }))
+            .queue_add(Parameters(QueueAddArgs {
+                track,
+                position: None,
+            }))
             .await
             .unwrap();
         assert_eq!(queued.items.len(), 1);

@@ -62,7 +62,7 @@ reports an auth problem.
 | `Tab` | Switch focus between the sidebar and the main view |
 | `Enter` | Play or open the selected item |
 | `Space` | Play or pause |
-| `x` | Add the selected track to the queue |
+| `x` | Add the selected track to the end of the queue |
 | `a` | Add the selected track to a playlist |
 | `dd` | Delete the selected playlist, track or queue item |
 | `D` | Clear the queue (queue view) |
@@ -94,6 +94,8 @@ to confirm or `n` to cancel.
 - Click a row to select it. Double click a playlist or track to open or play it.
 - Click a search result to open or play it.
 - Right click a row to open the context menu.
+- The context menu offers Queue next and Queue last. Queue next inserts the
+  track after the current track. Queue last appends it.
 - Scroll over a pane to move its selection.
 - Click the progress bar to seek.
 - Click the volume bar to set the volume.
