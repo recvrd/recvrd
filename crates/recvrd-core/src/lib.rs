@@ -6,6 +6,7 @@ pub mod config;
 pub mod cover;
 pub mod events;
 pub mod history;
+pub mod local_playlists;
 pub mod model;
 pub mod paths;
 pub mod playback;
@@ -21,6 +22,10 @@ pub use cover::CoverFetcher;
 pub use events::{CoreEvent, EventBus, EventEnvelope, Snapshot};
 pub use history::{
     HISTORY_MAX_ENTRIES, HISTORY_MIN_PLAY_SECS, HISTORY_RETENTION_SECS, History, HistoryEntry,
+};
+pub use local_playlists::{
+    LOCAL_PLAYLISTS_VERSION, LocalPlaylist, LocalPlaylistError, LocalPlaylistStore,
+    LocalPlaylistSummary, LocalPlaylistsFile, MAX_LOCAL_PLAYLIST_NAME,
 };
 pub use model::{
     AudioOutput, PlaybackSnapshot, PlaybackStatus, Queue, QueueItem, QueueSnapshot, RepeatMode,

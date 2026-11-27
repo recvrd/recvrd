@@ -29,6 +29,8 @@
 - Add a full-player visualizer. The daemon streams 64 spectrum bands from the
   PipeWire output at `/api/visualizer/events`. The web toggle is off by default
   and stored in `localStorage`.
+- Add daemon-local playlists that can mix tracks from every provider. The
+  daemon stores them in `playlists.json`, and they survive a restart.
 
 ### Removed
 

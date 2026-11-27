@@ -2,8 +2,8 @@ use clap::{Parser, Subcommand};
 use common_structs::{PlaybackMode, ProviderId};
 use recvrd_api::{CacheCleanRequest, CacheCleanResult, CacheScope, MusicApi};
 use recvrd_core::{
-    AuthStatus, DaemonConfig, Downloader as ConfigDownloader, Paths, PersistedState,
-    PlaybackService, PlaybackSettingsStore, is_loopback_bind, resolve_auth,
+    AuthStatus, DaemonConfig, Downloader as ConfigDownloader, LocalPlaylistStore, Paths,
+    PersistedState, PlaybackService, PlaybackSettingsStore, is_loopback_bind, resolve_auth,
 };
 use std::{
     path::{Path, PathBuf},
@@ -455,6 +455,7 @@ fn run_serve(
         let offline = Arc::new(AtomicBool::new(settings.offline()));
 
         let rss = Arc::new(RssProvider::new(paths.rss_feeds_file()));
+        let local_playlists = Arc::new(LocalPlaylistStore::new(paths.local_playlists_file()));
         if offline.load(Ordering::SeqCst) {
             log::info!("offline mode is on; skipping the RSS refresh");
         } else {
@@ -714,6 +715,7 @@ fn run_serve(
             commands,
             dbus,
             rss,
+            local_playlists,
             providers,
             settings,
         )
