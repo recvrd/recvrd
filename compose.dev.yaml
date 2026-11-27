@@ -1,0 +1,55 @@
+# Develop the daemon with Compose.
+# This file overrides compose.yaml. Use both files together.
+# The daemon runs from the source mount with cargo run.
+# The web service builds the embedded UI and runs the Vite dev server.
+# The web service shares the daemon network.
+# The Vite proxy sends /api to 127.0.0.1:8080 in that network.
+# The daemon binds 0.0.0.0 inside the container.
+# The dev stack publishes the UI on 5173 and the API on 18080.
+# Add compose.audio.yaml for local audio and MPRIS.
+services:
+  recvrd:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: dev
+    image: recvrd:dev
+    entrypoint: ["cargo", "run", "-p", "recvrd", "--bin", "recvrd", "--"]
+    command: ["serve"]
+    depends_on:
+      web-init:
+        condition: service_completed_successfully
+    ports: !override
+      - "127.0.0.1:5173:5173"
+      - "127.0.0.1:${RECVRD_DEV_API_PORT:-18080}:8080"
+    volumes:
+      - .:/app
+      - recvrd-cargo-target:/cargo-target
+      - recvrd-cargo-home:/home/recvrd/.cargo
+      - recvrd-web-dist:/app/crates/recvrd-web/dist
+  web-init:
+    image: node:22-bookworm-slim
+    user: "${UID:-1000}:${GID:-1000}"
+    volumes:
+      - .:/repo
+    command: ["sh", "-c", "mkdir -p /repo/crates/recvrd-web/dist /repo/crates/recvrd-web/node_modules"]
+  web:
+    image: node:22-bookworm-slim
+    working_dir: /repo/crates/recvrd-web
+    network_mode: service:recvrd
+    depends_on:
+      recvrd:
+        condition: service_healthy
+      web-init:
+        condition: service_completed_successfully
+    volumes:
+      - .:/repo
+      - web-node-modules:/repo/crates/recvrd-web/node_modules
+      - recvrd-web-dist:/repo/crates/recvrd-web/dist
+    command: sh -c "npm ci && npm run build && npm run dev -- --host 0.0.0.0 --port 5173"
+
+volumes:
+  recvrd-cargo-target:
+  recvrd-cargo-home:
+  recvrd-web-dist:
+  web-node-modules:

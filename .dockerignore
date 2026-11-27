@@ -1,0 +1,13 @@
+.git
+.github
+.gitignore
+target
+node_modules
+dist
+crates/recvrd-web/dist
+crates/recvrd-web/node_modules
+.env
+recvrd.env
+config
+music
+*.log

@@ -1,0 +1,20 @@
+# Add local audio and MPRIS to the deploy or dev stack.
+# Use with compose.yaml and, for development, compose.dev.yaml.
+# The host needs the PipeWire and D-Bus sockets. The mounts do not create them.
+services:
+  recvrd:
+    environment:
+      DBUS_SESSION_BUS_ADDRESS: unix:path=/run/user/${UID:-1000}/bus
+    volumes:
+      - type: bind
+        source: ${XDG_RUNTIME_DIR:-/run/user/${UID:-1000}}/pipewire-0
+        target: /run/user/${UID:-1000}/pipewire-0
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${XDG_RUNTIME_DIR:-/run/user/${UID:-1000}}/bus
+        target: /run/user/${UID:-1000}/bus
+        read_only: true
+        bind:
+          create_host_path: false

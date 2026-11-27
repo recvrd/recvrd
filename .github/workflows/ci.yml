@@ -128,3 +128,88 @@ jobs:
 
       - name: Build Nix packages
         run: nix build .#recvrd .#recvc
+
+  docker:
+    name: Docker image
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build the arm64 yt-dlp stage
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: ytdlp
+          platforms: linux/arm64
+          cache-from: type=gha
+
+      - name: Build the runtime image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: runtime
+          load: true
+          tags: |
+            recvrd:test
+            recvrd:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build the development image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: dev
+          load: true
+          tags: recvrd:dev-test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test the runtime image
+        run: |
+          docker run --rm --entrypoint /usr/local/bin/yt-dlp recvrd:test --version
+          docker run --rm --entrypoint /usr/bin/ffmpeg recvrd:test -version
+          docker run --rm --entrypoint /usr/local/bin/recvrd recvrd:test --version
+          docker run --rm --entrypoint sh recvrd:test -c 'test "$HOME" = /home/recvrd'
+
+      - name: Smoke test the development image
+        run: |
+          docker run --rm --entrypoint sh recvrd:dev-test -c '
+            for tool in yt-dlp ffmpeg node npm cargo curl; do
+              command -v "$tool"
+            done
+            test -f /app/crates/recvrd-web/dist/index.html
+          '
+
+      - name: Check the Compose files
+        run: |
+          docker compose -f compose.yaml config -q
+          docker compose -f compose.yaml -f compose.dev.yaml config -q
+          docker compose -f compose.yaml -f compose.audio.yaml config -q
+
+      - name: Smoke test the Compose deployment
+        run: |
+          mkdir -p config
+          printf 'Cookie: SAPISID=test; __Secure-3PAPISID=test\nUser-Agent: Mozilla/5.0\n' > config/headers.txt
+          chmod 777 config
+          RECVRD_PORT=18080 docker compose up -d --no-build
+          for _ in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:18080/api/status >/dev/null; then
+              break
+            fi
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:18080/api/status
+          curl -fsS http://127.0.0.1:18080/ | grep -q 'id="app"'
+
+      - name: Stop the Compose deployment
+        if: always()
+        run: docker compose down -v

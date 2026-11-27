@@ -21,3 +21,11 @@ node_modules/
 dist/
 # Generated TS bindings used from recvrd-api
 crates/common-structs/bindings/
+
+# Docker
+.env
+recvrd.env
+/config/*
+!/config/.gitkeep
+/music/*
+!/music/.gitkeep
