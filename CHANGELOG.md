@@ -40,6 +40,8 @@
   playlist, and the playlist URL includes the provider.
 - Keep a YouTube playlist on YouTube when a legacy URL or a stale list names
   another provider.
+- Update the liked marker before the Like or Unlike request finishes. A
+  failed request restores the marker, and rapid clicks keep the last state.
 
 ## 0.7.0 — 2026-11-22
 

@@ -205,6 +205,20 @@ describe('LibraryView', () => {
     expect(screen.getByLabelText('Liked')).toBeInTheDocument();
   });
 
+  it('shows the liked marker before the daemon answers', async () => {
+    const { api, store } = setupPlaylist();
+    store.providers = [makeProviderInfo()];
+    api.setTrackLike = vi.fn(() => new Promise<{ ok: boolean }>(() => {}));
+    const { container } = render(LibraryView, { props: { store } });
+
+    await fireEvent.contextMenu(container.querySelectorAll('.row')[0]);
+    await fireEvent.click(screen.getByRole('menuitem', { name: 'Like' }));
+    await tick();
+
+    expect(store.playlist?.tracks[0].liked).toBe(true);
+    expect(screen.getByLabelText('Liked')).toBeInTheDocument();
+  });
+
   it('hides the like action when the account is signed out', async () => {
     const { store } = setupPlaylist();
     store.providers = [

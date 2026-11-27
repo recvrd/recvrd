@@ -23,6 +23,7 @@ import {
   makeQueue,
   makeStatus,
   makeTrack,
+  makeTrackDetail,
 } from '../test/fixtures';
 
 function setup() {
@@ -38,6 +39,22 @@ function setup() {
     searchDebounceMs: 250,
   });
   return { api, store, sources };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  return { promise, resolve, reject };
+}
+
+async function flushMicrotasks(): Promise<void> {
+  for (let index = 0; index < 8; index += 1) {
+    await Promise.resolve();
+  }
 }
 
 describe('queue helpers', () => {
@@ -1811,33 +1828,136 @@ describe('AppStore', () => {
 });
 
 describe('track likes', () => {
-  it('sends the like and updates every local copy', async () => {
+  it('updates every local copy before the daemon answers', async () => {
     const { api, store } = setup();
     const track = makeTrack('v1');
     store.playlist = { playlist: makePlaylist('p1'), tracks: [track] };
     store.queue = makeQueue([track]);
     store.searchResults = { tracks: [track], playlists: [] };
+    store.trackDetail = makeTrackDetail(track);
+    const request = deferred<{ ok: boolean }>();
+    api.setTrackLike = vi.fn(() => request.promise);
 
-    await store.setTrackLike(track, true);
+    const pending = store.setTrackLike(track, true);
 
     expect(api.setTrackLike).toHaveBeenCalledWith('youtube', 'v1', true);
     expect(store.playlist?.tracks[0].liked).toBe(true);
     expect(store.queue?.items[0].track.liked).toBe(true);
     expect(store.searchResults?.tracks[0].liked).toBe(true);
+    expect(store.trackDetail?.track.liked).toBe(true);
+    expect(store.toasts).toHaveLength(0);
+
+    request.resolve({ ok: true });
+    await pending;
+
+    expect(store.toasts.at(-1)?.message).toContain('Added');
     store.dispose();
   });
 
-  it('keeps the local state when the like fails', async () => {
+  it('rolls back every local copy when the like fails', async () => {
     const { api, store } = setup();
     const track = makeTrack('v1');
     store.playlist = { playlist: makePlaylist('p1'), tracks: [track] };
+    store.queue = makeQueue([track]);
+    store.searchResults = { tracks: [track], playlists: [] };
+    store.trackDetail = makeTrackDetail(track);
     api.setTrackLike = vi.fn(async () => {
-      throw new ApiError('no session', 'auth_expired');
+      throw new ApiError('like failed', 'upstream_error', 502);
     });
 
-    await store.setTrackLike(track, true);
+    const pending = store.setTrackLike(track, true);
+    expect(store.playlist?.tracks[0].liked).toBe(true);
+
+    await pending;
 
     expect(store.playlist?.tracks[0].liked).toBeUndefined();
+    expect(store.queue?.items[0].track.liked).toBeUndefined();
+    expect(store.searchResults?.tracks[0].liked).toBeUndefined();
+    expect(store.trackDetail?.track.liked).toBeUndefined();
+    expect(store.toasts.at(-1)?.message).toContain('like failed');
+    store.dispose();
+  });
+
+  it('resolves rapid clicks to the last requested state', async () => {
+    const { api, store } = setup();
+    const track = makeTrack('v1');
+    store.playlist = { playlist: makePlaylist('p1'), tracks: [track] };
+    const first = deferred<{ ok: boolean }>();
+    const second = deferred<{ ok: boolean }>();
+    const requests = [first, second];
+    api.setTrackLike = vi.fn(() => requests.shift()!.promise);
+
+    const like = store.setTrackLike(track, true);
+    const unlike = store.setTrackLike(track, false);
+
+    expect(store.playlist?.tracks[0].liked).toBe(false);
+    expect(api.setTrackLike).toHaveBeenCalledTimes(1);
+    expect(api.setTrackLike).toHaveBeenLastCalledWith('youtube', 'v1', true);
+
+    first.resolve({ ok: true });
+    await flushMicrotasks();
+
+    expect(store.playlist?.tracks[0].liked).toBe(false);
+    expect(api.setTrackLike).toHaveBeenCalledTimes(2);
+    expect(api.setTrackLike).toHaveBeenLastCalledWith('youtube', 'v1', false);
+
+    second.resolve({ ok: true });
+    await Promise.all([like, unlike]);
+
+    expect(store.playlist?.tracks[0].liked).toBe(false);
+    expect(store.toasts.at(-1)?.message).toContain('Removed');
+    store.dispose();
+  });
+
+  it('rolls back to the last confirmed state when the latest click fails', async () => {
+    const { api, store } = setup();
+    const track = makeTrack('v1');
+    store.playlist = { playlist: makePlaylist('p1'), tracks: [track] };
+    const first = deferred<{ ok: boolean }>();
+    const second = deferred<{ ok: boolean }>();
+    const requests = [first, second];
+    api.setTrackLike = vi.fn(() => requests.shift()!.promise);
+
+    const like = store.setTrackLike(track, true);
+    const unlike = store.setTrackLike(track, false);
+    first.resolve({ ok: true });
+    await flushMicrotasks();
+    expect(api.setTrackLike).toHaveBeenLastCalledWith('youtube', 'v1', false);
+
+    second.reject(new ApiError('unlike failed', 'upstream_error', 502));
+    await Promise.all([like, unlike]);
+
+    expect(store.playlist?.tracks[0].liked).toBe(true);
+    expect(store.toasts.at(-1)?.message).toContain('unlike failed');
+    store.dispose();
+  });
+
+  it('ignores a failed request when a newer click is pending', async () => {
+    const { api, store } = setup();
+    const track = makeTrack('v1');
+    store.playlist = { playlist: makePlaylist('p1'), tracks: [track] };
+    const first = deferred<{ ok: boolean }>();
+    const second = deferred<{ ok: boolean }>();
+    const requests = [first, second];
+    api.setTrackLike = vi.fn(() => requests.shift()!.promise);
+
+    const like = store.setTrackLike(track, true);
+    const unlike = store.setTrackLike(track, false);
+    first.reject(new ApiError('like failed', 'upstream_error', 502));
+    await flushMicrotasks();
+
+    expect(api.setTrackLike).toHaveBeenCalledTimes(2);
+    expect(api.setTrackLike).toHaveBeenLastCalledWith('youtube', 'v1', false);
+    expect(store.playlist?.tracks[0].liked).toBe(false);
+
+    second.resolve({ ok: true });
+    await Promise.all([like, unlike]);
+
+    expect(store.playlist?.tracks[0].liked).toBe(false);
+    expect(store.toasts.some((toast) => toast.message.includes('like failed'))).toBe(
+      false,
+    );
+    expect(store.toasts.at(-1)?.message).toContain('Removed');
     store.dispose();
   });
 

@@ -114,6 +114,21 @@ export interface StoreOptions {
   clearIntervalFn?: typeof clearInterval;
 }
 
+/// The local like state for one track key.
+interface TrackLikeState {
+  provider: ProviderId;
+  trackId: string;
+  title: string;
+  /// The last state the daemon confirmed.
+  confirmed: boolean | null | undefined;
+  /// The state the latest click requested.
+  desired: boolean;
+  /// True when a click waits for the worker.
+  pending: boolean;
+  running: boolean;
+  done?: Promise<void>;
+}
+
 const DEFAULT_TOAST_TTL = 6000;
 const DEFAULT_SEARCH_DEBOUNCE = 250;
 
@@ -233,6 +248,8 @@ export class AppStore {
   private playlistsGeneration = 0;
   /// Guards against an older track-detail response overwriting a newer one.
   private trackDetailRequest = 0;
+  /// The local like state for each track key.
+  private readonly trackLikes = new Map<string, TrackLikeState>();
 
   constructor(api: RecvrdApi = createApi(), options: StoreOptions = {}) {
     this.api = api;
@@ -1163,27 +1180,86 @@ export class AppStore {
     }
   }
 
-  /// Set the like state of one track on the provider and update the
-  /// local lists. The daemon reports the result; a failure keeps the
-  /// local state.
-  async setTrackLike(track: Track, liked: boolean): Promise<void> {
+  /// Set the like state of one track on the provider. The local copies
+  /// update first. The request runs in the background. A rapid click
+  /// replaces the pending state. A failure rolls back to the last state
+  /// the daemon confirmed.
+  setTrackLike(track: Track, liked: boolean): Promise<void> {
+    const key = `${track.provider}:${track.track_id}`;
+    let state = this.trackLikes.get(key);
+    if (!state) {
+      state = {
+        provider: track.provider,
+        trackId: track.track_id,
+        title: track.title,
+        confirmed: track.liked,
+        desired: liked,
+        pending: true,
+        running: false,
+      };
+      this.trackLikes.set(key, state);
+    } else {
+      state.title = track.title;
+      state.desired = liked;
+      state.pending = true;
+    }
+    this.applyTrackLike(track.provider, track.track_id, liked);
+    if (state.running) return state.done ?? Promise.resolve();
+    if (state.desired === state.confirmed) {
+      state.pending = false;
+      return Promise.resolve();
+    }
+    state.running = true;
+    const done = this.flushTrackLike(state);
+    state.done = done;
+    return done;
+  }
+
+  /// Send the latest requested like state. Rapid clicks coalesce when
+  /// the final state matches the request in flight.
+  private async flushTrackLike(state: TrackLikeState): Promise<void> {
     try {
-      await this.api.setTrackLike(track.provider, track.track_id, liked);
-      this.applyTrackLike(track, liked);
-      this.notify(
-        'success',
-        liked
-          ? `Added “${track.title}” to Liked Music.`
-          : `Removed “${track.title}” from Liked Music.`,
-      );
-    } catch (error) {
-      this.report(error);
+      while (state.pending) {
+        state.pending = false;
+        if (state.desired === state.confirmed) continue;
+        const requested = state.desired;
+        try {
+          await this.api.setTrackLike(state.provider, state.trackId, requested);
+          state.confirmed = requested;
+          if (state.desired === requested) {
+            this.notify(
+              'success',
+              requested
+                ? `Added “${state.title}” to Liked Music.`
+                : `Removed “${state.title}” from Liked Music.`,
+            );
+            state.pending = false;
+            break;
+          }
+        } catch (error) {
+          if (state.desired !== requested) continue;
+          this.applyTrackLike(state.provider, state.trackId, state.confirmed);
+          this.report(error);
+          state.pending = false;
+          break;
+        }
+      }
+    } finally {
+      state.running = false;
+      state.done = undefined;
+      if (!state.pending) {
+        this.trackLikes.delete(`${state.provider}:${state.trackId}`);
+      }
     }
   }
 
   /// Apply a like state to every local copy of one track.
-  private applyTrackLike(track: Track, liked: boolean): void {
-    const key = `${track.provider}:${track.track_id}`;
+  private applyTrackLike(
+    provider: ProviderId,
+    trackId: string,
+    liked: boolean | null | undefined,
+  ): void {
+    const key = `${provider}:${trackId}`;
     const apply = (entry: Track): Track =>
       `${entry.provider}:${entry.track_id}` === key ? { ...entry, liked } : entry;
     if (this.playlist) {
