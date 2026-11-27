@@ -97,7 +97,7 @@
             title={`${playlist.name} — ${playlist.subtitle}`}
             onclick={() => {
               store.selectSidebar(index);
-              store.openPlaylist(playlist.id, playlist.name);
+              void store.openListedPlaylist(playlist);
             }}
           >
             <span class="playlist-name">{playlist.name}</span>

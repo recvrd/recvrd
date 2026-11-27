@@ -38,6 +38,8 @@
 
 - Keep a playlist bound to its provider. Changing the provider closes an open
   playlist, and the playlist URL includes the provider.
+- Keep a YouTube playlist on YouTube when a legacy URL or a stale list names
+  another provider.
 
 ## 0.7.0 — 2026-11-22
 

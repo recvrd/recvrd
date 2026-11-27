@@ -1113,6 +1113,73 @@ describe('AppStore', () => {
     store.dispose();
   });
 
+  const youtubePlaylistId = 'VLPLEuTNuVCEhNzkvPXmcaJr4dRrjnWM-uxW';
+
+  it('uses YouTube for a legacy YouTube playlist URL', async () => {
+    window.history.replaceState(null, '', `/#/playlist/${youtubePlaylistId}`);
+    localStorage.setItem(PROVIDER_KEY, 'podverse');
+    const { api, store } = setup();
+    api.providers = vi.fn(async () => [
+      makeProviderInfo(),
+      makeProviderInfo({ id: 'podverse', name: 'Podverse', default: false }),
+    ]);
+    await store.init();
+
+    expect(api.playlist).toHaveBeenCalledWith(youtubePlaylistId, 'youtube');
+    expect(api.playlist).not.toHaveBeenCalledWith(youtubePlaylistId, 'podverse');
+    expect(store.view).toEqual({
+      kind: 'playlist',
+      provider: 'youtube',
+      id: youtubePlaylistId,
+    });
+    expect(window.location.hash).toBe(`#/playlist/youtube/${youtubePlaylistId}`);
+    store.dispose();
+  });
+
+  it('corrects a YouTube playlist URL that names Podverse', async () => {
+    window.history.replaceState(
+      null,
+      '',
+      `/#/playlist/podverse/${youtubePlaylistId}`,
+    );
+    const { api, store } = setup();
+    api.providers = vi.fn(async () => [
+      makeProviderInfo(),
+      makeProviderInfo({ id: 'podverse', name: 'Podverse', default: false }),
+    ]);
+    await store.init();
+
+    expect(api.playlist).toHaveBeenCalledWith(youtubePlaylistId, 'youtube');
+    expect(api.playlist).not.toHaveBeenCalledWith(youtubePlaylistId, 'podverse');
+    expect(store.view).toEqual({
+      kind: 'playlist',
+      provider: 'youtube',
+      id: youtubePlaylistId,
+    });
+    expect(window.location.hash).toBe(`#/playlist/youtube/${youtubePlaylistId}`);
+    store.dispose();
+  });
+
+  it('opens and plays list playlists with the list provider', async () => {
+    const { api, store } = setup();
+    api.providers = vi.fn(async () => [
+      makeProviderInfo(),
+      makeProviderInfo({ id: 'podverse', name: 'Podverse', default: false }),
+    ]);
+    await store.init();
+    const playlist = store.playlists[0];
+    expect(store.playlistsProvider).toBe('youtube');
+
+    store.activeProvider = 'podverse';
+    await store.openListedPlaylist(playlist);
+    expect(api.playlist).toHaveBeenLastCalledWith(playlist.id, 'youtube');
+
+    store.activeProvider = 'podverse';
+    await store.playListedPlaylist(playlist);
+    expect(api.playPlaylist).toHaveBeenLastCalledWith(playlist.id, 'youtube');
+    store.dispose();
+  });
+
   it('reports a playlist for an unconfigured provider', async () => {
     window.history.replaceState(null, '', '/#/playlist/podverse/LJ24');
     const { api, store } = setup();
