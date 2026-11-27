@@ -49,7 +49,12 @@ describe('SearchPalette', () => {
     await tick();
 
     expect(api.playlist).toHaveBeenCalledWith('p1', 'youtube');
-    expect(store.view).toEqual({ kind: 'playlist', id: 'p1', name: 'Playlist p1' });
+    expect(store.view).toEqual({
+      kind: 'playlist',
+      provider: 'youtube',
+      id: 'p1',
+      name: 'Playlist p1',
+    });
   });
 
   it('queues a track without closing the palette', async () => {

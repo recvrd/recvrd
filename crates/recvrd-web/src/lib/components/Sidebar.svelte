@@ -85,7 +85,10 @@
         </p>
       {:else}
         {#each store.filteredPlaylists as playlist, index (playlist.id)}
-          {@const active = store.view.kind === 'playlist' && store.view.id === playlist.id}
+          {@const active =
+            store.view.kind === 'playlist' &&
+            store.view.id === playlist.id &&
+            store.view.provider === store.activeProvider}
           <button
             class="playlist"
             class:active

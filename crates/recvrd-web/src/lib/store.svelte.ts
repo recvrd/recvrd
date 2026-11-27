@@ -22,7 +22,7 @@ import { EventStream, type ConnectionState, type EventSourceLike } from './sse';
 
 export type View =
   | { kind: 'library' }
-  | { kind: 'playlist'; id: string; name?: string }
+  | { kind: 'playlist'; provider: ProviderId; id: string; name?: string }
   | { kind: 'queue' }
   | { kind: 'history' };
 
@@ -42,6 +42,22 @@ export const LEGACY_PLAYER_LAYOUT_KEY = 'ytermusicd.player-layout';
 export const VISUALIZER_KEY = 'recvrd.visualizer';
 export const PROVIDER_KEY = 'recvrd.provider';
 export const LEGACY_PROVIDER_KEY = 'ytermusicd.provider';
+
+/// Fallback names for a provider that is not configured.
+const PROVIDER_NAMES: Record<ProviderId, string> = {
+  youtube: 'YouTube Music',
+  rss: 'RSS',
+  podverse: 'Podverse',
+  local: 'Local files',
+};
+
+function isProviderId(value: string): value is ProviderId {
+  return Object.hasOwn(PROVIDER_NAMES, value);
+}
+
+function playlistHash(provider: ProviderId, id: string): string {
+  return `#/playlist/${encodeURIComponent(provider)}/${encodeURIComponent(id)}`;
+}
 
 /// Read a stored value, with the previous project name as a fallback.
 function readStored(key: string, legacy: string): string | null {
@@ -238,16 +254,21 @@ export class AppStore {
   }
 
   async init(): Promise<void> {
-    this.parseLocation();
     this.events.connect();
+    // Resolve the stored provider before the location, so a legacy
+    // playlist URL without a provider uses the stored choice.
+    await this.loadProviders();
+    this.parseLocation();
+    if (this.view.kind === 'playlist' && this.hasProvider(this.view.provider)) {
+      this.activateProvider(this.view.provider);
+    }
     await Promise.allSettled([
-      this.loadProviders(),
       this.refreshStatus(),
       this.loadPlaylists(),
       this.loadCache(),
     ]);
     if (this.view.kind === 'playlist') {
-      await this.openPlaylist(this.view.id, this.view.name);
+      await this.openPlaylist(this.view.id, this.view.name, this.view.provider);
     } else if (this.view.kind === 'history') {
       await this.openHistory();
     }
@@ -275,6 +296,18 @@ export class AppStore {
 
   get activeProviderName(): string {
     return this.activeProviderInfo?.name ?? 'YouTube Music';
+  }
+
+  /// The display name for one provider, even when it is not configured.
+  private providerLabel(provider: ProviderId): string {
+    return (
+      this.providers.find((info) => info.id === provider)?.name ??
+      PROVIDER_NAMES[provider]
+    );
+  }
+
+  private hasProvider(provider: ProviderId): boolean {
+    return this.providers.some((info) => info.id === provider);
   }
 
   get playbackMode(): PlaybackMode | null {
@@ -395,17 +428,23 @@ export class AppStore {
   /// Switch the active provider and reload the library for it.
   async setProvider(provider: ProviderId): Promise<void> {
     if (provider === this.activeProvider) return;
+    this.activateProvider(provider);
+    this.searchResults = null;
+    this.searchQuery = '';
+    // A provider playlist must not outlive its provider selection.
+    // Close it before the library reloads for the new provider.
+    if (this.view.kind === 'playlist') {
+      this.openLibrary();
+    }
+    await this.loadPlaylists();
+  }
+
+  private activateProvider(provider: ProviderId): void {
     this.activeProvider = provider;
     try {
       globalThis.localStorage?.setItem(PROVIDER_KEY, provider);
     } catch {
       // Ignore storage failures.
-    }
-    this.searchResults = null;
-    this.searchQuery = '';
-    await this.loadPlaylists();
-    if (this.view.kind === 'playlist') {
-      await this.openPlaylist(this.view.id, this.view.name);
     }
   }
 
@@ -440,7 +479,7 @@ export class AppStore {
       this.searchQuery = '';
       await this.loadPlaylists();
       if (this.view.kind === 'playlist') {
-        await this.openPlaylist(this.view.id, this.view.name);
+        await this.openPlaylist(this.view.id, this.view.name, this.view.provider);
       }
       this.notify(
         'info',
@@ -507,7 +546,11 @@ export class AppStore {
     try {
       await this.api.removeRssFeed(id);
       this.rssFeeds = this.rssFeeds.filter((feed) => feed.id !== id);
-      if (this.view.kind === 'playlist' && this.view.id === id) {
+      if (
+        this.view.kind === 'playlist' &&
+        this.view.provider === 'rss' &&
+        this.view.id === id
+      ) {
         this.openLibrary();
       }
       await this.loadPlaylists();
@@ -565,20 +608,30 @@ export class AppStore {
     }
   }
 
-  openPlaylist(id: string, name?: string): Promise<void> {
-    this.view = { kind: 'playlist', id, name };
+  openPlaylist(
+    id: string,
+    name?: string,
+    provider: ProviderId = this.activeProvider,
+  ): Promise<void> {
+    this.view = { kind: 'playlist', provider, id, name };
     this.selection = 0;
     this.playlist = null;
     this.playlistLoading = true;
     this.syncLocation();
-    return this.loadPlaylist(id);
+    return this.loadPlaylist(id, provider);
   }
 
-  private async loadPlaylist(id: string): Promise<void> {
+  private async loadPlaylist(id: string, provider: ProviderId): Promise<void> {
+    if (this.providers.length > 0 && !this.hasProvider(provider)) {
+      this.playlist = null;
+      this.playlistLoading = false;
+      this.error = `This playlist belongs to ${this.providerLabel(provider)}, which is not configured.`;
+      return;
+    }
     try {
-      this.playlist = await this.api.playlist(id, this.activeProvider);
+      this.playlist = await this.api.playlist(id, provider);
     } catch (error) {
-      this.setLoadError(error);
+      this.setLoadError(error, provider);
       this.handleAuthError(error);
     } finally {
       this.playlistLoading = false;
@@ -615,7 +668,11 @@ export class AppStore {
           playlist: { ...this.playlist.playlist, name: updated.name, subtitle },
         };
       }
-      if (this.view.kind === 'playlist' && this.view.id === id) {
+      if (
+        this.view.kind === 'playlist' &&
+        this.view.id === id &&
+        this.view.provider === this.activeProvider
+      ) {
         this.view = { ...this.view, name: updated.name };
       }
       this.notify('success', `Renamed to “${updated.name}”.`);
@@ -630,7 +687,11 @@ export class AppStore {
     try {
       await this.api.deletePlaylist(id);
       this.playlists = this.playlists.filter((playlist) => playlist.id !== id);
-      if (this.view.kind === 'playlist' && this.view.id === id) {
+      if (
+        this.view.kind === 'playlist' &&
+        this.view.id === id &&
+        this.view.provider === this.activeProvider
+      ) {
         this.openLibrary();
       }
       this.notify('success', 'Playlist deleted.');
@@ -797,13 +858,14 @@ export class AppStore {
   /// view. Anywhere else there is no selected playlist, so this is a
   /// no-op (the library cards have no keyboard selection).
   async playSelectedPlaylist(): Promise<void> {
-    const id =
-      this.focus === 'sidebar'
-        ? this.sidebarSelectedPlaylist?.id
-        : this.view.kind === 'playlist'
-          ? this.view.id
-          : undefined;
-    if (id) await this.playPlaylist(id);
+    if (this.focus === 'sidebar') {
+      const playlist = this.sidebarSelectedPlaylist;
+      if (playlist) await this.playPlaylist(playlist.id, this.activeProvider);
+      return;
+    }
+    if (this.view.kind === 'playlist') {
+      await this.playPlaylist(this.view.id, this.view.provider);
+    }
   }
 
   async playTrack(track: Track): Promise<void> {
@@ -815,9 +877,12 @@ export class AppStore {
     }
   }
 
-  async playPlaylist(id: string): Promise<void> {
+  async playPlaylist(
+    id: string,
+    provider: ProviderId = this.activeProvider,
+  ): Promise<void> {
     try {
-      this.applyStatus(await this.api.playPlaylist(id, this.activeProvider));
+      this.applyStatus(await this.api.playPlaylist(id, provider));
       await this.refreshQueue();
       this.notify('success', 'Playing playlist.');
     } catch (error) {
@@ -1503,9 +1568,12 @@ export class AppStore {
   }
 
   /// Keep the auth banner as the only message for an expired session.
-  private setLoadError(error: unknown): void {
+  private setLoadError(
+    error: unknown,
+    provider: ProviderId = this.activeProvider,
+  ): void {
     if (error instanceof ApiError && error.code === 'auth_expired') return;
-    this.error = describeError(error, this.activeProviderName);
+    this.error = describeError(error, this.providerLabel(provider));
   }
 
   private scheduleStatusRefresh(): void {
@@ -1640,8 +1708,23 @@ export class AppStore {
     } else if (hash.startsWith('#/history')) {
       this.view = { kind: 'history' };
     } else if (hash.startsWith('#/playlist/')) {
-      const id = decodeURIComponent(hash.slice('#/playlist/'.length));
-      if (id) this.view = { kind: 'playlist', id };
+      const rest = hash.slice('#/playlist/'.length);
+      const separator = rest.indexOf('/');
+      if (separator === -1) {
+        const id = decodeURIComponent(rest);
+        if (id) {
+          this.view = { kind: 'playlist', provider: this.activeProvider, id };
+        }
+      } else {
+        const provider = decodeURIComponent(rest.slice(0, separator));
+        const id = decodeURIComponent(rest.slice(separator + 1));
+        if (isProviderId(provider) && id) {
+          this.view = { kind: 'playlist', provider, id };
+        } else {
+          this.view = { kind: 'library' };
+          this.notify('error', 'This playlist URL names an unknown provider.');
+        }
+      }
     } else {
       this.view = { kind: 'library' };
     }
@@ -1655,7 +1738,7 @@ export class AppStore {
           ? '#/queue'
           : this.view.kind === 'history'
             ? '#/history'
-            : `#/playlist/${encodeURIComponent(this.view.id)}`;
+            : playlistHash(this.view.provider, this.view.id);
     if (window.location.hash !== hash) {
       window.history.replaceState(null, '', hash);
     }

@@ -59,7 +59,7 @@ function setupPlaylist() {
   const api = makeApi();
   const store = new AppStore(api);
   const playlist = makePlaylist('p1');
-  store.view = { kind: 'playlist', id: 'p1', name: playlist.name };
+  store.view = { kind: 'playlist', provider: 'youtube', id: 'p1', name: playlist.name };
   store.playlist = makePlaylistDetail(playlist, [makeTrack('v1'), makeTrack('v2')]);
   store.playlists = [playlist];
   return { api, store };
@@ -164,7 +164,7 @@ describe('LibraryView', () => {
   it('shows the library name when the daemon returns the raw playlist ID', () => {
     const { store } = setupPlaylist();
     const id = 'VLPLEuTNuVCEhNwBcYRtEfw52PMGYPpyX1v4';
-    store.view = { kind: 'playlist', id, name: 'Christmas Classics' };
+    store.view = { kind: 'playlist', provider: 'youtube', id, name: 'Christmas Classics' };
     store.playlist = makePlaylistDetail(makePlaylist(id, { name: id }), [
       makeTrack('v1'),
     ]);
@@ -174,6 +174,22 @@ describe('LibraryView', () => {
       screen.getByRole('heading', { level: 1, name: 'Christmas Classics' }),
     ).toBeInTheDocument();
     expect(screen.queryByText(id)).not.toBeInTheDocument();
+  });
+
+  it('plays the open playlist with its provider', async () => {
+    const { api, store } = setupPlaylist();
+    store.view = {
+      kind: 'playlist',
+      provider: 'rss',
+      id: 'p1',
+      name: 'Playlist p1',
+    };
+    render(LibraryView, { props: { store } });
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Play all' }));
+    await tick();
+
+    expect(api.playPlaylist).toHaveBeenCalledWith('p1', 'rss');
   });
 
   it('likes a playlist track when the account is signed in', async () => {

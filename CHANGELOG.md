@@ -34,6 +34,11 @@
 
 - Remove the legacy `ytermusic` TUI. `recvc` is the terminal client.
 
+### Fixed
+
+- Keep a playlist bound to its provider. Changing the provider closes an open
+  playlist, and the playlist URL includes the provider.
+
 ## 0.7.0 — 2026-11-22
 
 ### Added

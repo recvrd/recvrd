@@ -301,11 +301,11 @@
           <span class="confirm-text">Delete “{name}”?</span>
           <button class="danger" onclick={removePlaylist}>Delete</button>
           <button onclick={() => (confirmDelete = false)}>Cancel</button>
-        {:else}
+        {:else if store.playlist}
           <button
             class="accent"
-            disabled={!store.playlist || store.playlist.tracks.length === 0}
-            onclick={() => store.playPlaylist(playlistView.id)}
+            disabled={store.playlist.tracks.length === 0}
+            onclick={() => store.playPlaylist(playlistView.id, playlistView.provider)}
           >
             Play all
           </button>
@@ -340,7 +340,14 @@
         <div class="empty-state">
           <p>This playlist did not load.</p>
           {#if store.error}<p class="muted">{store.error}</p>{/if}
-          <button onclick={() => store.openPlaylist(playlistView.id, playlistView.name)}>
+          <button
+            onclick={() =>
+              store.openPlaylist(
+                playlistView.id,
+                playlistView.name,
+                playlistView.provider,
+              )}
+          >
             Try again
           </button>
         </div>
