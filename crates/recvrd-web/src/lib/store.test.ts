@@ -1069,8 +1069,146 @@ describe('AppStore', () => {
     const { api, store } = setup();
     await store.init();
     expect(api.playlist).toHaveBeenCalledWith('p1', 'youtube');
-    expect(store.view).toEqual({ kind: 'playlist', id: 'p1' });
+    expect(store.view).toEqual({ kind: 'playlist', provider: 'youtube', id: 'p1' });
     expect(store.playlist?.tracks).toHaveLength(2);
+    expect(window.location.hash).toBe('#/playlist/youtube/p1');
+    store.dispose();
+  });
+
+  it('opens a provider-scoped playlist URL and selects its provider', async () => {
+    window.history.replaceState(null, '', '/#/playlist/podverse/LJ24');
+    localStorage.setItem(PROVIDER_KEY, 'youtube');
+    const { api, store } = setup();
+    api.providers = vi.fn(async () => [
+      makeProviderInfo(),
+      makeProviderInfo({ id: 'podverse', name: 'Podverse', default: false }),
+    ]);
+    await store.init();
+
+    expect(store.activeProvider).toBe('podverse');
+    expect(api.playlists).toHaveBeenCalledWith('podverse');
+    expect(api.playlist).toHaveBeenCalledWith('LJ24', 'podverse');
+    expect(store.view).toEqual({
+      kind: 'playlist',
+      provider: 'podverse',
+      id: 'LJ24',
+    });
+    expect(window.location.hash).toBe('#/playlist/podverse/LJ24');
+    store.dispose();
+  });
+
+  it('opens a legacy playlist URL with the stored provider', async () => {
+    window.history.replaceState(null, '', '/#/playlist/p1');
+    localStorage.setItem(PROVIDER_KEY, 'rss');
+    const { api, store } = setup();
+    api.providers = vi.fn(async () => [
+      makeProviderInfo(),
+      makeProviderInfo({ id: 'rss', name: 'RSS', default: false }),
+    ]);
+    await store.init();
+
+    expect(api.playlist).toHaveBeenCalledWith('p1', 'rss');
+    expect(store.view).toEqual({ kind: 'playlist', provider: 'rss', id: 'p1' });
+    expect(window.location.hash).toBe('#/playlist/rss/p1');
+    store.dispose();
+  });
+
+  it('reports a playlist for an unconfigured provider', async () => {
+    window.history.replaceState(null, '', '/#/playlist/podverse/LJ24');
+    const { api, store } = setup();
+    api.providers = vi.fn(async () => [makeProviderInfo()]);
+    await store.init();
+
+    expect(api.playlist).not.toHaveBeenCalled();
+    expect(store.view).toEqual({
+      kind: 'playlist',
+      provider: 'podverse',
+      id: 'LJ24',
+    });
+    expect(store.error).toMatch(/belongs to podverse, which is not configured/i);
+    expect(store.playlistLoading).toBe(false);
+    store.dispose();
+  });
+
+  it('reports a playlist URL with an unknown provider', async () => {
+    window.history.replaceState(null, '', '/#/playlist/nope/p1');
+    const { api, store } = setup();
+    await store.init();
+
+    expect(store.view).toEqual({ kind: 'library' });
+    expect(api.playlist).not.toHaveBeenCalled();
+    expect(store.toasts.at(-1)?.message).toContain('unknown provider');
+    store.dispose();
+  });
+
+  it('closes a playlist when the provider changes', async () => {
+    window.history.replaceState(null, '', '/#/playlist/youtube/VLPL123');
+    const { api, store } = setup();
+    api.providers = vi.fn(async () => [
+      makeProviderInfo(),
+      makeProviderInfo({ id: 'podverse', name: 'Podverse', default: false }),
+    ]);
+    await store.init();
+    expect(api.playlist).toHaveBeenCalledWith('VLPL123', 'youtube');
+
+    await store.setProvider('podverse');
+
+    expect(store.view).toEqual({ kind: 'library' });
+    expect(api.playlist).toHaveBeenCalledTimes(1);
+    expect(api.playlists).toHaveBeenLastCalledWith('podverse');
+    expect(window.location.hash).toBe('#/library');
+    store.dispose();
+  });
+
+  it('does not send a Podverse playlist to YouTube after a switch', async () => {
+    const { api, store } = setup();
+    api.providers = vi.fn(async () => [
+      makeProviderInfo(),
+      makeProviderInfo({ id: 'podverse', name: 'Podverse', default: false }),
+    ]);
+    await store.init();
+    await store.setProvider('podverse');
+    await store.openPlaylist('LJ24', 'Podcast');
+    expect(api.playlist).toHaveBeenCalledWith('LJ24', 'podverse');
+
+    await store.setProvider('youtube');
+
+    expect(store.view).toEqual({ kind: 'library' });
+    expect(api.playlist).not.toHaveBeenCalledWith('LJ24', 'youtube');
+    expect(api.playlist).toHaveBeenCalledTimes(1);
+    store.dispose();
+  });
+
+  it('plays the open playlist with the provider in the view', async () => {
+    const { api, store } = setup();
+    await store.init();
+    store.view = {
+      kind: 'playlist',
+      provider: 'rss',
+      id: 'p1',
+      name: 'Playlist p1',
+    };
+
+    await store.playSelectedPlaylist();
+
+    expect(api.playPlaylist).toHaveBeenCalledWith('p1', 'rss');
+    store.dispose();
+  });
+
+  it('reloads the open playlist with its provider after an offline change', async () => {
+    const { api, store } = setup();
+    api.providers = vi.fn(async () => [
+      makeProviderInfo(),
+      makeProviderInfo({ id: 'rss', name: 'RSS', default: false }),
+    ]);
+    await store.init();
+    await store.openPlaylist('p1', 'Playlist p1', 'rss');
+    expect(api.playlist).toHaveBeenLastCalledWith('p1', 'rss');
+
+    await store.setOffline(true);
+
+    expect(api.playlist).toHaveBeenLastCalledWith('p1', 'rss');
+    expect(store.view).toMatchObject({ kind: 'playlist', provider: 'rss', id: 'p1' });
     store.dispose();
   });
 
@@ -1256,7 +1394,12 @@ describe('AppStore', () => {
 
     await store.playSelected();
     expect(api.playlist).toHaveBeenCalledWith('p2', 'youtube');
-    expect(store.view).toEqual({ kind: 'playlist', id: 'p2', name: 'Playlist p2' });
+    expect(store.view).toEqual({
+      kind: 'playlist',
+      provider: 'youtube',
+      id: 'p2',
+      name: 'Playlist p2',
+    });
 
     // Esc with nothing open returns focus to the main view.
     store.closeOverlays();
@@ -1515,7 +1658,12 @@ describe('AppStore', () => {
     store.selectSidebar(1);
     store.openRenamePlaylist();
     expect(store.renamePlaylistId).toBe('p2');
-    expect(store.view).toEqual({ kind: 'playlist', id: 'p2', name: 'Playlist p2' });
+    expect(store.view).toEqual({
+      kind: 'playlist',
+      provider: 'youtube',
+      id: 'p2',
+      name: 'Playlist p2',
+    });
     store.dispose();
   });
 

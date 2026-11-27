@@ -57,13 +57,22 @@ artifacts contain the real app.
 
 The top bar has a provider selector. It lists every provider from
 `GET /api/providers`. The choice is stored in `localStorage` under
-`recvrd.provider`, and library, playlist and search requests use it. The web UI
-reads the old `ytermusicd.provider` key when the new key is absent. The player
-layout key uses the same `recvrd.*` and `ytermusicd.*` pattern. The library
-header shows the active provider name. Actions a provider does not support are
-hidden: the *New playlist* button and the playlist edit actions appear only
-when the active provider reports the matching capability. The auth banner shows
-the auth state of the active provider.
+`recvrd.provider`, and library and search requests use it. The web UI
+reads the old `ytermusicd.provider` key when the new key is absent.
+
+A playlist belongs to one provider. The playlist view is bound to its
+provider.
+The URL records the provider and ID as `#/playlist/<provider>/<id>`. When
+you open that URL, the web UI selects the provider and loads the playlist.
+A legacy `#/playlist/<id>` URL uses the stored provider. Changing the
+provider selector closes an open playlist and shows the new provider
+library.
+
+The player layout key uses the same `recvrd.*` and `ytermusicd.*` pattern.
+The library header shows the active provider name. Actions a provider does
+not support are hidden: the *New playlist* button and the playlist edit
+actions appear only when the active provider reports the matching
+capability. The auth banner shows the auth state of the active provider.
 
 Next to the provider selector, a playback mode selector appears when the
 provider reports more than one mode. The label is *Download*, *Stream* or
