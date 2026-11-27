@@ -235,10 +235,10 @@
               <p class="muted" title={playlist.subtitle}>{playlist.subtitle}</p>
             </div>
             <div class="actions">
-              <button onclick={() => store.openPlaylist(playlist.id, playlist.name)}>
+              <button onclick={() => store.openListedPlaylist(playlist)}>
                 Open
               </button>
-              <button class="accent" onclick={() => store.playPlaylist(playlist.id)}>
+              <button class="accent" onclick={() => store.playListedPlaylist(playlist)}>
                 Play
               </button>
               {#if store.isRssProvider}

@@ -59,6 +59,17 @@ function playlistHash(provider: ProviderId, id: string): string {
   return `#/playlist/${encodeURIComponent(provider)}/${encodeURIComponent(id)}`;
 }
 
+/// YouTube Music playlist IDs start with `VL` and are longer than a
+/// Podverse channel ID. A legacy URL or a stale list can pair one with
+/// another provider. Keep the ID on YouTube.
+function isYoutubePlaylistId(id: string): boolean {
+  return id.startsWith('VL') && id.length > 20;
+}
+
+function resolvePlaylistProvider(provider: ProviderId, id: string): ProviderId {
+  return provider !== 'youtube' && isYoutubePlaylistId(id) ? 'youtube' : provider;
+}
+
 /// Read a stored value, with the previous project name as a fallback.
 function readStored(key: string, legacy: string): string | null {
   try {
@@ -159,6 +170,7 @@ export class AppStore {
   cache = $state<CacheSizes | null>(null);
   cacheLoading = $state(false);
   playlists = $state<Playlist[]>([]);
+  playlistsProvider = $state<ProviderId>('youtube');
   history = $state<HistoryEntry[] | null>(null);
   historyLoading = $state(false);
   rssFeeds = $state<RssFeed[]>([]);
@@ -217,6 +229,8 @@ export class AppStore {
   /// Generation of the playback state. A status refresh applies only
   /// when this value is unchanged since the request started.
   private statusGeneration = 0;
+  /// Guards against an older playlist-list response overwriting a newer one.
+  private playlistsGeneration = 0;
   /// Guards against an older track-detail response overwriting a newer one.
   private trackDetailRequest = 0;
 
@@ -507,17 +521,29 @@ export class AppStore {
   }
 
   async loadPlaylists(): Promise<void> {
+    const provider = this.activeProvider;
+    const generation = ++this.playlistsGeneration;
+    if (this.playlistsProvider !== provider) {
+      this.playlists = [];
+      this.playlistsProvider = provider;
+    }
     this.playlistsLoading = true;
     try {
-      this.playlists = await this.api.playlists(this.activeProvider);
-      if (this.activeProvider === 'rss') {
+      const playlists = await this.api.playlists(provider);
+      if (generation !== this.playlistsGeneration) return;
+      this.playlists = playlists;
+      this.playlistsProvider = provider;
+      if (provider === 'rss') {
         this.rssFeeds = await this.api.rssFeeds();
       }
     } catch (error) {
-      this.setLoadError(error);
+      if (generation !== this.playlistsGeneration) return;
+      this.setLoadError(error, provider);
       this.handleAuthError(error);
     } finally {
-      this.playlistsLoading = false;
+      if (generation === this.playlistsGeneration) {
+        this.playlistsLoading = false;
+      }
     }
   }
 
@@ -613,15 +639,37 @@ export class AppStore {
     name?: string,
     provider: ProviderId = this.activeProvider,
   ): Promise<void> {
-    this.view = { kind: 'playlist', provider, id, name };
+    const resolved = resolvePlaylistProvider(provider, id);
+    this.view = { kind: 'playlist', provider: resolved, id, name };
     this.selection = 0;
     this.playlist = null;
     this.playlistLoading = true;
     this.syncLocation();
-    return this.loadPlaylist(id, provider);
+    return this.loadPlaylist(id, resolved);
+  }
+
+  /// Open a playlist from the current list with the provider that
+  /// loaded the list.
+  openListedPlaylist(playlist: Playlist): Promise<void> {
+    return this.openPlaylist(playlist.id, playlist.name, this.playlistsProvider);
+  }
+
+  /// Play a playlist from the current list with the provider that
+  /// loaded the list.
+  playListedPlaylist(playlist: Playlist): Promise<void> {
+    return this.playPlaylist(playlist.id, this.playlistsProvider);
   }
 
   private async loadPlaylist(id: string, provider: ProviderId): Promise<void> {
+    provider = resolvePlaylistProvider(provider, id);
+    if (
+      this.view.kind === 'playlist' &&
+      this.view.id === id &&
+      this.view.provider !== provider
+    ) {
+      this.view = { ...this.view, provider };
+      this.syncLocation();
+    }
     if (this.providers.length > 0 && !this.hasProvider(provider)) {
       this.playlist = null;
       this.playlistLoading = false;
@@ -842,7 +890,7 @@ export class AppStore {
   async playSelected(): Promise<void> {
     if (this.focus === 'sidebar') {
       const playlist = this.sidebarSelectedPlaylist;
-      if (playlist) await this.openPlaylist(playlist.id, playlist.name);
+      if (playlist) await this.openListedPlaylist(playlist);
       return;
     }
     if (this.view.kind === 'queue') {
@@ -860,7 +908,7 @@ export class AppStore {
   async playSelectedPlaylist(): Promise<void> {
     if (this.focus === 'sidebar') {
       const playlist = this.sidebarSelectedPlaylist;
-      if (playlist) await this.playPlaylist(playlist.id, this.activeProvider);
+      if (playlist) await this.playListedPlaylist(playlist);
       return;
     }
     if (this.view.kind === 'playlist') {
@@ -1187,13 +1235,21 @@ export class AppStore {
     if (!this.canEditPlaylist) return;
     const target =
       this.view.kind === 'playlist' && this.playlist
-        ? { id: this.view.id, name: this.playlist.playlist.name }
+        ? {
+            id: this.view.id,
+            name: this.playlist.playlist.name,
+            provider: this.view.provider,
+          }
         : this.sidebarSelectedPlaylist
-          ? { id: this.sidebarSelectedPlaylist.id, name: this.sidebarSelectedPlaylist.name }
+          ? {
+              id: this.sidebarSelectedPlaylist.id,
+              name: this.sidebarSelectedPlaylist.name,
+              provider: this.playlistsProvider,
+            }
           : null;
     if (!target) return;
     if (this.view.kind !== 'playlist' || this.view.id !== target.id) {
-      void this.openPlaylist(target.id, target.name);
+      void this.openPlaylist(target.id, target.name, target.provider);
     }
     this.renamePlaylistId = target.id;
     this.renamePlaylistName = target.name;
@@ -1713,13 +1769,21 @@ export class AppStore {
       if (separator === -1) {
         const id = decodeURIComponent(rest);
         if (id) {
-          this.view = { kind: 'playlist', provider: this.activeProvider, id };
+          this.view = {
+            kind: 'playlist',
+            provider: resolvePlaylistProvider(this.activeProvider, id),
+            id,
+          };
         }
       } else {
         const provider = decodeURIComponent(rest.slice(0, separator));
         const id = decodeURIComponent(rest.slice(separator + 1));
         if (isProviderId(provider) && id) {
-          this.view = { kind: 'playlist', provider, id };
+          this.view = {
+            kind: 'playlist',
+            provider: resolvePlaylistProvider(provider, id),
+            id,
+          };
         } else {
           this.view = { kind: 'library' };
           this.notify('error', 'This playlist URL names an unknown provider.');
