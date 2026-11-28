@@ -88,7 +88,8 @@ mode* and calls `PUT /api/offline`. Offline mode is distinct from the
 daemon-unreachable banner: a lost event stream still shows the connection
 banner, while the switch is a deliberate content choice. While offline, the
 library and search show cached content only, and uncached rows are dimmed
-with an info button. The button opens an in-app explanation for
+with an info button. The Local files provider stays available because its
+tracks are already on disk. The button opens an in-app explanation for
 `offline_unavailable`; it never opens an external link, which would fail
 while offline. Queue rows that are not cached are dimmed too.
 
