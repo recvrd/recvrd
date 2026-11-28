@@ -1,6 +1,6 @@
 # Release checklist
 
-The release version is `0.7.0`. The tag is `v0.7.0`.
+The release version is `0.8.0`. The tag is `v0.8.0`.
 
 ## Before the tag
 
@@ -9,10 +9,11 @@ The release version is `0.7.0`. The tag is `v0.7.0`.
 
    ```sh
    nix develop
-   just check
-   just test
-   just web-check
+   just web-install
+   just ci
    ```
+
+   `just web-install` is needed one time on a new checkout.
 
 3. Build the package:
 
@@ -37,7 +38,8 @@ The release version is `0.7.0`. The tag is `v0.7.0`.
    ```
 
 6. Open `http://127.0.0.1:8080` and check library, playlist, play, queue,
-   search, `?` help and the connection banner.
+   search, `?` help and the connection banner. With `local.music_dir` set,
+   check the Local files provider, the full player and the visualizer.
 7. With a Podverse provider configured, set `stream` mode and play a track as
    the first track. Seek several times. The bar must move and no earlier file
    track may replay. Then set `stream_then_download`, play another track and
@@ -45,11 +47,13 @@ The release version is `0.7.0`. The tag is `v0.7.0`.
    track starts from the file (`playback.source_kind` is `file`).
 8. Turn offline mode on. Confirm the library and search show cached content
    only, uncached rows are dimmed, a cached cover still renders, and download
-   retry/RSS refresh return `offline_unavailable`. Toggle offline off and
-   confirm providers work again without a restart. Restart once more while
-   offline and confirm the daemon makes no provider calls at startup.
+   retry/RSS refresh return `offline_unavailable`. The Local files provider
+   must keep its library, playlist, search and playback. Toggle offline off
+   and confirm providers work again without a restart. Restart once more
+   while offline and confirm the daemon makes no network provider calls at
+   startup.
 9. Check that the old `ytermusicd` and `ytmc` names still work, and that
-   `recvrd --version` and `recvc --version` report `0.7.0`.
+   `recvrd --version` and `recvc --version` report `0.8.0`.
 10. Check the MCP proxy:
 
     ```sh
@@ -63,22 +67,29 @@ The release version is `0.7.0`. The tag is `v0.7.0`.
     systemctl --user status recvrd
     ```
 
-12. Confirm `CHANGELOG.md` and all versions name `0.7.0`, then open a pull
+12. Check the Docker image:
+
+    ```sh
+    docker build --target runtime -t recvrd:release .
+    docker run --rm --entrypoint /usr/local/bin/recvrd recvrd:release --version
+    ```
+
+13. Confirm `CHANGELOG.md` and all versions name `0.8.0`, then open a pull
     request for the release commit. Merge it after every CI check passes.
 
 ## Tag and publish
 
 ```sh
-git tag -a v0.7.0 -m "recvrd v0.7.0"
-git push origin v0.7.0
+git tag -a v0.8.0 -m "recvrd v0.8.0"
+git push origin v0.8.0
 ```
 
 Create a GitHub release from the tag. The release workflow builds:
 
-- `recvrd-v0.7.0-x86_64-unknown-linux-gnu.tar.gz`
-- `recvrd-v0.7.0-aarch64-apple-darwin.tar.gz`
-- `recvrd-v0.7.0-x86_64-apple-darwin.tar.gz`
-- `recvrd-v0.7.0-x86_64-pc-windows-msvc.zip`
+- `recvrd-v0.8.0-x86_64-unknown-linux-gnu.tar.gz`
+- `recvrd-v0.8.0-aarch64-apple-darwin.tar.gz`
+- `recvrd-v0.8.0-x86_64-apple-darwin.tar.gz`
+- `recvrd-v0.8.0-x86_64-pc-windows-msvc.zip`
 - a SHA-256 file for each archive
 
 Each archive contains the `recvrd` daemon, the `recvc` terminal client and the
