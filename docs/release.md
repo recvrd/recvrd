@@ -1,6 +1,6 @@
 # Release checklist
 
-The release version is `0.8.0`. The tag is `v0.8.0`.
+The release version is `0.8.1`. The tag is `v0.8.1`.
 
 ## Before the tag
 
@@ -53,7 +53,7 @@ The release version is `0.8.0`. The tag is `v0.8.0`.
    while offline and confirm the daemon makes no network provider calls at
    startup.
 9. Check that the old `ytermusicd` and `ytmc` names still work, and that
-   `recvrd --version` and `recvc --version` report `0.8.0`.
+   `recvrd --version` and `recvc --version` report `0.8.1`.
 10. Check the MCP proxy:
 
     ```sh
@@ -74,22 +74,22 @@ The release version is `0.8.0`. The tag is `v0.8.0`.
     docker run --rm --entrypoint /usr/local/bin/recvrd recvrd:release --version
     ```
 
-13. Confirm `CHANGELOG.md` and all versions name `0.8.0`, then open a pull
+13. Confirm `CHANGELOG.md` and all versions name `0.8.1`, then open a pull
     request for the release commit. Merge it after every CI check passes.
 
 ## Tag and publish
 
 ```sh
-git tag -a v0.8.0 -m "recvrd v0.8.0"
-git push origin v0.8.0
+git tag -a v0.8.1 -m "recvrd v0.8.1"
+git push origin v0.8.1
 ```
 
 Create a GitHub release from the tag. The release workflow builds:
 
-- `recvrd-v0.8.0-x86_64-unknown-linux-gnu.tar.gz`
-- `recvrd-v0.8.0-aarch64-apple-darwin.tar.gz`
-- `recvrd-v0.8.0-x86_64-apple-darwin.tar.gz`
-- `recvrd-v0.8.0-x86_64-pc-windows-msvc.zip`
+- `recvrd-v0.8.1-x86_64-unknown-linux-gnu.tar.gz`
+- `recvrd-v0.8.1-aarch64-apple-darwin.tar.gz`
+- `recvrd-v0.8.1-x86_64-apple-darwin.tar.gz`
+- `recvrd-v0.8.1-x86_64-pc-windows-msvc.zip`
 - a SHA-256 file for each archive
 
 Each archive contains the `recvrd` daemon, the `recvc` terminal client and the
