@@ -1,6 +1,8 @@
 # Changelog
 
-## 0.8.0 — 2026-11-27
+## 0.8.1 — 2026-11-27
+
+`0.8.0` did not publish the macOS and Windows artifacts. Use `0.8.1`.
 
 ### Added
 
@@ -56,6 +58,8 @@
 
 ### Fixed
 
+- Build the daemon and the terminal client on macOS and Windows. The
+  Linux-only PipeWire dependency no longer enters those targets.
 - Advance to the next queue track when a PipeWire track ends.
 - Rebuild the PipeWire output when the connection is lost.
 - End open SSE streams on shutdown, so clients reconnect without a restart.
