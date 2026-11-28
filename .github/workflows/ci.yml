@@ -63,6 +63,15 @@ jobs:
             exit 1
           fi
 
+      - name: Check cross-target dependencies
+        run: |
+          for target in x86_64-pc-windows-msvc aarch64-apple-darwin; do
+            if cargo tree -p player --target "$target" -e normal 2>/dev/null | grep -qE 'pipewire|libspa'; then
+              echo "PipeWire leaked into the $target dependency graph"
+              exit 1
+            fi
+          done
+
       - name: Check generated API bindings
         run: git diff --exit-code -- crates/recvrd-api/bindings
 
