@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.0 — 2026-11-27
 
 ### Added
 
@@ -31,6 +31,24 @@
   and stored in `localStorage`.
 - Add daemon-local playlists that can mix tracks from every provider. The
   daemon stores them in `playlists.json`, and they survive a restart.
+- Record a local listen history of finished plays. `/api/history` returns the
+  last 1000 plays from 90 days, and the web UI adds a Recently played view.
+  A play needs 30 seconds of the track to enter the history.
+- Add opt-in Podverse queue sync. The daemon reads and writes per-track
+  positions in the Podverse account queue. Set `podverse.sync` with a base URL
+  and token.
+- List recently updated Podverse channels in the library.
+- Add a Dockerfile and Compose files for deployment and development. The
+  runtime image contains yt-dlp and FFmpeg, and the development image contains
+  the full toolchain.
+
+### Changed
+
+- Use PipeWire for Linux audio output. The Linux build no longer uses ALSA.
+- Make the first configured provider the default. The provider order is Local
+  files, RSS, Podverse, then YouTube Music.
+- Add a local `just ci` recipe that mirrors CI. Draft pull requests run no CI
+  jobs.
 
 ### Removed
 
@@ -38,6 +56,17 @@
 
 ### Fixed
 
+- Advance to the next queue track when a PipeWire track ends.
+- Rebuild the PipeWire output when the connection is lost.
+- End open SSE streams on shutdown, so clients reconnect without a restart.
+- Include cached tracks in online search results.
+- Show the library playlist name instead of the raw playlist ID.
+- Keep the track menu inside the viewport.
+- Hide the duplicate cached badge in Now Playing.
+- Read track durations from YouTube playlist items.
+- Fill a missing track duration from the cached file.
+- Page through every Podverse channel item and send the bearer token for
+  same-origin media.
 - Keep the local-files provider available in offline mode. Its library,
   playlist, search, track detail and playback no longer return
   `offline_unavailable`.

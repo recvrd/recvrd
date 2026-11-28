@@ -775,7 +775,7 @@ dependencies = [
 
 [[package]]
 name = "common-structs"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "schemars",
  "serde",
@@ -1123,7 +1123,7 @@ checksum = "4583a4551df46e2792f82ceeac45e850d2e2d5debba0b91f102385cda5b11f06"
 
 [[package]]
 name = "database"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "common-structs",
  "log",
@@ -1298,7 +1298,7 @@ dependencies = [
 
 [[package]]
 name = "download-manager"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "async-trait",
  "common-structs",
@@ -3055,7 +3055,7 @@ checksum = "7edddbd0b52d732b21ad9a5fab5c704c14cd949e5e9a1ec5929a24fded1b904c"
 
 [[package]]
 name = "player"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "common-structs",
  "flume",
@@ -3156,7 +3156,7 @@ dependencies = [
 
 [[package]]
 name = "provider-local"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "async-trait",
  "common-structs",
@@ -3170,7 +3170,7 @@ dependencies = [
 
 [[package]]
 name = "provider-podverse"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "async-trait",
  "common-structs",
@@ -3189,7 +3189,7 @@ dependencies = [
 
 [[package]]
 name = "provider-rss"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "async-trait",
  "common-structs",
@@ -3208,7 +3208,7 @@ dependencies = [
 
 [[package]]
 name = "provider-youtube"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "async-trait",
  "common-structs",
@@ -3442,7 +3442,7 @@ dependencies = [
 
 [[package]]
 name = "recvc"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "clap",
  "crossterm",
@@ -3457,7 +3457,7 @@ dependencies = [
 
 [[package]]
 name = "recvrd"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -3495,7 +3495,7 @@ dependencies = [
 
 [[package]]
 name = "recvrd-api"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "async-trait",
  "common-structs",
@@ -3507,7 +3507,7 @@ dependencies = [
 
 [[package]]
 name = "recvrd-client"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "axum",
  "bytes",
@@ -3521,7 +3521,7 @@ dependencies = [
 
 [[package]]
 name = "recvrd-core"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "async-trait",
  "common-structs",
@@ -5986,7 +5986,7 @@ dependencies = [
 
 [[package]]
 name = "ytpapi2"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "common-structs",
  "log",
