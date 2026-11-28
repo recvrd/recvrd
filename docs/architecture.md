@@ -84,6 +84,9 @@ routing fallback. See [docs/web.md](web.md).
   reports: `mp4` for YouTube, `mp3`, `m4a`, `ogg` or `flac` for RSS.
 - **RSS feeds**: `rss-feeds.json` in the data directory. It holds feed URLs,
   ETags, Last-Modified values and the episode index.
+- **Local playlists**: `playlists.json` in the state directory. It holds
+  daemon-local playlists with full track entries, so they survive a provider
+  change. The daemon writes it atomically.
 - Runtime state: queue, current index, current position, per-track positions,
   volume, shuffle/repeat, written atomically after commands, periodically while
   the daemon runs and on shutdown, then restored on startup (invalid state is
@@ -184,9 +187,9 @@ The full contract and curl examples live in [docs/api.md](api.md). DTOs come
 from `recvrd-api`, which also generates the TypeScript bindings consumed by
 the web UI and MCP proxy.
 
-- REST: status, providers, playlists, playlist edits, playlist detail, search,
-  track detail, cover art, queue CRUD/reorder, play playlist/track,
-  pause/resume, next/previous, volume, seek, shuffle, repeat.
+- REST: status, providers, playlists, playlist edits, playlist detail, local
+  playlists, search, track detail, cover art, queue CRUD/reorder, play
+  playlist/track, pause/resume, next/previous, volume, seek, shuffle, repeat.
 - Every command returns the updated `Status` or `Queue`, so clients can render
   without waiting for the event stream.
 - SSE: an initial snapshot followed by playback, queue, download, track-ended,

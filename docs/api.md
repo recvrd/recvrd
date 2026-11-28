@@ -78,6 +78,14 @@ prompt. A session that expires during pagination ends the load with
 | POST | `/api/playlists/{id}/tracks` | Add tracks (`{provider, track_ids}`) |
 | POST | `/api/playlists/{id}/tracks/remove` | Remove tracks (`{indices}`) |
 | POST | `/api/playlists/{id}/tracks/move` | Move a track (`{from,to}`) |
+| GET | `/api/local-playlists` | Daemon-local playlist summaries |
+| POST | `/api/local-playlists` | Create a local playlist (`{name}`) |
+| GET | `/api/local-playlists/{id}` | Local playlist metadata and tracks |
+| PUT | `/api/local-playlists/{id}` | Rename a local playlist (`{name}`) |
+| DELETE | `/api/local-playlists/{id}` | Delete a local playlist |
+| POST | `/api/local-playlists/{id}/tracks` | Add one track (`{track}`) |
+| POST | `/api/local-playlists/{id}/tracks/remove` | Remove one track (`{index}`) |
+| POST | `/api/local-playlists/{id}/tracks/reorder` | Reorder one track (`{from,to}`) |
 | GET | `/api/search?provider=...&q=...` | Track and playlist search |
 | GET | `/api/tracks/{provider}/{track_id}` | Full track detail and description |
 | GET | `/api/tracks/{provider}/{track_id}/stats` | File, audio, playback and history facts. URL queries and tokens are removed. |
@@ -579,6 +587,52 @@ returns 401 with code `auth_expired` and a message that says to refresh
 The YouTube provider sends the edits to the authenticated `playlist/create`,
 `browse/edit_playlist` and `playlist/delete` endpoints. Removal and reordering
 need each item's `setVideoId`. The daemon fetches the playlist before each edit.
+
+### Local playlists
+
+The daemon stores local playlists in `playlists.json` in its state directory.
+A local playlist can hold tracks from any provider. It does not need a
+provider account.
+
+`GET /api/local-playlists` returns summaries. `POST /api/local-playlists`
+creates one. `PUT /api/local-playlists/{id}` renames it. `DELETE` removes it.
+The create and rename body is `{"name":"Mix"}`.
+
+`GET /api/local-playlists/{id}` returns the playlist and its tracks. The
+daemon recomputes each `cached` flag from disk. `POST .../tracks` adds one
+full track DTO. `POST .../tracks/remove` removes one index. `POST
+.../tracks/reorder` moves one index. Duplicate tracks are allowed.
+
+Names are trimmed and limited to 150 characters. An unknown playlist returns
+404. An invalid name or index returns 400.
+
+```sh
+# Create a local playlist. The response is 201 with the new Playlist.
+curl -X POST http://127.0.0.1:8080/api/local-playlists \
+  -H 'content-type: application/json' \
+  -d '{"name":"Mix"}'
+
+# Add one track. The response is the updated PlaylistDetail.
+curl -X POST http://127.0.0.1:8080/api/local-playlists/0123456789abcdef0123456789abcdef/tracks \
+  -H 'content-type: application/json' \
+  -d '{"track":{"provider":"podverse","track_id":"YvIRJrjZVe","title":"Episode","artist":"Host","album":"Show","duration":"3:00"}}'
+
+# Remove one track by index.
+curl -X POST http://127.0.0.1:8080/api/local-playlists/0123456789abcdef0123456789abcdef/tracks/remove \
+  -H 'content-type: application/json' \
+  -d '{"index":0}'
+
+# Reorder one track.
+curl -X POST http://127.0.0.1:8080/api/local-playlists/0123456789abcdef0123456789abcdef/tracks/reorder \
+  -H 'content-type: application/json' \
+  -d '{"from":0,"to":1}'
+
+# Rename and delete.
+curl -X PUT http://127.0.0.1:8080/api/local-playlists/0123456789abcdef0123456789abcdef \
+  -H 'content-type: application/json' \
+  -d '{"name":"Road trip"}'
+curl -X DELETE http://127.0.0.1:8080/api/local-playlists/0123456789abcdef0123456789abcdef
+```
 
 ### Playback and queue
 

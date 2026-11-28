@@ -429,6 +429,39 @@ pub struct MovePlaylistTrackRequest {
     pub to: usize,
 }
 
+/// The name for a daemon-local playlist.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct LocalPlaylistNameRequest {
+    pub name: String,
+}
+
+/// Add one full track to a daemon-local playlist.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct AddLocalPlaylistTrackRequest {
+    pub track: Track,
+}
+
+/// Remove one track from a daemon-local playlist by index.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RemoveLocalPlaylistTrackRequest {
+    pub index: usize,
+}
+
+/// Reorder one track in a daemon-local playlist.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ReorderLocalPlaylistTrackRequest {
+    pub from: usize,
+    pub to: usize,
+}
+
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -848,6 +881,39 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<UpdatePlaylistRequest>(&json).unwrap(),
             update
+        );
+    }
+
+    #[test]
+    fn local_playlist_requests_round_trip() {
+        let name = LocalPlaylistNameRequest {
+            name: "Mix".to_string(),
+        };
+        let json = serde_json::to_string(&name).unwrap();
+        assert_eq!(
+            serde_json::from_str::<LocalPlaylistNameRequest>(&json).unwrap(),
+            name
+        );
+
+        let add = AddLocalPlaylistTrackRequest { track: track() };
+        let json = serde_json::to_string(&add).unwrap();
+        assert_eq!(
+            serde_json::from_str::<AddLocalPlaylistTrackRequest>(&json).unwrap(),
+            add
+        );
+
+        let remove = RemoveLocalPlaylistTrackRequest { index: 2 };
+        let json = serde_json::to_string(&remove).unwrap();
+        assert_eq!(
+            serde_json::from_str::<RemoveLocalPlaylistTrackRequest>(&json).unwrap(),
+            remove
+        );
+
+        let reorder = ReorderLocalPlaylistTrackRequest { from: 0, to: 2 };
+        let json = serde_json::to_string(&reorder).unwrap();
+        assert_eq!(
+            serde_json::from_str::<ReorderLocalPlaylistTrackRequest>(&json).unwrap(),
+            reorder
         );
     }
 

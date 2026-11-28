@@ -201,6 +201,12 @@ impl Paths {
         self.state_dir.join("history.jsonl")
     }
 
+    /// The daemon-local playlists. They live in the state directory,
+    /// because they are user state and not cache data.
+    pub fn local_playlists_file(&self) -> PathBuf {
+        self.state_dir.join("playlists.json")
+    }
+
     /// The RSS provider store: feed URLs, ETags and the episode
     /// index. Lives in the data directory, not the cache, because
     /// feed URLs are user data.
@@ -290,6 +296,10 @@ mod tests {
         assert_eq!(paths.database_file(), PathBuf::from("/cache/db.bin"));
         assert_eq!(paths.state_file(), PathBuf::from("/state/state.json"));
         assert_eq!(paths.history_file(), PathBuf::from("/state/history.jsonl"));
+        assert_eq!(
+            paths.local_playlists_file(),
+            PathBuf::from("/state/playlists.json")
+        );
         assert_eq!(
             paths.rss_feeds_file(),
             PathBuf::from("/data/rss-feeds.json")

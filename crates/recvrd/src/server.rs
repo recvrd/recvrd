@@ -10,14 +10,15 @@ use axum::{
 };
 use common_structs::{PlaybackMode, ProviderId, TrackKey};
 use recvrd_api::{
-    AddPlaylistTracksRequest, AddRssFeedRequest, ApiError, AuthState, AuthStatus as ApiAuthStatus,
-    CacheCleanRequest, CacheCleanResult, CacheScope, CacheSizes, CreatePlaylistRequest,
-    DownloadStatus, DownloadSummary, ErrorEnvelope, Event, EventKind,
-    HistoryEntry as ApiHistoryEntry, MovePlaylistTrackRequest, MusicApi, OfflineRequest,
-    OkResponse, PlayNextRequest, PlayPlaylistRequest, PlayTrackRequest, PlaybackModeRequest,
-    PlaybackSnapshot as ApiPlaybackSnapshot, PlaybackState, Playlist, PlaylistDetail,
-    PlaylistEditError, ProviderInfo, Queue as ApiQueue, QueueItem as ApiQueueItem, QueuePosition,
-    QueueRequest, RemovePlaylistTracksRequest, RemoveQueueRequest, ReorderQueueRequest,
+    AddLocalPlaylistTrackRequest, AddPlaylistTracksRequest, AddRssFeedRequest, ApiError, AuthState,
+    AuthStatus as ApiAuthStatus, CacheCleanRequest, CacheCleanResult, CacheScope, CacheSizes,
+    CreatePlaylistRequest, DownloadStatus, DownloadSummary, ErrorEnvelope, Event, EventKind,
+    HistoryEntry as ApiHistoryEntry, LocalPlaylistNameRequest, MovePlaylistTrackRequest, MusicApi,
+    OfflineRequest, OkResponse, PlayNextRequest, PlayPlaylistRequest, PlayTrackRequest,
+    PlaybackModeRequest, PlaybackSnapshot as ApiPlaybackSnapshot, PlaybackState, Playlist,
+    PlaylistDetail, PlaylistEditError, ProviderInfo, Queue as ApiQueue, QueueItem as ApiQueueItem,
+    QueuePosition, QueueRequest, RemoveLocalPlaylistTrackRequest, RemovePlaylistTracksRequest,
+    RemoveQueueRequest, ReorderLocalPlaylistTrackRequest, ReorderQueueRequest,
     RepeatMode as ApiRepeatMode, RepeatRequest, RetryDownloadRequest, RssFeed, SearchResults,
     SeekRequest, SetTrackLikeRequest, ShuffleRequest, Status, Track, TrackAudioStats, TrackDetail,
     TrackFileStats, TrackHistoryStats, TrackPlaybackStats, TrackStats, UpdatePlaylistRequest,
@@ -25,8 +26,9 @@ use recvrd_api::{
 };
 use recvrd_core::{
     AudioOutput, AudioSink, AuthState as CoreAuthState, AuthStatus, CoreEvent, EventBus,
-    PlaybackCommand, PlaybackError, PlaybackService, PlaybackSettingsStore, PlaybackSnapshot,
-    PlaybackStatus, QueueSnapshot, RepeatMode as CoreRepeatMode,
+    LocalPlaylist, LocalPlaylistError, LocalPlaylistStore, LocalPlaylistSummary, PlaybackCommand,
+    PlaybackError, PlaybackService, PlaybackSettingsStore, PlaybackSnapshot, PlaybackStatus,
+    QueueSnapshot, RepeatMode as CoreRepeatMode,
 };
 use serde::Deserialize;
 use std::{
@@ -60,6 +62,7 @@ pub struct AppState<S: AudioSink + Send + 'static> {
     artwork: Arc<ArtworkCache>,
     cache: Arc<CacheService>,
     rss: Arc<RssProvider>,
+    local_playlists: Arc<LocalPlaylistStore>,
     providers: Vec<ProviderId>,
     settings: Arc<PlaybackSettingsStore>,
     /// Fires when the daemon starts to stop. SSE streams end on it.
@@ -80,6 +83,7 @@ impl<S: AudioSink + Send + 'static> Clone for AppState<S> {
             artwork: self.artwork.clone(),
             cache: self.cache.clone(),
             rss: self.rss.clone(),
+            local_playlists: self.local_playlists.clone(),
             providers: self.providers.clone(),
             settings: self.settings.clone(),
             shutdown: self.shutdown.clone(),
@@ -99,6 +103,7 @@ impl<S: AudioSink + Send + 'static> AppState<S> {
         artwork: Arc<ArtworkCache>,
         cache: Arc<CacheService>,
         rss: Arc<RssProvider>,
+        local_playlists: Arc<LocalPlaylistStore>,
         providers: Vec<ProviderId>,
         settings: Arc<PlaybackSettingsStore>,
         shutdown: Option<tokio::sync::watch::Receiver<bool>>,
@@ -114,6 +119,7 @@ impl<S: AudioSink + Send + 'static> AppState<S> {
             artwork,
             cache,
             rss,
+            local_playlists,
             providers,
             settings,
             shutdown,
@@ -228,6 +234,28 @@ pub fn router<S: AudioSink + Send + 'static>(state: AppState<S>) -> Router {
             post(remove_playlist_tracks),
         )
         .route("/api/playlists/{id}/tracks/move", post(move_playlist_track))
+        .route(
+            "/api/local-playlists",
+            get(list_local_playlists).post(create_local_playlist),
+        )
+        .route(
+            "/api/local-playlists/{id}",
+            get(get_local_playlist)
+                .put(rename_local_playlist)
+                .delete(delete_local_playlist),
+        )
+        .route(
+            "/api/local-playlists/{id}/tracks",
+            post(add_local_playlist_track),
+        )
+        .route(
+            "/api/local-playlists/{id}/tracks/remove",
+            post(remove_local_playlist_track),
+        )
+        .route(
+            "/api/local-playlists/{id}/tracks/reorder",
+            post(reorder_local_playlist_track),
+        )
         .route("/api/search", get(search))
         .route("/api/tracks/{provider}/{track_id}", get(track_detail))
         .route("/api/tracks/{provider}/{track_id}/stats", get(track_stats))
@@ -727,6 +755,142 @@ async fn move_playlist_track<S: AudioSink + Send + 'static>(
         .await
         .map(Json)
         .map_err(|error| edit_failure(&state, error))
+}
+
+async fn list_local_playlists<S: AudioSink + Send + 'static>(
+    State(state): State<AppState<S>>,
+) -> Json<Vec<Playlist>> {
+    Json(
+        state
+            .local_playlists
+            .list()
+            .iter()
+            .map(local_playlist_dto)
+            .collect(),
+    )
+}
+
+async fn create_local_playlist<S: AudioSink + Send + 'static>(
+    State(state): State<AppState<S>>,
+    Json(request): Json<LocalPlaylistNameRequest>,
+) -> Result<(StatusCode, Json<Playlist>), ApiFailure> {
+    let playlist = state
+        .local_playlists
+        .create(&request.name)
+        .map_err(local_playlist_failure)?;
+    Ok((
+        StatusCode::CREATED,
+        Json(local_playlist_dto(&playlist.summary())),
+    ))
+}
+
+async fn get_local_playlist<S: AudioSink + Send + 'static>(
+    State(state): State<AppState<S>>,
+    AxumPath(id): AxumPath<String>,
+) -> Result<Json<PlaylistDetail>, ApiFailure> {
+    let playlist = state
+        .local_playlists
+        .get(&id)
+        .map_err(local_playlist_failure)?;
+    Ok(Json(local_playlist_detail(&state, &playlist)))
+}
+
+async fn rename_local_playlist<S: AudioSink + Send + 'static>(
+    State(state): State<AppState<S>>,
+    AxumPath(id): AxumPath<String>,
+    Json(request): Json<LocalPlaylistNameRequest>,
+) -> Result<Json<Playlist>, ApiFailure> {
+    let playlist = state
+        .local_playlists
+        .rename(&id, &request.name)
+        .map_err(local_playlist_failure)?;
+    Ok(Json(local_playlist_dto(&playlist.summary())))
+}
+
+async fn delete_local_playlist<S: AudioSink + Send + 'static>(
+    State(state): State<AppState<S>>,
+    AxumPath(id): AxumPath<String>,
+) -> Result<Json<OkResponse>, ApiFailure> {
+    state
+        .local_playlists
+        .delete(&id)
+        .map_err(local_playlist_failure)?;
+    Ok(Json(OkResponse { ok: true }))
+}
+
+async fn add_local_playlist_track<S: AudioSink + Send + 'static>(
+    State(state): State<AppState<S>>,
+    AxumPath(id): AxumPath<String>,
+    Json(request): Json<AddLocalPlaylistTrackRequest>,
+) -> Result<Json<PlaylistDetail>, ApiFailure> {
+    let playlist = state
+        .local_playlists
+        .add_track(&id, core_track(request.track))
+        .map_err(local_playlist_failure)?;
+    Ok(Json(local_playlist_detail(&state, &playlist)))
+}
+
+async fn remove_local_playlist_track<S: AudioSink + Send + 'static>(
+    State(state): State<AppState<S>>,
+    AxumPath(id): AxumPath<String>,
+    Json(request): Json<RemoveLocalPlaylistTrackRequest>,
+) -> Result<Json<PlaylistDetail>, ApiFailure> {
+    let playlist = state
+        .local_playlists
+        .remove_track(&id, request.index)
+        .map_err(local_playlist_failure)?;
+    Ok(Json(local_playlist_detail(&state, &playlist)))
+}
+
+async fn reorder_local_playlist_track<S: AudioSink + Send + 'static>(
+    State(state): State<AppState<S>>,
+    AxumPath(id): AxumPath<String>,
+    Json(request): Json<ReorderLocalPlaylistTrackRequest>,
+) -> Result<Json<PlaylistDetail>, ApiFailure> {
+    let playlist = state
+        .local_playlists
+        .reorder_track(&id, request.from, request.to)
+        .map_err(local_playlist_failure)?;
+    Ok(Json(local_playlist_detail(&state, &playlist)))
+}
+
+fn local_playlist_dto(summary: &LocalPlaylistSummary) -> Playlist {
+    Playlist {
+        id: summary.id.clone(),
+        name: summary.name.clone(),
+        subtitle: "Local playlist".to_string(),
+        image_url: summary.image_url.clone(),
+        author: None,
+        description: None,
+        feed_url: None,
+        item_count: Some(summary.item_count as u32),
+    }
+}
+
+fn local_playlist_detail<S: AudioSink + Send + 'static>(
+    state: &AppState<S>,
+    playlist: &LocalPlaylist,
+) -> PlaylistDetail {
+    let mut tracks: Vec<Track> = playlist.tracks.iter().map(api_track).collect();
+    state.cache.annotate_tracks(&mut tracks);
+    PlaylistDetail {
+        playlist: local_playlist_dto(&playlist.summary()),
+        tracks,
+    }
+}
+
+fn local_playlist_failure(error: LocalPlaylistError) -> ApiFailure {
+    match &error {
+        LocalPlaylistError::NotFound { .. } => ApiFailure::not_found(error.to_string()),
+        LocalPlaylistError::EmptyName
+        | LocalPlaylistError::NameTooLong { .. }
+        | LocalPlaylistError::IndexOutOfRange { .. }
+        | LocalPlaylistError::InvalidTrack { .. } => ApiFailure::bad_request(error.to_string()),
+        LocalPlaylistError::Io { .. }
+        | LocalPlaylistError::Parse { .. }
+        | LocalPlaylistError::Serialize(_)
+        | LocalPlaylistError::UnsupportedVersion { .. } => ApiFailure::internal(error.to_string()),
+    }
 }
 
 const MAX_PLAYLIST_TITLE: usize = 150;
@@ -1948,6 +2112,7 @@ pub async fn serve<S: AudioSink + Send + 'static>(
     commands: UnboundedSender<PlaybackCommand>,
     dbus: bool,
     rss: Arc<RssProvider>,
+    local_playlists: Arc<LocalPlaylistStore>,
     providers: Vec<ProviderId>,
     settings: Arc<PlaybackSettingsStore>,
 ) -> io::Result<()> {
@@ -1985,6 +2150,7 @@ pub async fn serve<S: AudioSink + Send + 'static>(
         artwork,
         cache,
         rss,
+        local_playlists,
         providers,
         settings,
         Some(shutdown_rx.clone()),
@@ -2693,6 +2859,7 @@ mod tests {
             artwork,
             cache,
             rss,
+            fresh_local_playlists(),
             vec![ProviderId::Rss, ProviderId::Youtube],
             settings,
             None,
@@ -2723,6 +2890,21 @@ mod tests {
         Arc::new(RssProvider::new(
             std::env::temp_dir().join(format!("recvrd-test-rss-{id}.json")),
         ))
+    }
+
+    /// Build a fresh local playlist store for one test.
+    fn fresh_local_playlists() -> Arc<LocalPlaylistStore> {
+        static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let id = COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let dir = tempfile::Builder::new()
+            .prefix(&format!(
+                "recvrd-test-local-playlists-{}-{id}-",
+                std::process::id()
+            ))
+            .tempdir()
+            .unwrap()
+            .keep();
+        Arc::new(LocalPlaylistStore::new(dir.join("playlists.json")))
     }
 
     /// Build test state with the playback service and the cache
@@ -2784,6 +2966,7 @@ mod tests {
             artwork,
             cache,
             rss,
+            fresh_local_playlists(),
             providers,
             settings,
             None,
@@ -5421,6 +5604,224 @@ mod tests {
             cover_content_type(b"not an image"),
             "application/octet-stream"
         );
+    }
+
+    #[tokio::test]
+    async fn local_playlists_create_add_reorder_and_delete() {
+        let (base, server) = start_server(test_state()).await;
+        let client = reqwest::Client::new();
+
+        let created = client
+            .post(format!("{base}/api/local-playlists"))
+            .json(&LocalPlaylistNameRequest {
+                name: "  Mix  ".to_string(),
+            })
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(created.status(), reqwest::StatusCode::CREATED);
+        let created: serde_json::Value = created.json().await.unwrap();
+        let id = created["id"].as_str().unwrap().to_string();
+        assert_eq!(id.len(), 32);
+        assert_eq!(created["name"], "Mix");
+        assert_eq!(created["subtitle"], "Local playlist");
+        assert_eq!(created["item_count"], 0);
+
+        let list: serde_json::Value = client
+            .get(format!("{base}/api/local-playlists"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(list.as_array().unwrap().len(), 1);
+        assert_eq!(list[0]["id"], id);
+
+        let tracks = [
+            (
+                ProviderId::Youtube,
+                "abcdefghijk".to_string(),
+                "YouTube track",
+            ),
+            (ProviderId::Rss, "1".repeat(32), "RSS track"),
+            (
+                ProviderId::Podverse,
+                "YvIRJrjZVe".to_string(),
+                "Podverse track",
+            ),
+            (ProviderId::Local, "2".repeat(32), "Local track"),
+        ];
+        for (provider, track_id, title) in tracks {
+            let added = client
+                .post(format!("{base}/api/local-playlists/{id}/tracks"))
+                .json(&AddLocalPlaylistTrackRequest {
+                    track: Track {
+                        provider,
+                        track_id,
+                        title: title.to_string(),
+                        artist: "Artist".to_string(),
+                        album: "Album".to_string(),
+                        duration: "3:00".to_string(),
+                        ..Default::default()
+                    },
+                })
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(added.status(), reqwest::StatusCode::OK);
+        }
+
+        let detail: serde_json::Value = client
+            .get(format!("{base}/api/local-playlists/{id}"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(detail["playlist"]["item_count"], 4);
+        assert_eq!(detail["tracks"].as_array().unwrap().len(), 4);
+        assert_eq!(detail["tracks"][3]["cached"], true);
+
+        let removed = client
+            .post(format!("{base}/api/local-playlists/{id}/tracks/remove"))
+            .json(&RemoveLocalPlaylistTrackRequest { index: 1 })
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(removed.status(), reqwest::StatusCode::OK);
+        let removed: serde_json::Value = removed.json().await.unwrap();
+        assert_eq!(removed["tracks"].as_array().unwrap().len(), 3);
+
+        let reordered = client
+            .post(format!("{base}/api/local-playlists/{id}/tracks/reorder"))
+            .json(&ReorderLocalPlaylistTrackRequest { from: 0, to: 2 })
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(reordered.status(), reqwest::StatusCode::OK);
+        let reordered: serde_json::Value = reordered.json().await.unwrap();
+        assert_eq!(reordered["tracks"][0]["title"], "Podverse track");
+        assert_eq!(reordered["tracks"][2]["title"], "YouTube track");
+
+        let renamed = client
+            .put(format!("{base}/api/local-playlists/{id}"))
+            .json(&LocalPlaylistNameRequest {
+                name: "  Road trip  ".to_string(),
+            })
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(renamed.status(), reqwest::StatusCode::OK);
+        let renamed: serde_json::Value = renamed.json().await.unwrap();
+        assert_eq!(renamed["name"], "Road trip");
+
+        let deleted = client
+            .delete(format!("{base}/api/local-playlists/{id}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(deleted.status(), reqwest::StatusCode::OK);
+        assert_eq!(
+            deleted.json::<serde_json::Value>().await.unwrap()["ok"],
+            true
+        );
+
+        let missing = client
+            .get(format!("{base}/api/local-playlists/{id}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(missing.status(), reqwest::StatusCode::NOT_FOUND);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn local_playlists_reject_invalid_input() {
+        let (base, server) = start_server(test_state()).await;
+        let client = reqwest::Client::new();
+
+        let empty_name = client
+            .post(format!("{base}/api/local-playlists"))
+            .json(&LocalPlaylistNameRequest {
+                name: "   ".to_string(),
+            })
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(empty_name.status(), reqwest::StatusCode::BAD_REQUEST);
+
+        let created: serde_json::Value = client
+            .post(format!("{base}/api/local-playlists"))
+            .json(&LocalPlaylistNameRequest {
+                name: "Mix".to_string(),
+            })
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let id = created["id"].as_str().unwrap();
+
+        let bad_track = client
+            .post(format!("{base}/api/local-playlists/{id}/tracks"))
+            .json(&AddLocalPlaylistTrackRequest {
+                track: Track {
+                    provider: ProviderId::Youtube,
+                    track_id: "short".to_string(),
+                    title: "Bad track".to_string(),
+                    artist: String::new(),
+                    album: String::new(),
+                    duration: String::new(),
+                    ..Default::default()
+                },
+            })
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(bad_track.status(), reqwest::StatusCode::BAD_REQUEST);
+
+        let bad_remove = client
+            .post(format!("{base}/api/local-playlists/{id}/tracks/remove"))
+            .json(&RemoveLocalPlaylistTrackRequest { index: 0 })
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(bad_remove.status(), reqwest::StatusCode::BAD_REQUEST);
+
+        let bad_reorder = client
+            .post(format!("{base}/api/local-playlists/{id}/tracks/reorder"))
+            .json(&ReorderLocalPlaylistTrackRequest { from: 0, to: 1 })
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(bad_reorder.status(), reqwest::StatusCode::BAD_REQUEST);
+
+        for response in [
+            client
+                .get(format!("{base}/api/local-playlists/missing"))
+                .send()
+                .await
+                .unwrap(),
+            client
+                .put(format!("{base}/api/local-playlists/missing"))
+                .json(&LocalPlaylistNameRequest {
+                    name: "Name".to_string(),
+                })
+                .send()
+                .await
+                .unwrap(),
+            client
+                .delete(format!("{base}/api/local-playlists/missing"))
+                .send()
+                .await
+                .unwrap(),
+        ] {
+            assert_eq!(response.status(), reqwest::StatusCode::NOT_FOUND);
+        }
+        server.abort();
     }
 
     #[tokio::test]
