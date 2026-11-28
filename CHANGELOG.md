@@ -38,6 +38,9 @@
 
 ### Fixed
 
+- Keep the local-files provider available in offline mode. Its library,
+  playlist, search, track detail and playback no longer return
+  `offline_unavailable`.
 - Keep a playlist bound to its provider. Changing the provider closes an open
   playlist, and the playlist URL includes the provider.
 - Keep a YouTube playlist on YouTube when a legacy URL or a stale list names

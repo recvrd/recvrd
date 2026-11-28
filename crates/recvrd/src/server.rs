@@ -206,6 +206,13 @@ impl IntoResponse for ApiFailure {
     }
 }
 
+/// True when offline mode must route this provider through the cached
+/// download index. Local files are always on disk, so they keep their
+/// normal provider routes.
+fn offline_uses_cached_index(provider: ProviderId) -> bool {
+    provider != ProviderId::Local
+}
+
 /// Reject an action that needs a provider while offline mode is on.
 fn ensure_online<S: AudioSink + Send + 'static>(state: &AppState<S>) -> Result<(), ApiFailure> {
     if state.settings.offline() {
@@ -360,7 +367,7 @@ async fn playlists<S: AudioSink + Send + 'static>(
     Query(query): Query<ProviderQuery>,
 ) -> Result<Json<Vec<Playlist>>, ApiFailure> {
     let provider = parse_provider(query.provider, &state.providers)?;
-    if state.settings.offline() {
+    if state.settings.offline() && offline_uses_cached_index(provider) {
         return Ok(Json(cached_playlists_as_playlists(&state, provider)));
     }
     match state.music.playlists(provider).await {
@@ -641,7 +648,7 @@ async fn playlist<S: AudioSink + Send + 'static>(
     Query(query): Query<ProviderQuery>,
 ) -> Result<Json<PlaylistDetail>, ApiFailure> {
     let provider = parse_provider(query.provider, &state.providers)?;
-    if state.settings.offline() {
+    if state.settings.offline() && offline_uses_cached_index(provider) {
         return cached_playlist_detail(&state, provider, &id)
             .map(Json)
             .ok_or_else(|| {
@@ -1094,7 +1101,7 @@ async fn search<S: AudioSink + Send + 'static>(
     }
     let provider = parse_provider(query.provider, &state.providers)?;
     let cached = cached_search_results(&state, provider, &query.q);
-    if state.settings.offline() {
+    if state.settings.offline() && offline_uses_cached_index(provider) {
         return Ok(Json(cached));
     }
     let mut results = state
@@ -1179,7 +1186,7 @@ async fn track_detail<S: AudioSink + Send + 'static>(
             "provider {provider} is not configured"
         )));
     }
-    if state.settings.offline() {
+    if state.settings.offline() && offline_uses_cached_index(provider) {
         let track = state
             .cache
             .cached_tracks(provider)
@@ -1251,7 +1258,7 @@ async fn track_stats<S: AudioSink + Send + 'static>(
         track.cached = true;
         track
     } else {
-        if state.settings.offline() {
+        if state.settings.offline() && offline_uses_cached_index(provider) {
             return Err(ApiFailure::offline_unavailable(format!(
                 "track {provider}:{track_id} is not cached"
             )));
@@ -1537,7 +1544,7 @@ async fn play_playlist<S: AudioSink + Send + 'static>(
     Json(request): Json<PlayPlaylistRequest>,
 ) -> Result<Json<Status>, ApiFailure> {
     let provider = request.provider;
-    let offline = state.settings.offline();
+    let offline = state.settings.offline() && offline_uses_cached_index(provider);
     let tracks = if offline {
         cached_playlist_detail(&state, provider, &request.playlist_id)
             .map(|detail| detail.tracks)
@@ -2426,6 +2433,7 @@ mod tests {
         auth: Option<ApiAuthStatus>,
         fail_playlists: Option<String>,
         fail_playlist: Option<String>,
+        playlist_tracks: Option<Vec<Track>>,
         playlist_detail: Option<Result<PlaylistDetail, String>>,
         track_detail: Option<Result<TrackDetail, String>>,
         search: Option<SearchResults>,
@@ -2464,6 +2472,9 @@ mod tests {
         async fn playlist(&self, _provider: ProviderId, _id: &str) -> Result<Vec<Track>, String> {
             if let Some(error) = &self.fail_playlist {
                 return Err(error.clone());
+            }
+            if let Some(tracks) = &self.playlist_tracks {
+                return Ok(tracks.clone());
             }
             Ok(vec![track("v1"), track("v2")])
         }
@@ -6230,6 +6241,140 @@ mod tests {
         assert_eq!(missing.status(), reqwest::StatusCode::CONFLICT);
         let body: serde_json::Value = missing.json().await.unwrap();
         assert_eq!(body["error"]["code"], "offline_unavailable");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn offline_local_provider_keeps_library_search_and_playback() {
+        let dir = tempfile::tempdir().unwrap();
+        let audio = dir.path().join("local-song.flac");
+        std::fs::write(&audio, b"audio").unwrap();
+        let local_id = "0123456789abcdef0123456789abcdef";
+        let local = Track {
+            provider: ProviderId::Local,
+            track_id: local_id.to_string(),
+            title: "Local Song".to_string(),
+            artist: "Local Artist".to_string(),
+            album: "Local Album".to_string(),
+            duration: "0:03".to_string(),
+            source: Some(Box::new(recvrd_api::TrackSource {
+                url: format!("file://{}", audio.display()),
+                mime: None,
+                length: None,
+                seekable: true,
+                kind: recvrd_api::MediaKind::Audio,
+            })),
+            metadata: None,
+            cached: true,
+            liked: None,
+        };
+        let playlist = Playlist {
+            id: "p1".to_string(),
+            name: "Local files".to_string(),
+            subtitle: dir.path().display().to_string(),
+            ..Default::default()
+        };
+        let music = Arc::new(MockMusicApi {
+            playlist_tracks: Some(vec![local.clone()]),
+            playlist_detail: Some(Ok(PlaylistDetail {
+                playlist: playlist.clone(),
+                tracks: vec![local.clone()],
+            })),
+            track_detail: Some(Ok(TrackDetail {
+                track: local.clone(),
+                description: None,
+            })),
+            search: Some(SearchResults {
+                tracks: vec![local.clone()],
+                playlists: vec![playlist.clone()],
+            }),
+            ..Default::default()
+        });
+        let state = test_state_in_with_providers(
+            dir.path(),
+            music,
+            Arc::new(MockDownloads::default()),
+            vec![ProviderId::Local, ProviderId::Rss, ProviderId::Youtube],
+        );
+        state.settings.set_offline(true).unwrap();
+        state.playback.lock().await.set_offline(true).await.unwrap();
+        let (base, server) = start_server(state).await;
+        let client = reqwest::Client::new();
+
+        // The local provider keeps its own library instead of the empty
+        // download-cache index.
+        let playlists: Vec<Playlist> = client
+            .get(format!("{base}/api/playlists?provider=local"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(playlists.len(), 1);
+        assert_eq!(playlists[0].id, "p1");
+
+        let detail: PlaylistDetail = client
+            .get(format!("{base}/api/playlists/p1?provider=local"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(detail.tracks.len(), 1);
+        assert_eq!(detail.tracks[0].provider, ProviderId::Local);
+        assert!(detail.tracks[0].cached);
+
+        let found: SearchResults = client
+            .get(format!("{base}/api/search?provider=local&q=local"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(found.tracks.len(), 1);
+        assert_eq!(found.tracks[0].provider, ProviderId::Local);
+
+        let track: TrackDetail = client
+            .get(format!("{base}/api/tracks/local/{local_id}"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(track.track.provider, ProviderId::Local);
+        assert!(track.track.cached);
+
+        let stats: TrackStats = client
+            .get(format!("{base}/api/tracks/local/{local_id}/stats"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(stats.track.provider, ProviderId::Local);
+
+        let status: Status = client
+            .post(format!("{base}/api/play/playlist"))
+            .json(&PlayPlaylistRequest {
+                playlist_id: "p1".to_string(),
+                provider: ProviderId::Local,
+            })
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(status.playback.state, PlaybackState::Playing);
+        assert_eq!(
+            status.playback.current.as_ref().map(|track| track.provider),
+            Some(ProviderId::Local)
+        );
         server.abort();
     }
 

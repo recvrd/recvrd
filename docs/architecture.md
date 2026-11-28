@@ -179,7 +179,8 @@ YouTube client is created lazily: startup does not fetch the homepage, and
 turning the switch off creates the client without a restart. Cover art uses
 only cached files while offline. Server routing returns cached library,
 playlist, search and track data without provider calls; anything that needs a
-provider returns 409 `offline_unavailable`.
+network provider returns 409 `offline_unavailable`. The Local files provider
+keeps its normal routes because its tracks are already on disk.
 
 ## API
 

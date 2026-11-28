@@ -235,7 +235,7 @@ It is omitted when nothing is loaded.
 ### Offline mode
 
 Offline mode is a manual switch. The daemon does not probe connectivity.
-While it is on, the daemon makes no provider calls:
+While it is on, the daemon makes no network provider calls:
 
 - library and playlist requests return cached playlists only
 - search matches cached tracks and playlists locally
@@ -243,6 +243,8 @@ While it is on, the daemon makes no provider calls:
 - queue playback skips uncached tracks
 - cover art uses cached files only
 - playback mode and cache state stay local
+- the Local files provider keeps its normal library, playlist, search,
+  track detail and playback routes
 
 ```sh
 curl http://127.0.0.1:8080/api/offline
@@ -258,7 +260,7 @@ does not refresh RSS feeds, queue restored downloads, or create the YouTube
 client. Turning the switch off creates the client without restarting the
 daemon.
 
-An action that needs a provider, or an uncached track, returns 409
+An action that needs a network provider, or an uncached track, returns 409
 `offline_unavailable`. A cached track plays normally through
 `/api/play/track`. Cached list responses carry `"cached": true` on each
 track.
